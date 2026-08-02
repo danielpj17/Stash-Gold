@@ -124,6 +124,13 @@ export type MatchResult = {
   confidenceScore?: number;
   candidateCount?: number;
   isAmbiguousCluster?: boolean;
+  /**
+   * Refines the plain "unmatched" bucket so the UI can separate rows that
+   * structurally can't match an expense (money-in and account-to-account
+   * transfers) from rows that genuinely still need an expense entry.
+   * Only ever set when matchType === "unmatched".
+   */
+  unmatchedCategory?: "income" | "internal_transfer" | "no_candidate";
 };
 
 export type MerchantMemoryEntry = {
@@ -494,6 +501,40 @@ function isLikelyTransferDescription(value: string): boolean {
     .test(normalized);
 }
 
+/**
+ * Detects account-to-account transfers between the user's own accounts
+ * (e.g. "ONLINE TRANSFER TO JOHNSON D WAY2SAVE SAVINGS"). Narrower than
+ * `isLikelyTransferDescription` — it requires the word "transfer" plus a
+ * direction, so peer payments (Venmo/Zelle/PayPal) don't get swept in.
+ */
+function isLikelyInternalTransfer(value: string): boolean {
+  const normalized = normalizeDescriptionForMatch(value);
+  if (!/\btransfer\b/.test(normalized)) return false;
+  if (/\b(to|from)\b/.test(normalized)) return true;
+  return /(saving|way2save|everyday|checking|money\s*market|brokerage)/.test(normalized);
+}
+
+/**
+ * Classifies a bank row that found no expense/transfer candidate so the UI can
+ * keep the "needs an expense" queue clean. Money-in with no logged counterpart
+ * is income/deposit; an account-to-account transfer is its own bucket;
+ * everything else is a genuine no-candidate expense.
+ *
+ * `outgoingIsPositive` flips the money-in test for debit/credit-column CSVs
+ * (e.g. Capital One), where a purchase is parsed as a POSITIVE amount — the
+ * opposite of the checking/Venmo convention. Getting this wrong would tag
+ * credit-card charges as "income", so it must track the parse convention.
+ */
+function classifyUnmatched(
+  tx: BankTransaction,
+  outgoingIsPositive: boolean,
+): "income" | "internal_transfer" | "no_candidate" {
+  if (isLikelyInternalTransfer(tx.description)) return "internal_transfer";
+  const moneyIn = outgoingIsPositive ? cents(tx.amount) < 0 : cents(tx.amount) > 0;
+  if (moneyIn) return "income";
+  return "no_candidate";
+}
+
 export function mapBankRowToTransaction(
   accountName: keyof typeof BANK_PROFILES | string,
   row: string[],
@@ -687,6 +728,12 @@ export async function findMatches(
     sheetTransfers?: SheetTransferLike[];
     transferClaimStatusByRowId?: Record<string, TransferClaimStatus>;
     merchantMemory?: MerchantMemoryEntry[];
+    /**
+     * True when this account's CSV parses outgoing charges as POSITIVE amounts
+     * (debit/credit-column banks like Capital One). Used only to classify the
+     * unmatched bucket; does not affect matching (which is amount-abs based).
+     */
+    outgoingIsPositive?: boolean;
   },
 ): Promise<MatchResult[]> {
   const processedHashes = options?.processedHashes
@@ -949,10 +996,18 @@ export async function findMatches(
       }
     }
 
+    const unmatchedCategory = classifyUnmatched(tx, options?.outgoingIsPositive ?? false);
+    const unmatchedReason =
+      unmatchedCategory === "income"
+        ? "Income / deposit: money in with no logged expense counterpart."
+        : unmatchedCategory === "internal_transfer"
+          ? "Internal transfer: account-to-account movement with no logged transfer."
+          : "No amount match found in sheet expenses, transfers, or cross-account counterparties.";
     results.push({
       bankTransaction: tx,
       matchType: "unmatched",
-      reason: "No amount match found in sheet expenses, transfers, or cross-account counterparties.",
+      reason: unmatchedReason,
+      unmatchedCategory,
     });
   }
 

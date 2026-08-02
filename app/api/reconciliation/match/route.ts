@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { neon } from "@neondatabase/serverless";
 import {
+  BANK_PROFILES,
   findMatches,
   mapBankRowsToTransactions,
   PROFILE_BY_ACCOUNT,
@@ -370,11 +371,23 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  // Debit/credit-column CSVs (e.g. Capital One) parse outgoing charges as
+  // POSITIVE amounts, inverting the checking/Venmo sign convention. Flag it so
+  // the matcher classifies the unmatched bucket (income vs. expense) correctly.
+  const baseProfile = BANK_PROFILES[profileAccount];
+  const outgoingIsPositive = Boolean(
+    baseProfile &&
+      baseProfile.amountIndex === null &&
+      baseProfile.debitIndex != null &&
+      baseProfile.creditIndex != null,
+  );
+
   const matcherMatches = await findMatches(unclaimedBankTransactions, unclaimedSheetExpenses, {
     processedHashes,
     sheetTransfers: availableSheetTransfers,
     transferClaimStatusByRowId,
     merchantMemory,
+    outgoingIsPositive,
   });
   const matches = [...claimedMatches, ...matcherMatches];
   return NextResponse.json({ bankTransactions, matches });

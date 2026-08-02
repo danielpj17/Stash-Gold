@@ -506,11 +506,25 @@ const NEON_SAVE_CHUNK_SIZE = 15;
 const MATCH_CACHE_DEFAULT_DAYS = 30;
 const MATCH_CACHE_LOAD_MORE_DAYS = 30;
 
+/**
+ * True for rows that structurally can't match an expense — money-in
+ * (income/deposit) and account-to-account transfers. Used to keep the
+ * "needs an expense" queue clean without deleting these rows.
+ */
+function isIncomeOrTransferRow(match: MatchResult): boolean {
+  return (
+    match.matchType === "unmatched" &&
+    (match.unmatchedCategory === "income" || match.unmatchedCategory === "internal_transfer")
+  );
+}
+
 function filterMatchForBulk(
   match: MatchResult,
-  filter: "all" | "high_confidence" | "suggested" | "transfers",
+  filter: "all" | "needs_expense" | "high_confidence" | "suggested" | "transfers" | "income",
 ): boolean {
   if (filter === "all") return true;
+  if (filter === "needs_expense") return !isIncomeOrTransferRow(match);
+  if (filter === "income") return isIncomeOrTransferRow(match);
   if (filter === "high_confidence") {
     return (
       match.matchType === "suggested_match" &&
@@ -741,7 +755,7 @@ export default function ReconcilePage() {
   const [loadingOlderMatches, setLoadingOlderMatches] = useState(false);
 
   // Bulk Approve state — Phase 6. Multi-select for the standing review queue.
-  type BulkFilter = "all" | "high_confidence" | "transfers" | "suggested";
+  type BulkFilter = "all" | "needs_expense" | "high_confidence" | "transfers" | "suggested" | "income";
   const [bulkFilter, setBulkFilter] = useState<BulkFilter>("all");
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
   const [bulkApproving, setBulkApproving] = useState(false);
@@ -4979,7 +4993,11 @@ export default function ReconcilePage() {
               <div className="p-3 text-sm">
                 {activeReviewRows.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2 pb-2 mb-2 border-b border-charcoal-dark">
-                    {(["all", "high_confidence", "suggested", "transfers"] as BulkFilter[]).map((f) => (
+                    {(() => {
+                      const incomeCount = activeReviewRows.filter(isIncomeOrTransferRow).length;
+                      return (["all", "needs_expense", "high_confidence", "suggested", "transfers", "income"] as BulkFilter[])
+                        .filter((f) => f !== "income" || incomeCount > 0)
+                        .map((f) => (
                       <button
                         key={f}
                         type="button"
@@ -4992,13 +5010,18 @@ export default function ReconcilePage() {
                       >
                         {f === "all"
                           ? "All"
-                          : f === "high_confidence"
-                            ? "High confidence"
-                            : f === "suggested"
-                              ? "Suggested"
-                              : "Transfers"}
+                          : f === "needs_expense"
+                            ? "Needs expense"
+                            : f === "high_confidence"
+                              ? "High confidence"
+                              : f === "suggested"
+                                ? "Suggested"
+                                : f === "transfers"
+                                  ? "Transfers"
+                                  : `Income / transfers (${incomeCount})`}
                       </button>
-                    ))}
+                        ));
+                    })()}
                     <div className="flex-1" />
                     {(() => {
                       const visibleApprovable = activeReviewRows
@@ -5182,6 +5205,10 @@ export default function ReconcilePage() {
                                     </p>
                                   )}
                                 </>
+                              ) : match.unmatchedCategory === "income" ? (
+                                <p className="text-xs text-emerald-400/80">Income / deposit — no expense needed</p>
+                              ) : match.unmatchedCategory === "internal_transfer" ? (
+                                <p className="text-xs text-sky-400/80">Internal transfer — log in Transfers</p>
                               ) : (
                                 <p className="text-xs text-gray-500">No candidate match</p>
                               )}
@@ -5431,12 +5458,19 @@ export default function ReconcilePage() {
               </button>
             </div>
 
-            {activeReviewRows.length > 0 && (
-              <p className="text-xs text-gray-500">
-                Showing {activeReviewRows.length} unmatched/suggested row
-                {activeReviewRows.length === 1 ? "" : "s"} for {activeTab}.
-              </p>
-            )}
+            {activeReviewRows.length > 0 && (() => {
+              const incomeCount = activeReviewRows.filter(isIncomeOrTransferRow).length;
+              const needsExpense = activeReviewRows.length - incomeCount;
+              return (
+                <p className="text-xs text-gray-500">
+                  Showing {activeReviewRows.length} unmatched/suggested row
+                  {activeReviewRows.length === 1 ? "" : "s"} for {activeTab}
+                  {incomeCount > 0
+                    ? ` — ${needsExpense} need an expense, ${incomeCount} income/transfer (no expense expected).`
+                    : "."}
+                </p>
+              );
+            })()}
           </>
         )}
       </div>

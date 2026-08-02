@@ -81,6 +81,7 @@ type MatchResult = {
   confidenceScore?: number;
   candidateCount?: number;
   isAmbiguousCluster?: boolean;
+  unmatchedCategory?: "income" | "internal_transfer" | "no_candidate"; // only set when matchType === "unmatched"
 };
 
 type MerchantMemoryEntry = {
@@ -396,7 +397,17 @@ A bank transaction is part of an ambiguous cluster if another transaction in the
 
 ### Step 6 — Unmatched
 
-No amount match found anywhere. `matchType: "unmatched"`.
+No amount match found anywhere. `matchType: "unmatched"`. Sub-classified via `unmatchedCategory` so the UI can keep the "needs an expense" queue clean:
+
+- `income` — money-in with no logged counterpart (paychecks, deposits, cashouts, refunds). Never needs an expense entry.
+- `internal_transfer` — account-to-account movement (`ONLINE TRANSFER TO/FROM … WAY2SAVE`), detected by `isLikelyInternalTransfer` (narrower than the transfer-keyword check — requires "transfer" + a direction, so Venmo/Zelle/PayPal peer payments don't get swept in).
+- `no_candidate` — a genuine outgoing expense with no matching sheet row (the only bucket that actually needs attention).
+
+**Sign-convention caveat:** the money-in test is `amount > 0`, but debit/credit-column CSVs (Capital One) parse a *charge* as a **positive** amount — the opposite convention. The match route detects this (`amountIndex === null && debit/credit set`) and passes `outgoingIsPositive: true` to `findMatches`, which flips the test. Without it, Capital One purchases would be mislabeled `income`. The parsed sign itself is never changed (that would alter hashes and orphan claims); only classification is convention-aware.
+
+The account-detail review section exposes this via filter chips: **Needs expense** (excludes income/transfers) and **Income / transfers (N)** (only those). The footer summary splits the count into "N need an expense, M income/transfer".
+
+**Note:** `unmatchedCategory` is only present on freshly-matched rows. Rows cached before this field existed need a **Re-match from sheet** to populate it.
 
 ### Description Similarity (Jaccard)
 
