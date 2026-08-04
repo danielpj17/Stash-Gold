@@ -19,8 +19,13 @@ function loadDatabaseUrl() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
   for (const file of [".env.local", ".env"]) {
     try {
-      const match = readFileSync(file, "utf8").match(/^DATABASE_URL\s*=\s*(.+)$/m);
-      if (match) return match[1].trim().replace(/^["']|["']$/g, "");
+      // [ \t]* rather than \s*: \s matches newlines, so on an empty
+      // `DATABASE_URL=` line it would skip ahead and capture the next
+      // non-blank line (a comment) as the connection string.
+      const match = readFileSync(file, "utf8").match(/^DATABASE_URL[ \t]*=[ \t]*(.*)$/m);
+      if (!match) continue;
+      const value = match[1].trim().replace(/^["']|["']$/g, "");
+      if (value) return value;
     } catch {
       /* file absent — try the next one */
     }
@@ -77,7 +82,13 @@ const EXPECTED_CONSTRAINTS = [
 async function main() {
   const url = loadDatabaseUrl();
   if (!url) {
-    console.error("DATABASE_URL not set (checked env, .env.local, .env)");
+    console.error("DATABASE_URL is not set (checked env, .env.local, .env).");
+    console.error("Add your Neon connection string to .env.local and save the file.");
+    process.exit(1);
+  }
+  if (!/^postgres(ql)?:\/\//.test(url)) {
+    console.error(`DATABASE_URL doesn't look like a Postgres URL: ${url.slice(0, 40)}…`);
+    console.error("Expected it to start with postgresql://");
     process.exit(1);
   }
   const sql = neon(url);
