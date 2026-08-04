@@ -1,29 +1,29 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState, useMemo, useCallback } from "react";
 import Link from "next/link";
-import { X, Save, PlusCircle, Loader2, Plus, RefreshCw } from "lucide-react";
+import { X, Save, PlusCircle, Loader2, Plus } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
 import MonthDropdown from "@/components/MonthDropdown";
 import GlassDropdown from "@/components/GlassDropdown";
+import { useSession } from "next-auth/react";
 import { useMonth } from "@/contexts/MonthContext";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { useExpensesData } from "@/contexts/ExpensesDataContext";
-import { rowMatchesMonth, transferMatchesMonth, submitTransfer } from "@/services/sheetsApi";
-import type { SheetRow } from "@/services/sheetsApi";
-import { getLatestSnaptradeBalances, refreshSnaptradeBalances } from "@/services/snaptradeApi";
-import type { SupportedBroker, RefreshSnaptradeBalancesResponse } from "@/services/snaptradeApi";
+import { rowMatchesMonth, transferMatchesMonth, submitTransfer } from "@/services/transactionsApi";
+import type { SheetRow } from "@/services/transactionsApi";
+import { useAccounts } from "@/contexts/AccountsContext";
+import { CACHE_KEYS, readScopedCache, writeScopedCache } from "@/lib/clientCache";
 import {
   EXPENSE_CATEGORIES,
   CATEGORY_COLORS,
-  BUDGET_STORAGE_KEY,
-  LEGACY_EXPENSE_CATEGORY_ALIASES,
   normalizeExpenseCategoryType,
 } from "@/lib/constants";
-import { migrateBudgetCategoryKeys } from "@/lib/budgetCategoryMigration";
 import {
   computeAccountBalances,
   getAccountAnchors,
+  EXTERNAL_TRANSFER_SOURCES,
+  EXTERNAL_TRANSFER_DESTINATIONS,
   type AccountAnchor,
 } from "@/services/accountBalancesService";
 import {
@@ -48,30 +48,18 @@ type MonthlyBudgets = Record<string, Record<string, number>>;
 
 /**
  * Caches the full budget store in localStorage so the dashboard renders real budget
- * amounts on the first paint of a return visit — mirroring how expenses/transfers are
+ * amounts on the first paint of a return visit â€” mirroring how expenses/transfers are
  * cached in ExpensesDataContext. Without this, budgets sit at $0 until /api/budget lands
- * and every category briefly looks overbudget.
+ * and every category briefly looks overbudget. Keyed by user id.
  */
-const BUDGET_CACHE_KEY = "stash_budgets_v1";
-
-function readBudgetCache(): MonthlyBudgets | null {
-  try {
-    const raw = localStorage.getItem(BUDGET_CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-    return parsed as MonthlyBudgets;
-  } catch {
-    return null;
-  }
+function readBudgetCache(userId: string | null): MonthlyBudgets | null {
+  const parsed = readScopedCache<MonthlyBudgets>(CACHE_KEYS.budgets, userId);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  return parsed;
 }
 
-function writeBudgetCache(data: MonthlyBudgets) {
-  try {
-    localStorage.setItem(BUDGET_CACHE_KEY, JSON.stringify(data));
-  } catch {
-    // localStorage full or unavailable — silently skip
-  }
+function writeBudgetCache(userId: string | null, data: MonthlyBudgets) {
+  writeScopedCache(CACHE_KEYS.budgets, userId, data);
 }
 
 function resolveBudgetForMonth(
@@ -153,19 +141,6 @@ function formatDateMMDDYY(timestamp?: string): string {
   const d = new Date(timestamp);
   if (Number.isNaN(d.getTime())) return "\u2014";
   return d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "2-digit" });
-}
-
-function formatDateTimeMMDDYYHM(timestamp?: string): string {
-  if (!timestamp) return "\u2014";
-  const d = new Date(timestamp);
-  if (Number.isNaN(d.getTime())) return "\u2014";
-  return d.toLocaleString("en-US", {
-    month: "2-digit",
-    day: "2-digit",
-    year: "2-digit",
-    hour: "numeric",
-    minute: "2-digit",
-  });
 }
 
 type DailyPoint = { label: string; amount: number };
@@ -286,49 +261,6 @@ const fmtDollars = (n: number) =>
   "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const chartMargin = { top: 6, right: 6, bottom: 6, left: 2 };
 
-const TRANSFER_FROM_OPTIONS = [
-  "WF Checking",
-  "WF Savings",
-  "Venmo - Daniel",
-  "Venmo - Katie",
-  "Fidelity",
-  "Robinhood",
-  "My529",
-  "Charles Schwab",
-  "Ally",
-  "Capital One",
-  "America First",
-  "Discover",
-  "Parents",
-  "Cash",
-] as const;
-
-const TRANSFER_TO_OPTIONS = [
-  "WF Checking",
-  "WF Savings",
-  "Venmo - Daniel",
-  "Venmo - Katie",
-  "Fidelity",
-  "Robinhood",
-  "My529",
-  "Charles Schwab",
-  "Ally",
-  "Capital One",
-  "America First",
-  "Discover",
-  "Cash",
-  "Misc.",
-] as const;
-
-const TRANSFER_FROM_DROPDOWN_OPTIONS = TRANSFER_FROM_OPTIONS.map((opt) => ({
-  value: opt,
-  label: opt,
-}));
-const TRANSFER_TO_DROPDOWN_OPTIONS = TRANSFER_TO_OPTIONS.map((opt) => ({
-  value: opt,
-  label: opt,
-}));
-
 const gridStroke = "rgba(255,255,255,0.06)";
 const axisStroke = "#9ca3af";
 
@@ -342,13 +274,15 @@ export default function BudgetPage() {
   const { selectedMonth, selectedLabel } = useMonth();
   const { refreshKey, triggerRefresh } = useRefresh();
   const { allRows, allTransfers, loading, error } = useExpensesData();
+  const { data: session } = useSession();
+  const userId = session?.user?.id ?? null;
+  const { activeAccounts, labelFor } = useAccounts();
 
-  const [allBudgets, setAllBudgets] = useState<MonthlyBudgets | null>(() => {
-    if (typeof window === "undefined") return null;
-    return readBudgetCache();
-  });
+  const [allBudgets, setAllBudgets] = useState<MonthlyBudgets | null>(() =>
+    readBudgetCache(userId),
+  );
   // True only once budgets are confirmed loaded from the server this session. Cached budgets
-  // are shown immediately, but editing/saving stays blocked until this is true — a save PUTs
+  // are shown immediately, but editing/saving stays blocked until this is true â€” a save PUTs
   // the entire store, so we must not overwrite Neon based on stale cache.
   const [budgetsConfirmed, setBudgetsConfirmed] = useState(false);
   const [budgetError, setBudgetError] = useState<string | null>(null);
@@ -363,11 +297,7 @@ export default function BudgetPage() {
   const [tfAmount, setTfAmount] = useState("");
   const [tfStatus, setTfStatus] = useState<"idle" | "submitting" | "error">("idle");
   const [tfError, setTfError] = useState("");
-  const [liveBrokerBalances, setLiveBrokerBalances] = useState<Partial<Record<SupportedBroker, number>>>({});
   const [accountAnchors, setAccountAnchors] = useState<AccountAnchor[]>([]);
-  const [balancesFetchedAt, setBalancesFetchedAt] = useState<string | null>(null);
-  const [balancesRefreshStatus, setBalancesRefreshStatus] = useState<"idle" | "refreshing" | "error">("idle");
-  const [balancesRefreshError, setBalancesRefreshError] = useState("");
 
   const rows = useMemo(
     () => allRows.filter((r) => rowMatchesMonth(r, selectedMonth)),
@@ -391,7 +321,7 @@ export default function BudgetPage() {
         if (cancelled) return;
         // A failed GET (e.g. Neon cold-start/hiccup) returns { error } with a non-2xx
         // status. Never treat that as real budget data: keep allBudgets null so the
-        // page stays in an "unloaded" state and saving is blocked — otherwise the next
+        // page stays in an "unloaded" state and saving is blocked â€” otherwise the next
         // save would overwrite the stored budgets with an empty/zeroed object.
         const loadFailed =
           !response.ok ||
@@ -406,58 +336,16 @@ export default function BudgetPage() {
           setBudgetError(
             typeof errMsg === "string"
               ? `Couldn't load saved budgets: ${errMsg}`
-              : "Couldn't load saved budgets. Refresh before editing — saving now would overwrite them."
+              : "Couldn't load saved budgets. Refresh before editing â€” saving now would overwrite them."
           );
           return;
         }
-        const isEmpty = Object.keys(data).length === 0;
-        if (isEmpty && typeof window !== "undefined") {
-          try {
-            const raw = localStorage.getItem(BUDGET_STORAGE_KEY);
-            if (raw) {
-              const parsed = JSON.parse(raw) as Record<string, unknown>;
-              const isOldFlat = Object.keys(parsed).length > 0 && EXPENSE_CATEGORIES.some((cat) => typeof parsed[cat] === "number");
-              let toSave: MonthlyBudgets;
-              if (isOldFlat) {
-                const goals: Record<string, number> = {};
-                EXPENSE_CATEGORIES.forEach((cat) => {
-                  const v = parsed[cat];
-                  if (typeof v === "number") goals[cat] = v;
-                });
-                for (const [oldName, newName] of Object.entries(LEGACY_EXPENSE_CATEGORY_ALIASES)) {
-                  const v = parsed[oldName];
-                  if (typeof v === "number") {
-                    goals[newName] = (goals[newName] ?? 0) + v;
-                  }
-                }
-                toSave = {};
-                for (let m = 1; m <= 12; m++) toSave[String(m)] = { ...goals };
-              } else {
-                toSave = migrateBudgetCategoryKeys(parsed as MonthlyBudgets);
-              }
-              const res = await fetch("/api/budget", {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(toSave),
-              });
-              if (res.ok) {
-                localStorage.removeItem(BUDGET_STORAGE_KEY);
-                const saved = (await res.json()) as MonthlyBudgets;
-                if (!cancelled) {
-                  setAllBudgets(saved);
-                  writeBudgetCache(saved);
-                  setBudgetsConfirmed(true);
-                }
-                return;
-              }
-            }
-          } catch {
-            /* ignore migration errors */
-          }
-        }
+        // The old one-time "import budgets from localStorage" migration is gone.
+        // It read an unscoped key, so on a shared browser it would have pushed a
+        // previous user's local budget into a new user's Neon store.
         if (!cancelled) {
           setAllBudgets(data as MonthlyBudgets);
-          writeBudgetCache(data as MonthlyBudgets);
+          writeBudgetCache(userId, data as MonthlyBudgets);
           setBudgetsConfirmed(true);
           setBudgetError(null);
         }
@@ -466,28 +354,18 @@ export default function BudgetPage() {
         if (!cancelled) {
           // Keep cache-hydrated budgets on screen; leave budgetsConfirmed false so editing stays blocked.
           setBudgetError(
-            "Couldn't load saved budgets. Refresh before editing — saving now would overwrite them."
+            "Couldn't load saved budgets. Refresh before editing â€” saving now would overwrite them."
           );
         }
       });
     return () => { cancelled = true; };
-  }, [refreshKey]);
+  }, [refreshKey, userId]);
 
+  // Drop the previous user's cached budgets if the signed-in user changes.
   useEffect(() => {
-    let cancelled = false;
-    getLatestSnaptradeBalances()
-      .then((data: RefreshSnaptradeBalancesResponse) => {
-        if (cancelled) return;
-        setLiveBrokerBalances(data.balances);
-        setBalancesFetchedAt(data.fetchedAt);
-      })
-      .catch(() => {
-        /* keep last local values */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshKey]);
+    setAllBudgets(readBudgetCache(userId));
+    setBudgetsConfirmed(false);
+  }, [userId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -604,14 +482,32 @@ export default function BudgetPage() {
   );
 
   const accountBalances = useMemo(() => {
-    return computeAccountBalances(allRows, allTransfers, liveBrokerBalances, accountAnchors);
-  }, [allRows, allTransfers, liveBrokerBalances, accountAnchors]);
+    return computeAccountBalances(allRows, allTransfers, accountAnchors, activeAccounts);
+  }, [allRows, allTransfers, accountAnchors, activeAccounts]);
 
+  // Balances are keyed by account id; resolve to display names for rendering.
   const visibleAccountBalances = useMemo(() => {
-    return Object.entries(accountBalances).filter(
-      ([, balance]) => Math.abs(balance) >= 0.005
-    );
-  }, [accountBalances]);
+    return Object.entries(accountBalances)
+      .filter(([, balance]) => Math.abs(balance) >= 0.005)
+      .map(([accountId, balance]) => [labelFor(accountId), balance] as const);
+  }, [accountBalances, labelFor]);
+
+  // Transfers can also involve money entering or leaving the tracked accounts,
+  // so the pickers combine the user's accounts with those external labels.
+  const transferFromOptions = useMemo(
+    () => [
+      ...activeAccounts.map((a) => ({ value: a.id, label: a.name })),
+      ...EXTERNAL_TRANSFER_SOURCES.map((label) => ({ value: label, label })),
+    ],
+    [activeAccounts],
+  );
+  const transferToOptions = useMemo(
+    () => [
+      ...activeAccounts.map((a) => ({ value: a.id, label: a.name })),
+      ...EXTERNAL_TRANSFER_DESTINATIONS.map((label) => ({ value: label, label })),
+    ],
+    [activeAccounts],
+  );
 
   /* ---------- actions ---------- */
 
@@ -655,13 +551,13 @@ export default function BudgetPage() {
       }
       const savedBudgets = (body as MonthlyBudgets) ?? next;
       setAllBudgets(savedBudgets);
-      writeBudgetCache(savedBudgets);
+      writeBudgetCache(userId, savedBudgets);
       setBudgetError(null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to save budget. Try again.";
       setBudgetError(msg);
     }
-  }, [selectedCategory, selectedMonth, editBudgetValue, allBudgets, budgetsConfirmed]);
+  }, [selectedCategory, selectedMonth, editBudgetValue, allBudgets, budgetsConfirmed, userId]);
 
   const handleSubmitTransfer = useCallback(async () => {
     const num = parseFloat(tfAmount.replace(/,/g, ""));
@@ -690,22 +586,6 @@ export default function BudgetPage() {
     }
   }, [tfFrom, tfTo, tfAmount, triggerRefresh]);
 
-  const handleRefreshAccountBalances = useCallback(async () => {
-    setBalancesRefreshStatus("refreshing");
-    setBalancesRefreshError("");
-    try {
-      const data = await refreshSnaptradeBalances();
-      setLiveBrokerBalances(data.balances);
-      setBalancesFetchedAt(data.fetchedAt);
-      triggerRefresh();
-      setBalancesRefreshStatus("idle");
-    } catch (err) {
-      setBalancesRefreshStatus("error");
-      setBalancesRefreshError(
-        err instanceof Error ? err.message : "Failed to refresh account balances."
-      );
-    }
-  }, [triggerRefresh]);
 
   /* ---------- render ---------- */
 
@@ -889,16 +769,16 @@ export default function BudgetPage() {
                           <GlassDropdown
                             value={tfFrom}
                             onChange={setTfFrom}
-                            options={TRANSFER_FROM_DROPDOWN_OPTIONS}
-                            placeholder="From…"
+                            options={transferFromOptions}
+                            placeholder="Fromâ€¦"
                             className="flex-1 min-w-0"
                             aria-label="Transfer from"
                           />
                           <GlassDropdown
                             value={tfTo}
                             onChange={setTfTo}
-                            options={TRANSFER_TO_DROPDOWN_OPTIONS}
-                            placeholder="To…"
+                            options={transferToOptions}
+                            placeholder="Toâ€¦"
                             className="flex-1 min-w-0"
                             aria-label="Transfer to"
                           />
@@ -950,8 +830,8 @@ export default function BudgetPage() {
                       <p className="text-gray-400 px-2 py-2">No transfers for this period.</p>
                     ) : (
                       sortedTransfers.map((row, index) => {
-                        const from = row.transferFrom.trim() || "—";
-                        const to = row.transferTo.trim() || "—";
+                        const from = row.transferFrom.trim() || "â€”";
+                        const to = row.transferTo.trim() || "â€”";
                         const legacy = row.description?.trim();
                         return (
                         <div
@@ -961,7 +841,7 @@ export default function BudgetPage() {
                           <span className="min-w-0 flex-1">
                             <span className="text-gray-200 inline-flex items-center gap-1.5">
                               <span>{from}</span>
-                              <span className="text-gray-500">→</span>
+                              <span className="text-gray-500">â†’</span>
                               <span>{to}</span>
                             </span>
                             {legacy && (
@@ -1203,33 +1083,9 @@ export default function BudgetPage() {
             <div className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden flex flex-col">
               <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3">
                 <h2 className="text-white font-semibold">Account Balances</h2>
-                <div className="flex items-center gap-2">
-                  {balancesFetchedAt && (
-                    <span className="text-xs text-gray-400 whitespace-nowrap">
-                      Updated {formatDateTimeMMDDYYHM(balancesFetchedAt)}
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={handleRefreshAccountBalances}
-                    disabled={balancesRefreshStatus === "refreshing"}
-                    className="p-1.5 rounded-md text-gray-400 hover:text-[#50C878] hover:bg-[#252525] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                    aria-label="Refresh account balances"
-                    title="Refresh account balances"
-                  >
-                    {balancesRefreshStatus === "refreshing" ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4" />
-                    )}
-                  </button>
-                </div>
               </div>
               <div className="p-3 flex-1 min-h-0 bg-[#252525]">
                 <div className="overflow-x-auto -mx-2">
-                  {balancesRefreshStatus === "error" && (
-                    <p className="text-red-400 text-xs px-2 pb-2">{balancesRefreshError}</p>
-                  )}
                   {visibleAccountBalances.length === 0 ? (
                     <p className="text-gray-400 text-sm px-2 py-2">No accounts with a non-zero balance.</p>
                   ) : (
@@ -1321,7 +1177,7 @@ export default function BudgetPage() {
                         type="button"
                         onClick={handleSaveBudget}
                         disabled={!budgetsConfirmed}
-                        title={!budgetsConfirmed ? "Budgets are still loading — refresh before editing" : undefined}
+                        title={!budgetsConfirmed ? "Budgets are still loading â€” refresh before editing" : undefined}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dark transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-accent"
                       >
                         <Save className="w-3.5 h-3.5" />

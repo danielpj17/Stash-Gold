@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
-import {
-  buildActivityLogInsert,
-  ensureActivityLogTable,
-} from "@/lib/activityLog";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
+import type { Sql } from "@/lib/db";
+import { buildActivityLogInsert } from "@/lib/activityLog";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,15 +26,20 @@ type ActivityRow = {
  * - claim_delete undo (re-create) fails if the sheet row is now claimed elsewhere.
  * - quick_log undo only removes the claim — never deletes the user's sheet row.
  * - Already-reverted actions return 200 with `noop: true`.
+ *
+ * SECURITY: the lookup is by (id, user_id), never by id alone. Undo *writes* to
+ * claim links, processed rows, and dismissals, so an id-only lookup would let
+ * any signed-in user mutate another user's reconciliation state by guessing a
+ * UUID. Every statement in buildUndoQueries carries user_id for the same reason,
+ * including the ones hidden inside NOT EXISTS subqueries.
  */
 export async function POST(
   _request: NextRequest,
   context: { params: { id: string } },
 ) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   const id = String(context.params.id ?? "").trim();
   if (!id) {
@@ -44,13 +47,10 @@ export async function POST(
   }
 
   try {
-    const sql = neon(connectionString);
-    await ensureActivityLogTable(sql);
-
     const matches = (await sql`
       SELECT id, action_type, actor, csv_upload_id, payload, reverted_at
       FROM reconciliation_activity_log
-      WHERE id = ${id}::uuid
+      WHERE id = ${id}::uuid AND user_id = ${userId}
       LIMIT 1
     `) as ActivityRow[];
 
@@ -62,7 +62,7 @@ export async function POST(
       return NextResponse.json({ noop: true, reason: "Already reverted" });
     }
 
-    const undoQueries = await buildUndoQueries(sql, original);
+    const undoQueries = await buildUndoQueries(sql, userId, original);
     if (!undoQueries) {
       return NextResponse.json(
         { error: `Action type "${original.action_type}" cannot be undone automatically.` },
@@ -71,6 +71,7 @@ export async function POST(
     }
 
     const { id: undoActionId, query: undoLogInsert } = buildActivityLogInsert(sql, {
+      userId,
       actionType: inverseActionType(original.action_type),
       actor: "user",
       payload: { undidActionId: original.id, originalPayload: original.payload },
@@ -81,7 +82,7 @@ export async function POST(
     const markReverted = sql`
       UPDATE reconciliation_activity_log
       SET reverted_at = now(), reverted_by_action_id = ${undoActionId}::uuid
-      WHERE id = ${original.id}::uuid AND reverted_at IS NULL
+      WHERE id = ${original.id}::uuid AND user_id = ${userId} AND reverted_at IS NULL
     `;
 
     await sql.transaction([...undoQueries, markReverted, undoLogInsert]);
@@ -124,7 +125,11 @@ function inverseActionType(actionType: string): any {
  * NOTE: We never delete sheet rows the user added (quick_log undo only
  * removes the claim link, leaving the sheet entry intact).
  */
-async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] | null> {
+async function buildUndoQueries(
+  sql: Sql,
+  userId: string,
+  original: ActivityRow,
+): Promise<any[] | null> {
   const p = original.payload ?? {};
 
   switch (original.action_type) {
@@ -136,16 +141,18 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
       return [
         sql`
           DELETE FROM reconciliation_claim_links
-          WHERE bank_hash = ${bankHash}
+          WHERE user_id = ${userId} AND bank_hash = ${bankHash}
         `,
         sql`
           DELETE FROM processed_transactions
-          WHERE hash = ${bankHash}
+          WHERE user_id = ${userId} AND hash = ${bankHash}
             AND NOT EXISTS (
-              SELECT 1 FROM reconciliation_transfer_claim_links WHERE bank_hash = ${bankHash}
+              SELECT 1 FROM reconciliation_transfer_claim_links
+              WHERE user_id = ${userId} AND bank_hash = ${bankHash}
             )
             AND NOT EXISTS (
-              SELECT 1 FROM reconciliation_statement_dismissals WHERE hash = ${bankHash}
+              SELECT 1 FROM reconciliation_statement_dismissals
+              WHERE user_id = ${userId} AND hash = ${bankHash}
             )
         `,
       ];
@@ -162,9 +169,9 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
       return [
         sql`
           INSERT INTO reconciliation_claim_links (
-            bank_hash, account_name, sheet_name, sheet_row_id, amount_cents
+            user_id, bank_hash, account_name, sheet_name, sheet_row_id, amount_cents
           )
-          SELECT ${bankHash}, ${accountName}, links.sheet_name, links.sheet_row_id, links.amount_cents
+          SELECT ${userId}::uuid, ${bankHash}, ${accountName}, links.sheet_name, links.sheet_row_id, links.amount_cents
           FROM unnest(
             ${sheetNames}::text[],
             ${sheetRowIds}::text[],
@@ -172,9 +179,9 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
           ) AS links(sheet_name, sheet_row_id, amount_cents)
         `,
         sql`
-          INSERT INTO processed_transactions (hash, account_name)
-          VALUES (${bankHash}, ${accountName})
-          ON CONFLICT (hash) DO UPDATE SET account_name = EXCLUDED.account_name
+          INSERT INTO processed_transactions (user_id, hash, account_name)
+          VALUES (${userId}::uuid, ${bankHash}, ${accountName})
+          ON CONFLICT (user_id, hash) DO UPDATE SET account_name = EXCLUDED.account_name
         `,
       ];
     }
@@ -185,16 +192,18 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
       return [
         sql`
           DELETE FROM reconciliation_transfer_claim_links
-          WHERE bank_hash = ${bankHash}
+          WHERE user_id = ${userId} AND bank_hash = ${bankHash}
         `,
         sql`
           DELETE FROM processed_transactions
-          WHERE hash = ${bankHash}
+          WHERE user_id = ${userId} AND hash = ${bankHash}
             AND NOT EXISTS (
-              SELECT 1 FROM reconciliation_claim_links WHERE bank_hash = ${bankHash}
+              SELECT 1 FROM reconciliation_claim_links
+              WHERE user_id = ${userId} AND bank_hash = ${bankHash}
             )
             AND NOT EXISTS (
-              SELECT 1 FROM reconciliation_statement_dismissals WHERE hash = ${bankHash}
+              SELECT 1 FROM reconciliation_statement_dismissals
+              WHERE user_id = ${userId} AND hash = ${bankHash}
             )
         `,
       ];
@@ -207,9 +216,10 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
       if (!bankHash || deleted.length === 0) return null;
       const inserts = deleted.map((d: any) => sql`
         INSERT INTO reconciliation_transfer_claim_links (
-          transfer_sheet_row_id, bank_hash, bank_account_name, bank_amount_cents, expected_legs
+          user_id, transfer_sheet_row_id, bank_hash, bank_account_name, bank_amount_cents, expected_legs
         )
         VALUES (
+          ${userId}::uuid,
           ${String(d.transferRowId)},
           ${bankHash},
           ${accountName},
@@ -218,9 +228,9 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
         )
       `);
       inserts.push(sql`
-        INSERT INTO processed_transactions (hash, account_name)
-        VALUES (${bankHash}, ${accountName})
-        ON CONFLICT (hash) DO UPDATE SET account_name = EXCLUDED.account_name
+        INSERT INTO processed_transactions (user_id, hash, account_name)
+        VALUES (${userId}::uuid, ${bankHash}, ${accountName})
+        ON CONFLICT (user_id, hash) DO UPDATE SET account_name = EXCLUDED.account_name
       `);
       return inserts;
     }
@@ -232,16 +242,18 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
       return [
         sql`
           DELETE FROM reconciliation_statement_dismissals
-          WHERE hash = ${hash} AND account_name = ${accountName}
+          WHERE user_id = ${userId} AND hash = ${hash} AND account_name = ${accountName}
         `,
         sql`
           DELETE FROM processed_transactions
-          WHERE hash = ${hash}
+          WHERE user_id = ${userId} AND hash = ${hash}
             AND NOT EXISTS (
-              SELECT 1 FROM reconciliation_claim_links WHERE bank_hash = ${hash}
+              SELECT 1 FROM reconciliation_claim_links
+              WHERE user_id = ${userId} AND bank_hash = ${hash}
             )
             AND NOT EXISTS (
-              SELECT 1 FROM reconciliation_transfer_claim_links WHERE bank_hash = ${hash}
+              SELECT 1 FROM reconciliation_transfer_claim_links
+              WHERE user_id = ${userId} AND bank_hash = ${hash}
             )
         `,
       ];
@@ -251,9 +263,9 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
       const deleted = Array.isArray(p.deleted) ? p.deleted : [];
       if (deleted.length === 0) return null;
       return deleted.map((d: any) => sql`
-        INSERT INTO reconciliation_statement_dismissals (hash, account_name, note)
-        VALUES (${String(d.hash)}, ${String(d.accountName)}, ${String(d.note ?? "")})
-        ON CONFLICT (hash, account_name) DO UPDATE SET note = EXCLUDED.note
+        INSERT INTO reconciliation_statement_dismissals (user_id, hash, account_name, note)
+        VALUES (${userId}::uuid, ${String(d.hash)}, ${String(d.accountName)}, ${String(d.note ?? "")})
+        ON CONFLICT (user_id, hash, account_name) DO UPDATE SET note = EXCLUDED.note
       `);
     }
 
@@ -264,7 +276,7 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
       return [
         sql`
           DELETE FROM reconciliation_user_sheet_dismissals
-          WHERE sheet_name = ${sheetName} AND sheet_row_id = ${sheetRowId}
+          WHERE user_id = ${userId} AND sheet_name = ${sheetName} AND sheet_row_id = ${sheetRowId}
         `,
       ];
     }
@@ -273,9 +285,9 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
       const deleted = Array.isArray(p.deleted) ? p.deleted : [];
       if (deleted.length === 0) return null;
       return deleted.map((d: any) => sql`
-        INSERT INTO reconciliation_user_sheet_dismissals (sheet_name, sheet_row_id, note)
-        VALUES (${String(d.sheetName)}, ${String(d.sheetRowId)}, ${String(d.note ?? "")})
-        ON CONFLICT (sheet_name, sheet_row_id) DO UPDATE SET note = EXCLUDED.note
+        INSERT INTO reconciliation_user_sheet_dismissals (user_id, sheet_name, sheet_row_id, note)
+        VALUES (${userId}::uuid, ${String(d.sheetName)}, ${String(d.sheetRowId)}, ${String(d.note ?? "")})
+        ON CONFLICT (user_id, sheet_name, sheet_row_id) DO UPDATE SET note = EXCLUDED.note
       `);
     }
 
@@ -285,15 +297,18 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
       return [
         sql`
           DELETE FROM processed_transactions
-          WHERE hash = ${hash}
+          WHERE user_id = ${userId} AND hash = ${hash}
             AND NOT EXISTS (
-              SELECT 1 FROM reconciliation_claim_links WHERE bank_hash = ${hash}
+              SELECT 1 FROM reconciliation_claim_links
+              WHERE user_id = ${userId} AND bank_hash = ${hash}
             )
             AND NOT EXISTS (
-              SELECT 1 FROM reconciliation_transfer_claim_links WHERE bank_hash = ${hash}
+              SELECT 1 FROM reconciliation_transfer_claim_links
+              WHERE user_id = ${userId} AND bank_hash = ${hash}
             )
             AND NOT EXISTS (
-              SELECT 1 FROM reconciliation_statement_dismissals WHERE hash = ${hash}
+              SELECT 1 FROM reconciliation_statement_dismissals
+              WHERE user_id = ${userId} AND hash = ${hash}
             )
         `,
       ];
@@ -305,9 +320,9 @@ async function buildUndoQueries(sql: any, original: ActivityRow): Promise<any[] 
       if (!hash) return null;
       return [
         sql`
-          INSERT INTO processed_transactions (hash, account_name)
-          VALUES (${hash}, ${accountName})
-          ON CONFLICT (hash) DO UPDATE SET account_name = EXCLUDED.account_name
+          INSERT INTO processed_transactions (user_id, hash, account_name)
+          VALUES (${userId}::uuid, ${hash}, ${accountName})
+          ON CONFLICT (user_id, hash) DO UPDATE SET account_name = EXCLUDED.account_name
         `,
       ];
     }

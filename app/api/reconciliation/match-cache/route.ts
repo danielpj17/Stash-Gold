@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,18 +14,6 @@ type MatchCacheRow = {
   bank_hash: string;
   match_data: unknown;
 };
-
-async function ensureMatchCacheTable(sql: any) {
-  await sql`
-    CREATE TABLE IF NOT EXISTS reconciliation_match_cache (
-      account_name TEXT NOT NULL,
-      bank_hash    TEXT NOT NULL,
-      match_data   JSONB NOT NULL,
-      updated_at   TIMESTAMP DEFAULT now(),
-      PRIMARY KEY (account_name, bank_hash)
-    )
-  `;
-}
 
 // Match types considered "completed" — only these get filtered by `?since=`.
 // Actionable types (suggested_match, unmatched, questionable_match_fuzzy, transfer)
@@ -42,27 +30,28 @@ function parseSinceParam(value: string | null): string | null {
 }
 
 export async function GET(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ matchesByAccount: {} as Record<string, unknown[]> });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   const since = parseSinceParam(request.nextUrl.searchParams.get("since"));
 
   try {
-    const sql = neon(connectionString);
-    await ensureMatchCacheTable(sql);
     const rows = since
       ? ((await sql`
           SELECT account_name, bank_hash, match_data
           FROM reconciliation_match_cache
-          WHERE (match_data->>'matchType') NOT IN ('exact_match', 'processed')
-             OR updated_at >= ${since}::timestamp
+          WHERE user_id = ${userId}
+            AND (
+              (match_data->>'matchType') NOT IN ('exact_match', 'processed')
+              OR updated_at >= ${since}::timestamp
+            )
           ORDER BY updated_at ASC
         `) as MatchCacheRow[])
       : ((await sql`
           SELECT account_name, bank_hash, match_data
           FROM reconciliation_match_cache
+          WHERE user_id = ${userId}
           ORDER BY updated_at ASC
         `) as MatchCacheRow[]);
 
@@ -92,10 +81,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: { accountName?: unknown; matches?: unknown; replace?: unknown };
   try {
@@ -128,11 +116,11 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const sql = neon(connectionString);
-    await ensureMatchCacheTable(sql);
-
     if (replaceMode) {
-      await sql`DELETE FROM reconciliation_match_cache WHERE account_name = ${accountName}`;
+      await sql`
+        DELETE FROM reconciliation_match_cache
+        WHERE user_id = ${userId} AND account_name = ${accountName}
+      `;
     }
 
     // One INSERT per row inside a single transaction. Bulk unnest(..., jsonb[])
@@ -141,9 +129,9 @@ export async function POST(request: NextRequest) {
       await sql.transaction(
         validMatches.map((m) =>
           sql`
-            INSERT INTO reconciliation_match_cache (account_name, bank_hash, match_data)
-            VALUES (${accountName}, ${m.hash}, ${m.data}::jsonb)
-            ON CONFLICT (account_name, bank_hash)
+            INSERT INTO reconciliation_match_cache (user_id, account_name, bank_hash, match_data)
+            VALUES (${userId}::uuid, ${accountName}, ${m.hash}, ${m.data}::jsonb)
+            ON CONFLICT (user_id, account_name, bank_hash)
             DO UPDATE SET match_data = EXCLUDED.match_data, updated_at = now()
           `,
         ),

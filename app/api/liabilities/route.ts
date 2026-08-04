@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,20 +13,6 @@ type ManualItem = {
   details?: Record<string, unknown>;
   updated_at?: string;
 };
-
-async function ensureManualLiabilitiesTable(sql: any): Promise<void> {
-  await sql`
-    CREATE TABLE IF NOT EXISTS manual_liabilities (
-      id text PRIMARY KEY,
-      name text NOT NULL,
-      value numeric(14, 2) NOT NULL,
-      category text NOT NULL,
-      updated_at timestamptz NOT NULL DEFAULT now()
-    )
-  `;
-  await sql`ALTER TABLE manual_liabilities ADD COLUMN IF NOT EXISTS acquisition_date date`;
-  await sql`ALTER TABLE manual_liabilities ADD COLUMN IF NOT EXISTS details jsonb NOT NULL DEFAULT '{}'::jsonb`;
-}
 
 function toNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -89,17 +75,15 @@ function normalizeBody(raw: unknown): ManualItem[] | null {
 }
 
 export async function GET() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json([]);
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   try {
-    const sql = neon(connectionString);
-    await ensureManualLiabilitiesTable(sql);
     const rows = await sql`
       SELECT id, name, value, category, acquisition_date, details, updated_at
       FROM manual_liabilities
+      WHERE user_id = ${userId}
       ORDER BY updated_at DESC, name ASC
     `;
 
@@ -127,13 +111,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json(
-      { error: "DATABASE_URL not configured" },
-      { status: 503 }
-    );
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: unknown;
   try {
@@ -148,14 +128,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const sql = neon(connectionString);
-    await ensureManualLiabilitiesTable(sql);
     const saved: ManualItem[] = [];
     for (const item of items) {
       const rows = await sql`
-        INSERT INTO manual_liabilities (id, name, value, category, acquisition_date, details)
-        VALUES (${item.id}, ${item.name}, ${item.value}, ${item.category}, ${item.acquisition_date}::date, ${item.details ?? {}})
-        ON CONFLICT (id) DO UPDATE SET
+        INSERT INTO manual_liabilities (user_id, id, name, value, category, acquisition_date, details)
+        VALUES (${userId}::uuid, ${item.id}, ${item.name}, ${item.value}, ${item.category}, ${item.acquisition_date}::date, ${item.details ?? {}})
+        ON CONFLICT (user_id, id) DO UPDATE SET
           name = EXCLUDED.name,
           value = EXCLUDED.value,
           category = EXCLUDED.category,

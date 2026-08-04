@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
+import { getAccount, toBankProfile } from "@/lib/accounts";
+import type { Sql } from "@/lib/db";
 import {
-  BANK_PROFILES,
   findMatches,
   mapBankRowsToTransactions,
-  PROFILE_BY_ACCOUNT,
   type MerchantMemoryEntry,
   type SheetExpenseLike,
   type SheetTransferLike,
@@ -95,15 +95,18 @@ function normalizeSheetTransfers(value: unknown): SheetTransferLike[] {
     .filter((row) => Number.isFinite(row.amount));
 }
 
-async function getMerchantMemoryForAccount(bankAccountName: string): Promise<MerchantMemoryEntry[]> {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString || !bankAccountName) return [];
+async function getMerchantMemoryForAccount(
+  sql: Sql,
+  userId: string,
+  bankAccountName: string,
+): Promise<MerchantMemoryEntry[]> {
+  if (!bankAccountName) return [];
   try {
-    const sql = neon(connectionString);
     const rows = (await sql`
       SELECT fingerprint, bank_account_name, sheet_category, sheet_account, confirmed_count
       FROM reconciliation_merchant_memory
-      WHERE bank_account_name = ${bankAccountName}
+      WHERE user_id = ${userId}
+        AND bank_account_name = ${bankAccountName}
         AND confirmed_count >= 2
     `) as Array<{
       fingerprint: string;
@@ -125,16 +128,12 @@ async function getMerchantMemoryForAccount(bankAccountName: string): Promise<Mer
   }
 }
 
-async function getClaimedExpenseRowIds(): Promise<Set<string>> {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) return new Set<string>();
-
+async function getClaimedExpenseRowIds(sql: Sql, userId: string): Promise<Set<string>> {
   try {
-    const sql = neon(connectionString);
     const rows = (await sql`
       SELECT sheet_row_id
       FROM reconciliation_claim_links
-      WHERE sheet_name = 'Expenses'
+      WHERE user_id = ${userId} AND sheet_name = 'Expenses'
     `) as Array<{ sheet_row_id: string }>;
     return new Set(rows.map((row) => String(row.sheet_row_id)));
   } catch {
@@ -149,7 +148,10 @@ type TransferClaimRow = {
   expected_legs: number;
 };
 
-async function getTransferClaimStatusByRowId(): Promise<
+async function getTransferClaimStatusByRowId(
+  sql: Sql,
+  userId: string,
+): Promise<
   Record<
     string,
     {
@@ -161,14 +163,11 @@ async function getTransferClaimStatusByRowId(): Promise<
     }
   >
 > {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) return {};
-
   try {
-    const sql = neon(connectionString);
     const rows = (await sql`
       SELECT transfer_sheet_row_id, bank_amount_cents, expected_legs
       FROM reconciliation_transfer_claim_links
+      WHERE user_id = ${userId}
     `) as TransferClaimRow[];
 
     const statusByRowId: Record<
@@ -217,25 +216,25 @@ async function getTransferClaimStatusByRowId(): Promise<
 }
 
 async function getClaimLinksByBankHashes(
+  sql: Sql,
+  userId: string,
   bankHashes: string[],
 ): Promise<Map<string, Array<{ sheetName: string; sheetRowId: string }>>> {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString || bankHashes.length === 0) {
+  if (bankHashes.length === 0) {
     return new Map<string, Array<{ sheetName: string; sheetRowId: string }>>();
   }
 
   try {
-    const sql = neon(connectionString);
     const expenseRows = (await sql`
       SELECT bank_hash, sheet_name, sheet_row_id
       FROM reconciliation_claim_links
-      WHERE bank_hash = ANY(${bankHashes}::text[])
+      WHERE user_id = ${userId} AND bank_hash = ANY(${bankHashes}::text[])
       ORDER BY created_at ASC
     `) as ClaimLinkRow[];
     const transferRows = (await sql`
       SELECT bank_hash, 'Transfers' AS sheet_name, transfer_sheet_row_id AS sheet_row_id
       FROM reconciliation_transfer_claim_links
-      WHERE bank_hash = ANY(${bankHashes}::text[])
+      WHERE user_id = ${userId} AND bank_hash = ANY(${bankHashes}::text[])
       ORDER BY created_at ASC
     `) as ClaimLinkRow[];
 
@@ -257,6 +256,10 @@ async function getClaimLinksByBankHashes(
 }
 
 export async function POST(request: NextRequest) {
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
+
   let body: MatchRequestBody;
   try {
     body = (await request.json()) as MatchRequestBody;
@@ -269,24 +272,41 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "accountName is required" }, { status: 400 });
   }
 
-  const profileAccount = PROFILE_BY_ACCOUNT[accountName] ?? accountName;
+  const account = await getAccount(sql, userId, accountName);
+  if (!account) {
+    return NextResponse.json({ error: "Account not found" }, { status: 404 });
+  }
+  if (!account.csvProfile) {
+    return NextResponse.json(
+      {
+        error: "This account has no CSV format set up yet.",
+        needsCsvProfile: true,
+        accountName: account.name,
+      },
+      { status: 409 },
+    );
+  }
+  const bankProfile = toBankProfile(account.csvProfile);
+
   const rows = normalizeCsvRows(body.rows);
   const sheetExpenses = normalizeSheetExpenses(body.sheetExpenses);
   const sheetTransfers = normalizeSheetTransfers(body.sheetTransfers);
+  // Always an explicit list. findMatches must never fall back to reading every
+  // processed hash in the database — that read is not user-scoped.
   const processedHashes = Array.isArray(body.processedHashes)
     ? body.processedHashes.map((h) => String(h))
-    : undefined;
+    : [];
 
-  const bankTransactions = mapBankRowsToTransactions(profileAccount, rows).map((tx) => ({
+  const bankTransactions = mapBankRowsToTransactions(accountName, rows, bankProfile).map((tx) => ({
     ...tx,
     accountName,
   }));
   const bankHashes = Array.from(new Set(bankTransactions.map((tx) => tx.hash)));
-  const claimLinksByHash = await getClaimLinksByBankHashes(bankHashes);
+  const claimLinksByHash = await getClaimLinksByBankHashes(sql, userId, bankHashes);
 
-  const claimedExpenseRowIds = await getClaimedExpenseRowIds();
-  const transferClaimStatusByRowId = await getTransferClaimStatusByRowId();
-  const merchantMemory = await getMerchantMemoryForAccount(accountName);
+  const claimedExpenseRowIds = await getClaimedExpenseRowIds(sql, userId);
+  const transferClaimStatusByRowId = await getTransferClaimStatusByRowId(sql, userId);
+  const merchantMemory = await getMerchantMemoryForAccount(sql, userId, accountName);
   const unclaimedSheetExpenses = sheetExpenses.filter((row) => {
     const rowId = (row.rowId ?? "").trim();
     if (!rowId) return true;
@@ -371,16 +391,12 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // Debit/credit-column CSVs (e.g. Capital One) parse outgoing charges as
-  // POSITIVE amounts, inverting the checking/Venmo sign convention. Flag it so
-  // the matcher classifies the unmatched bucket (income vs. expense) correctly.
-  const baseProfile = BANK_PROFILES[profileAccount];
-  const outgoingIsPositive = Boolean(
-    baseProfile &&
-      baseProfile.amountIndex === null &&
-      baseProfile.debitIndex != null &&
-      baseProfile.creditIndex != null,
-  );
+  // Credit cards and debit/credit-column CSVs parse outgoing charges as
+  // POSITIVE amounts, inverting the checking convention. The flag comes from the
+  // account's confirmed CSV profile and only affects how the unmatched bucket is
+  // classified (income vs. needs-an-expense) — never the parsed sign, which
+  // would change hashes.
+  const outgoingIsPositive = account.csvProfile.outflowIsPositive === true;
 
   const matcherMatches = await findMatches(unclaimedBankTransactions, unclaimedSheetExpenses, {
     processedHashes,

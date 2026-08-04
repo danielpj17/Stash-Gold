@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -6,15 +6,9 @@ import MonthDropdown from "@/components/MonthDropdown";
 import { useMonth } from "@/contexts/MonthContext";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { useExpensesData } from "@/contexts/ExpensesDataContext";
-import { rowMatchesMonth } from "@/services/sheetsApi";
+import { useAccounts } from "@/contexts/AccountsContext";
+import { rowMatchesMonth } from "@/services/transactionsApi";
 import { getNetWorthSummary, type NetWorthSummary } from "@/services/netWorthService";
-import {
-  getSnaptradeHistory,
-  getSnaptradeInvestments,
-  getLatestSnaptradeBalances,
-  refreshSnaptradeBalances,
-  type RefreshSnaptradeBalancesResponse,
-} from "@/services/snaptradeApi";
 import {
   computeAccountBalances,
   getAccountAnchors,
@@ -68,7 +62,6 @@ type GrowthPoint = {
   month: string;
   label: string;
   sheetsNetChange: number | null;
-  fidelityValue: number | null;
 };
 
 const fmtCurrency = (n: number) =>
@@ -145,7 +138,7 @@ function formatDateLabel(isoDate: string): string {
 }
 
 function formatAcquiredDate(dateValue?: string | null): string {
-  if (!dateValue) return "—";
+  if (!dateValue) return "â€”";
   const parsed = new Date(dateValue);
   if (Number.isNaN(parsed.getTime())) return dateValue;
   return parsed.toLocaleDateString("en-US", {
@@ -187,6 +180,7 @@ export default function NetWorthPage() {
   const { selectedMonth } = useMonth();
   const { triggerRefresh } = useRefresh();
   const { allRows, allTransfers, loading: expensesLoading, error: expensesError } = useExpensesData();
+  const { activeAccounts, labelFor } = useAccounts();
 
   const [summary, setSummary] = useState<NetWorthSummary | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
@@ -212,29 +206,10 @@ export default function NetWorthPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const [goalTarget, setGoalTarget] = useState<number>(100000);
-  const [historySource, setHistorySource] = useState<"experimental" | "snapshots" | "none">("none");
-  const [fidelityHistory, setFidelityHistory] = useState<Array<{ date: string; value: number }>>([]);
-  const [investments, setInvestments] = useState<{
-    brokerage: number;
-    rothIra: number;
-    fidelityTotal: number;
-    fetchedAt: string | null;
-  }>({
-    brokerage: 0,
-    rothIra: 0,
-    fidelityTotal: 0,
-    fetchedAt: null,
-  });
-  const [latestBrokerBalances, setLatestBrokerBalances] = useState<Partial<
-    Record<"Fidelity" | "Robinhood" | "Charles Schwab", number>
-  >>({});
   const [accountAnchors, setAccountAnchors] = useState<AccountAnchor[]>([]);
 
   const summaryReqRef = useRef(0);
   const tableReqRef = useRef(0);
-  const historyReqRef = useRef(0);
-  const investmentsReqRef = useRef(0);
-  const balancesReqRef = useRef(0);
   const anchorsReqRef = useRef(0);
 
   const filteredRows = useMemo(
@@ -277,21 +252,9 @@ export default function NetWorthPage() {
     return out;
   }, [allRows]);
 
-  const fidelityHistoryByMonth = useMemo<Record<string, number>>(() => {
-    const out: Record<string, number> = {};
-    const sorted = [...fidelityHistory].sort((a, b) => a.date.localeCompare(b.date));
-    for (const point of sorted) {
-      const d = new Date(point.date);
-      if (Number.isNaN(d.getTime())) continue;
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      out[key] = point.value;
-    }
-    return out;
-  }, [fidelityHistory]);
-
   const trendData = useMemo<GrowthPoint[]>(() => {
     const defaultKeys = lastSixMonthKeys();
-    const dynamicKeys = Object.keys({ ...sheetsHistoryByMonth, ...fidelityHistoryByMonth });
+    const dynamicKeys = Object.keys(sheetsHistoryByMonth);
     const keys = [...new Set([...defaultKeys, ...dynamicKeys])]
       .sort((a, b) => a.localeCompare(b))
       .slice(-12);
@@ -300,56 +263,28 @@ export default function NetWorthPage() {
       label: monthLabel(key),
       sheetsNetChange:
         sheetsHistoryByMonth[key] !== undefined ? Number(sheetsHistoryByMonth[key]) : null,
-      fidelityValue:
-        fidelityHistoryByMonth[key] !== undefined ? Number(fidelityHistoryByMonth[key]) : null,
     }));
-  }, [sheetsHistoryByMonth, fidelityHistoryByMonth]);
-
-  const fidelityLatestPoint = useMemo(() => {
-    const value = Number(latestBrokerBalances.Fidelity ?? 0);
-    if (!Number.isFinite(value) || value <= 0) return null;
-    const now = new Date();
-    const key = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    return {
-      month: key,
-      label: monthLabel(key),
-      sheetsNetChange:
-        sheetsHistoryByMonth[key] !== undefined ? Number(sheetsHistoryByMonth[key]) : null,
-      fidelityValue: value,
-    } satisfies GrowthPoint;
-  }, [latestBrokerBalances.Fidelity, sheetsHistoryByMonth]);
-
-  const trendDataWithLatest = useMemo(() => {
-    if (!fidelityLatestPoint) return trendData;
-    const next = [...trendData];
-    const idx = next.findIndex((point) => point.month === fidelityLatestPoint.month);
-    if (idx >= 0) {
-      next[idx] = { ...next[idx], fidelityValue: fidelityLatestPoint.fidelityValue };
-      return next;
-    }
-    return [...next, fidelityLatestPoint].sort((a, b) => a.month.localeCompare(b.month));
-  }, [trendData, fidelityLatestPoint]);
+  }, [sheetsHistoryByMonth]);
 
   const accountBalances = useMemo(
-    () => computeAccountBalances(allRows, allTransfers, latestBrokerBalances, accountAnchors),
-    [allRows, allTransfers, latestBrokerBalances, accountAnchors]
+    () => computeAccountBalances(allRows, allTransfers, accountAnchors, activeAccounts),
+    [allRows, allTransfers, accountAnchors, activeAccounts]
   );
+  // Keyed by account id; resolve to display names for rendering.
   const visibleAccountBalances = useMemo(
-    () => Object.entries(accountBalances).filter(([, value]) => Math.abs(Number(value)) >= 0.005),
-    [accountBalances]
+    () =>
+      Object.entries(accountBalances)
+        .filter(([, value]) => Math.abs(Number(value)) >= 0.005)
+        .map(([accountId, value]) => [labelFor(accountId), value] as const),
+    [accountBalances, labelFor]
   );
   const allAccountBalancesTotal = useMemo(
     () => Object.values(accountBalances).reduce((sum, value) => sum + Number(value || 0), 0),
     [accountBalances]
   );
-  const latestBrokerBalancesTotal = useMemo(
-    () => Object.values(latestBrokerBalances).reduce((sum, value) => sum + Number(value || 0), 0),
-    [latestBrokerBalances]
-  );
-
   const averageMonthlyExpenses = useMemo(() => {
-    if (trendDataWithLatest.length === 0) return 0;
-    const keys = new Set(trendDataWithLatest.map((point) => point.month));
+    if (trendData.length === 0) return 0;
+    const keys = new Set(trendData.map((point) => point.month));
     const expenseByMonth: Record<string, number> = {};
     allRows.forEach((row) => {
       if (row.expenseType.trim().toLowerCase() === "income") return;
@@ -357,17 +292,17 @@ export default function NetWorthPage() {
       if (!key || !keys.has(key)) return;
       expenseByMonth[key] = (expenseByMonth[key] ?? 0) + Number(row.amount || 0);
     });
-    const totals = trendDataWithLatest.map((point) => expenseByMonth[point.month] ?? 0);
+    const totals = trendData.map((point) => expenseByMonth[point.month] ?? 0);
     const sum = totals.reduce((acc, v) => acc + v, 0);
     return totals.length ? sum / totals.length : 0;
-  }, [allRows, trendDataWithLatest]);
+  }, [allRows, trendData]);
 
   const loadSummary = useCallback(async () => {
     const reqId = ++summaryReqRef.current;
     setSummaryLoading(true);
     setSummaryError(null);
     try {
-      const data = await getNetWorthSummary(selectedMonth);
+      const data = await getNetWorthSummary(selectedMonth, allAccountBalancesTotal);
       if (reqId !== summaryReqRef.current) return;
       setSummary(data);
     } catch (err) {
@@ -377,7 +312,7 @@ export default function NetWorthPage() {
       if (reqId !== summaryReqRef.current) return;
       setSummaryLoading(false);
     }
-  }, [selectedMonth]);
+  }, [selectedMonth, allAccountBalancesTotal]);
 
   const loadManualTables = useCallback(async () => {
     const reqId = ++tableReqRef.current;
@@ -397,75 +332,6 @@ export default function NetWorthPage() {
     } finally {
       if (reqId !== tableReqRef.current) return;
       setTableLoading(false);
-    }
-  }, []);
-
-  const loadFidelityHistory = useCallback(async () => {
-    const reqId = ++historyReqRef.current;
-    try {
-      const data = await getSnaptradeHistory();
-      if (reqId !== historyReqRef.current) return;
-      setFidelityHistory(data.points);
-      setHistorySource(data.source);
-    } catch (err) {
-      if (reqId !== historyReqRef.current) return;
-      console.error("Failed to load Fidelity history:", err);
-      setFidelityHistory([]);
-      setHistorySource("none");
-    }
-  }, []);
-
-  const loadInvestments = useCallback(async () => {
-    const reqId = ++investmentsReqRef.current;
-    try {
-      const data = await getSnaptradeInvestments();
-      if (reqId !== investmentsReqRef.current) return;
-      setInvestments(data);
-    } catch (err) {
-      if (reqId !== investmentsReqRef.current) return;
-      console.error("Failed to load investments:", err);
-      setInvestments({
-        brokerage: 0,
-        rothIra: 0,
-        fidelityTotal: 0,
-        fetchedAt: null,
-      });
-    }
-  }, []);
-
-  const loadLatestBrokerBalances = useCallback(async () => {
-    const reqId = ++balancesReqRef.current;
-    try {
-      const data: RefreshSnaptradeBalancesResponse = await getLatestSnaptradeBalances();
-      if (reqId !== balancesReqRef.current) return;
-      setLatestBrokerBalances(data.balances ?? {});
-      // Keep investments widget synchronized with latest pull even if historical rows were old schema.
-      if (
-        data.investments?.fidelityTotal > 0 ||
-        Number(data.balances?.Fidelity ?? 0) > 0
-      ) {
-        const total =
-          Number(data.investments?.fidelityTotal ?? 0) > 0
-            ? Number(data.investments.fidelityTotal)
-            : Number(data.balances?.Fidelity ?? 0);
-        const brokerage =
-          Number(data.investments?.brokerage ?? 0) + Number(data.investments?.rothIra ?? 0) > 0
-            ? Number(data.investments?.brokerage ?? 0)
-            : total;
-        const rothIra =
-          Number(data.investments?.brokerage ?? 0) + Number(data.investments?.rothIra ?? 0) > 0
-            ? Number(data.investments?.rothIra ?? 0)
-            : 0;
-        setInvestments((prev) => ({
-          brokerage,
-          rothIra,
-          fidelityTotal: total,
-          fetchedAt: data.fetchedAt ?? prev.fetchedAt,
-        }));
-      }
-    } catch (err) {
-      if (reqId !== balancesReqRef.current) return;
-      console.error("Failed to load latest broker balances:", err);
     }
   }, []);
 
@@ -496,46 +362,25 @@ export default function NetWorthPage() {
     setTableError(null);
     triggerRefresh();
     try {
-      await refreshSnaptradeBalances();
-      await Promise.all([
-        loadSummary(),
-        loadManualTables(),
-        loadFidelityHistory(),
-        loadInvestments(),
-        loadLatestBrokerBalances(),
-        loadAccountAnchors(),
-      ]);
+      await Promise.all([loadSummary(), loadManualTables(), loadAccountAnchors()]);
     } finally {
       setIsRefreshing(false);
     }
-  }, [triggerRefresh, loadSummary, loadManualTables, loadFidelityHistory, loadInvestments, loadLatestBrokerBalances, loadAccountAnchors]);
+  }, [triggerRefresh, loadSummary, loadManualTables, loadAccountAnchors]);
 
   useEffect(() => {
-    loadFidelityHistory();
-    loadInvestments();
-    loadLatestBrokerBalances();
     loadAccountAnchors();
-  }, [loadFidelityHistory, loadInvestments, loadLatestBrokerBalances, loadAccountAnchors]);
+  }, [loadAccountAnchors]);
 
-  const adjustedLiquidNetWorth = useMemo(() => {
-    if (!summary) return 0;
-    const delta = allAccountBalancesTotal - latestBrokerBalancesTotal;
-    return summary.liquidNetWorth + delta;
-  }, [summary, allAccountBalancesTotal, latestBrokerBalancesTotal]);
-
-  const adjustedTotalNetWorth = useMemo(() => {
-    if (!summary) return 0;
-    const delta = allAccountBalancesTotal - latestBrokerBalancesTotal;
-    return summary.totalNetWorth + delta;
-  }, [summary, allAccountBalancesTotal, latestBrokerBalancesTotal]);
+  // Liquid assets are already the computed account-balance total (see
+  // getNetWorthSummary), so these need no further adjustment.
+  const adjustedLiquidNetWorth = summary?.liquidNetWorth ?? 0;
+  const adjustedTotalNetWorth = summary?.totalNetWorth ?? 0;
 
   const liquidityRatio = useMemo(() => {
-    if (!summary) return 0;
-    const liabilitiesTotal = latestBrokerBalancesTotal - summary.liquidNetWorth;
-    const liquidAssets = adjustedLiquidNetWorth + liabilitiesTotal;
-    if (averageMonthlyExpenses <= 0) return 0;
-    return liquidAssets / averageMonthlyExpenses;
-  }, [summary, latestBrokerBalancesTotal, adjustedLiquidNetWorth, averageMonthlyExpenses]);
+    if (!summary || averageMonthlyExpenses <= 0) return 0;
+    return allAccountBalancesTotal / averageMonthlyExpenses;
+  }, [summary, allAccountBalancesTotal, averageMonthlyExpenses]);
 
   const runwayMonths = useMemo(() => {
     if (!summary || summary.spending <= 0) return 0;
@@ -813,14 +658,14 @@ export default function NetWorthPage() {
 
           <div className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark">
-              <h2 className="text-white font-semibold">Net Worth History (Sheets + Fidelity)</h2>
+              <h2 className="text-white font-semibold">Monthly Net Change</h2>
             </div>
             <div className="p-4 h-[320px]">
-              {trendDataWithLatest.length === 0 ? (
+              {trendData.length === 0 ? (
                 <p className="text-sm text-gray-400">No historical trend data available yet.</p>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={trendDataWithLatest} margin={{ top: 6, right: 6, bottom: 6, left: 2 }}>
+                  <LineChart data={trendData} margin={{ top: 6, right: 6, bottom: 6, left: 2 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                     <XAxis dataKey="label" stroke="#9ca3af" tick={{ fill: "#9ca3af", fontSize: 11 }} />
                     <YAxis
@@ -847,24 +692,17 @@ export default function NetWorthPage() {
                       strokeWidth={2.5}
                       connectNulls
                     />
-                    <Line
-                      type="monotone"
-                      dataKey="fidelityValue"
-                      stroke={PIE_COLORS[1 % PIE_COLORS.length]}
-                      strokeWidth={2.5}
-                      connectNulls
-                    />
                   </LineChart>
                 </ResponsiveContainer>
               )}
               <p className="text-xs text-gray-400 mt-2">
-                Fidelity history source: {historySource}
+                Income minus expenses, per month.
               </p>
             </div>
           </div>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-5">
+        <div className="grid gap-4 md:grid-cols-4">
           <div className="rounded-xl bg-[#252525] border border-charcoal-dark p-4">
             <p className="text-sm text-gray-400">Liquidity Ratio</p>
             <p className="text-xl font-semibold text-white mt-2">{liquidityRatio.toFixed(2)}x</p>
@@ -876,24 +714,7 @@ export default function NetWorthPage() {
             <p className="text-xs text-gray-500 mt-1">How long liquid net worth can cover spending</p>
           </div>
           <div className="rounded-xl bg-[#252525] border border-charcoal-dark p-4">
-            <p className="text-sm text-gray-400">Current Investments</p>
-            <div className="mt-2 space-y-1">
-              <p className="text-sm text-gray-300">
-                Brokerage: <span className="text-white font-semibold">{fmtCurrency(investments.brokerage)}</span>
-              </p>
-              <p className="text-sm text-gray-300">
-                Roth IRA: <span className="text-white font-semibold">{fmtCurrency(investments.rothIra)}</span>
-              </p>
-              <p className="text-sm text-gray-300">
-                Total: <span className="text-white font-semibold">{fmtCurrency(investments.fidelityTotal)}</span>
-              </p>
-            </div>
-            <p className="text-xs text-gray-500 mt-2">
-              Last pulled: {investments.fetchedAt ? formatDateLabel(investments.fetchedAt) : "Not yet refreshed"}
-            </p>
-          </div>
-          <div className="rounded-xl bg-[#252525] border border-charcoal-dark p-4">
-            <p className="text-sm text-gray-400">Connected Account Balances</p>
+            <p className="text-sm text-gray-400">Account Balances</p>
             <div className="mt-2 space-y-1 text-sm">
               {visibleAccountBalances.length === 0 ? (
                 <p className="text-gray-500">No linked balances yet.</p>

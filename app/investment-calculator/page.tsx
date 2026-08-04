@@ -8,6 +8,8 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
+import { useSession } from "next-auth/react";
+import { CACHE_KEYS, readScopedCache, writeScopedCache } from "@/lib/clientCache";
 import {
   LineChart,
   Line,
@@ -81,8 +83,6 @@ const FREQUENCY_OPTIONS: GlassDropdownOption[] = [
   { value: "Quarterly", label: "Quarterly" },
   { value: "Yearly", label: "Yearly" },
 ];
-
-const LS_KEY = "stash_investment_calculator_v1";
 
 const DEFAULT_GLOBALS: GlobalInputs = {
   currentAge: 22,
@@ -857,43 +857,46 @@ function MetricsCards({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function InvestmentCalculatorPage() {
+  const { data: session } = useSession();
+  const userId = session?.user?.id ?? null;
+
   const [globals, setGlobals] = useState<GlobalInputs>(DEFAULT_GLOBALS);
   const [stages, setStages] = useState<LifeStage[]>(() =>
     buildDefaultStages(DEFAULT_GLOBALS.currentAge, DEFAULT_GLOBALS.retirementAge)
   );
 
-  // ── Load from localStorage on mount ──────────────────────────────────────
+  // ── Load from localStorage on mount (per user) ───────────────────────────
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (parsed?.globals && typeof parsed.globals.currentAge === "number") {
-        setGlobals(parsed.globals);
-      }
-      if (Array.isArray(parsed?.stages) && parsed.stages.length > 0) {
-        setStages(parsed.stages);
-      }
-    } catch {
-      // ignore malformed data
+    const parsed = readScopedCache<{ globals?: GlobalInputs; stages?: LifeStage[] }>(
+      CACHE_KEYS.investmentCalculator,
+      userId,
+    );
+    if (!parsed) {
+      // Different user (or signed out): start from defaults rather than
+      // showing whoever used this browser last.
+      setGlobals(DEFAULT_GLOBALS);
+      setStages(buildDefaultStages(DEFAULT_GLOBALS.currentAge, DEFAULT_GLOBALS.retirementAge));
+      return;
     }
-  }, []);
+    if (parsed.globals && typeof parsed.globals.currentAge === "number") {
+      setGlobals(parsed.globals);
+    }
+    if (Array.isArray(parsed.stages) && parsed.stages.length > 0) {
+      setStages(parsed.stages);
+    }
+  }, [userId]);
 
   // ── Save to localStorage (debounced 300ms) ────────────────────────────────
   const saveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (saveRef.current) clearTimeout(saveRef.current);
     saveRef.current = setTimeout(() => {
-      try {
-        localStorage.setItem(LS_KEY, JSON.stringify({ globals, stages }));
-      } catch {
-        // private browsing / quota
-      }
+      writeScopedCache(CACHE_KEYS.investmentCalculator, userId, { globals, stages });
     }, 300);
     return () => {
       if (saveRef.current) clearTimeout(saveRef.current);
     };
-  }, [globals, stages]);
+  }, [globals, stages, userId]);
 
   // ── Sync row 1 startAge when currentAge changes ───────────────────────────
   useEffect(() => {

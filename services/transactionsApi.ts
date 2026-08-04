@@ -1,13 +1,17 @@
 /**
- * Service to fetch and submit data via the app's API route (which proxies to Google Apps Script).
- * This avoids CORS / "Failed to fetch" when calling the Web App from the browser.
+ * Reads and writes the user's transactions via `/api/transactions` (Neon).
  *
- * Expenses columns: Timestamp, Expense Type, Amount, Description, Month, Row ID
- * Transfers columns: Timestamp, Transfer from, Transfer To, Transfer Amount, Month, Transfer Row ID
- * Timestamp is set by the script on submit.
+ * This used to proxy Google Sheets. The row shapes below (`SheetRow`,
+ * `TransferRow`) and the normalization helpers are deliberately unchanged:
+ * `/api/transactions` returns rows already aliased to these camelCase field
+ * names, so the alias table in `getRawValue` passes them through untouched and
+ * every consumer of this module keeps working as-is.
+ *
+ * `rowId` / `transferRowId` are `transactions.id` — the same opaque UUIDs the
+ * reconciliation tables reference in `sheet_row_id`.
  */
 
-const SHEETS_API = "/api/sheets";
+const TRANSACTIONS_API = "/api/transactions";
 
 export type SheetRow = {
   timestamp?: string;
@@ -105,12 +109,11 @@ export function rowMatchesMonth(row: SheetRow, selectedMonth?: string): boolean 
 }
 
 /**
- * Fetch all rows via the API route (proxies to Web App). Optional month filter.
+ * Fetch every expense/income row. The optional month filter is applied
+ * client-side below, exactly as before.
  */
 export async function getExpenses(month?: string): Promise<SheetRow[]> {
-  const url = month
-    ? `${SHEETS_API}?month=${encodeURIComponent(month)}`
-    : SHEETS_API;
+  const url = `${TRANSACTIONS_API}?kind=expenses`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -125,17 +128,20 @@ export async function getExpenses(month?: string): Promise<SheetRow[]> {
 }
 
 /**
- * Submit a new expense/income via the API route. If `date` (YYYY-MM-DD) is provided,
- * the Apps Script uses it as the Timestamp; otherwise it defaults to new Date().
- * Month is not sent; the sheet formula derives it from the timestamp.
+ * Create an expense/income row. `date` (YYYY-MM-DD) is optional; without it the
+ * server stamps now.
+ *
+ * Returns the created row, including its `rowId` — additive, so existing
+ * callers that ignore the result are unaffected.
  */
 export async function submitExpense(payload: {
   expenseType: string;
   amount: number;
   description: string;
   date?: string;
-}): Promise<void> {
-  const res = await fetch(SHEETS_API, {
+  account?: string;
+}): Promise<SheetRow> {
+  const res = await fetch(TRANSACTIONS_API, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -144,18 +150,24 @@ export async function submitExpense(payload: {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || `Failed to submit: ${res.status}`);
   }
+  return normalizeRow((await res.json()) as Record<string, unknown>);
 }
 
-/** Update the Timestamp on an existing sheet row (expense or transfer) by its row ID. */
+/**
+ * Change the date on an existing transaction.
+ *
+ * `sheet` is retained in the signature (and ignored) because transaction ids
+ * are globally unique — keeping it means callers don't have to change.
+ */
 export async function updateSheetEntryDate(payload: {
   sheet: "Expenses" | "Transfers";
   rowId: string;
   date: string;
 }): Promise<void> {
-  const res = await fetch(SHEETS_API, {
-    method: "POST",
+  const res = await fetch(`${TRANSACTIONS_API}/${encodeURIComponent(payload.rowId)}`, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "update", ...payload }),
+    body: JSON.stringify({ date: payload.date }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -245,9 +257,7 @@ export function transferMatchesMonth(row: TransferRow, selectedMonth?: string): 
 }
 
 export async function getTransfers(month?: string): Promise<TransferRow[]> {
-  const params = new URLSearchParams({ sheet: "Transfers" });
-  if (month) params.set("month", month);
-  const url = `${SHEETS_API}?${params.toString()}`;
+  const url = `${TRANSACTIONS_API}?kind=transfers`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -265,14 +275,17 @@ export async function submitTransfer(payload: {
   transferFrom: string;
   transferTo: string;
   amount: number;
-}): Promise<void> {
-  const res = await fetch(SHEETS_API, {
+  description?: string;
+  date?: string;
+}): Promise<TransferRow> {
+  const res = await fetch(TRANSACTIONS_API, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sheet: "Transfers", ...payload }),
+    body: JSON.stringify({ kind: "transfer", ...payload }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || `Failed to submit transfer: ${res.status}`);
   }
+  return normalizeTransferRow((await res.json()) as Record<string, unknown>);
 }

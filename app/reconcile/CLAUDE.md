@@ -1,14 +1,34 @@
 # Reconciliation System — CLAUDE.md
 
+> **Partially out of date after the multi-user migration.** The match algorithm,
+> hashing, merchant memory, activity log and UI flows below are all still
+> accurate. These parts are not:
+>
+> - **Storage.** Logged entries come from Neon (`transactions`), not Google
+>   Sheets. `sheet_row_id` now holds a `transactions.id`. The `sheet_name`
+>   values `'Expenses'` / `'Transfers'` are kept as literals on purpose.
+> - **Schema.** Every table carries `user_id`, prepended to its PK and every
+>   UNIQUE constraint. See `docs/neon-setup.sql` — the SQL quoted below is
+>   superseded. `reconciliation_csv_rows` also gained a `seq` column.
+> - **Bank profiles.** `BANK_PROFILES` and `PROFILE_BY_ACCOUNT` are gone.
+>   Accounts are user-defined and each carries its own CSV mapping in
+>   `account_csv_profiles`; the parser receives it as a parameter. The
+>   per-bank special cases (Wells Fargo dual-format, Venmo/Capital One header
+>   scans) were replaced by `lib/csvProfileDetection.ts` plus the confirmation
+>   modal in `components/CsvMappingModal.tsx`.
+> - **`findMatches`** now *requires* `processedHashes` from the caller.
+>
+> The hash-stability warnings below apply with full force and are unchanged.
+
 ## Purpose
 
-The reconcile page matches bank CSV statement rows against user-inputted expense and transfer entries from Google Sheets. The goal is to confirm every bank transaction has a corresponding user entry, and every user entry has a corresponding bank transaction.
+The reconcile page matches bank CSV statement rows against the expenses and transfers the user logged. The goal is to confirm every bank transaction has a corresponding user entry, and every user entry has a corresponding bank transaction.
 
 **Two sources of truth:**
-- **Google Sheets** — user-inputted expenses and transfers (what the user recorded)
+- **Logged entries** — expenses and transfers the user recorded (Neon `transactions`)
 - **Bank CSV** — raw bank statements (what actually happened)
 
-Reconciliation produces a claim: a persistent link between a bank transaction hash and a sheet row ID.
+Reconciliation produces a claim: a persistent link between a bank transaction hash and a transaction id.
 
 ---
 

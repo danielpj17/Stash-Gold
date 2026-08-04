@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
-import { ensureActivityLogTable } from "@/lib/activityLog";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,17 +36,13 @@ function parseSinceParam(value: string | null): string {
 }
 
 export async function GET(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ entries: [], since: defaultSinceDate() });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   const since = parseSinceParam(request.nextUrl.searchParams.get("since"));
 
   try {
-    const sql = neon(connectionString);
-    await ensureActivityLogTable(sql);
-
     const rows = (await sql`
       SELECT
         id,
@@ -61,7 +56,7 @@ export async function GET(request: NextRequest) {
         reverted_at,
         reverted_by_action_id
       FROM reconciliation_activity_log
-      WHERE occurred_at >= ${since}::timestamp
+      WHERE user_id = ${userId} AND occurred_at >= ${since}::timestamp
       ORDER BY occurred_at DESC
       LIMIT 500
     `) as ActivityRow[];

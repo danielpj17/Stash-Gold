@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
+import { getBankProfile } from "@/lib/accounts";
+import type { Sql } from "@/lib/db";
 import { computeCsvIdentityKeys } from "@/services/reconciliationService";
 
 export const runtime = "nodejs";
@@ -8,12 +10,17 @@ export const maxDuration = 30;
 
 const CSV_SAVE_CHUNK_SIZE = 15;
 
-async function readStoredRowsForAccount(sql: any, accountName: string): Promise<string[][]> {
+/** Order must match csv-rows: it determines the -N hash suffixes. */
+async function readStoredRowsForAccount(
+  sql: Sql,
+  userId: string,
+  accountName: string,
+): Promise<string[][]> {
   const rows = (await sql`
     SELECT cells
     FROM reconciliation_csv_rows
-    WHERE account_name = ${accountName}
-    ORDER BY created_at ASC
+    WHERE user_id = ${userId} AND account_name = ${accountName}
+    ORDER BY created_at ASC, seq ASC
   `) as Array<{ cells: unknown }>;
   return rows
     .map((r) => (Array.isArray(r.cells) ? r.cells.map((c: unknown) => String(c ?? "")) : null))
@@ -23,16 +30,25 @@ async function readStoredRowsForAccount(sql: any, accountName: string): Promise<
 /**
  * Fetch every bank-transaction hash that already carries reconciliation state for
  * this account (claimed, transfer-claimed, processed, or dismissed).
+ * Every branch of the UNION needs its own user_id predicate.
  */
-async function getResolvedHashes(sql: any, accountName: string): Promise<Set<string>> {
+async function getResolvedHashes(
+  sql: Sql,
+  userId: string,
+  accountName: string,
+): Promise<Set<string>> {
   const rows = (await sql`
-    SELECT bank_hash AS h FROM reconciliation_claim_links WHERE account_name = ${accountName}
+    SELECT bank_hash AS h FROM reconciliation_claim_links
+      WHERE user_id = ${userId} AND account_name = ${accountName}
     UNION
-    SELECT bank_hash AS h FROM reconciliation_transfer_claim_links WHERE bank_account_name = ${accountName}
+    SELECT bank_hash AS h FROM reconciliation_transfer_claim_links
+      WHERE user_id = ${userId} AND bank_account_name = ${accountName}
     UNION
-    SELECT hash AS h FROM processed_transactions WHERE account_name = ${accountName}
+    SELECT hash AS h FROM processed_transactions
+      WHERE user_id = ${userId} AND account_name = ${accountName}
     UNION
-    SELECT hash AS h FROM reconciliation_statement_dismissals WHERE account_name = ${accountName}
+    SELECT hash AS h FROM reconciliation_statement_dismissals
+      WHERE user_id = ${userId} AND account_name = ${accountName}
   `) as Array<{ h: string }>;
   return new Set(rows.map((r) => String(r.h)).filter(Boolean));
 }
@@ -45,10 +61,9 @@ async function getResolvedHashes(sql: any, accountName: string): Promise<Set<str
  * duplicate purchases (where no resolved sibling exists, nothing is removed).
  */
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: { accountName?: unknown };
   try {
@@ -63,15 +78,14 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const sql = neon(connectionString);
-
-    const existing = await readStoredRowsForAccount(sql, accountName);
+    const existing = await readStoredRowsForAccount(sql, userId, accountName);
     if (existing.length === 0) {
       return NextResponse.json({ success: true, removedHashes: [], removedCount: 0, rows: [] });
     }
 
-    const keys = computeCsvIdentityKeys(accountName, existing);
-    const resolvedHashes = await getResolvedHashes(sql, accountName);
+    const profile = await getBankProfile(sql, userId, accountName);
+    const keys = computeCsvIdentityKeys(accountName, existing, profile);
+    const resolvedHashes = await getResolvedHashes(sql, userId, accountName);
 
     // Group parseable rows by base identity (hash without the -N suffix).
     type Member = { index: number; hash: string; resolved: boolean };
@@ -114,9 +128,9 @@ export async function POST(request: NextRequest) {
     // first insert chunk so a failure can't silently wipe the account).
     const inserts = keptRows.map((cells, i) =>
       sql`
-        INSERT INTO reconciliation_csv_rows (account_name, dedupe_key, cells)
-        VALUES (${accountName}, ${keptKeys[i]}, ${JSON.stringify(cells)}::jsonb)
-        ON CONFLICT (account_name, dedupe_key)
+        INSERT INTO reconciliation_csv_rows (user_id, account_name, dedupe_key, cells)
+        VALUES (${userId}::uuid, ${accountName}, ${keptKeys[i]}, ${JSON.stringify(cells)}::jsonb)
+        ON CONFLICT (user_id, account_name, dedupe_key)
         DO UPDATE SET cells = EXCLUDED.cells, created_at = now()
       `,
     );
@@ -125,7 +139,13 @@ export async function POST(request: NextRequest) {
       const isFirst = i === 0;
       await sql.transaction(
         isFirst
-          ? [sql`DELETE FROM reconciliation_csv_rows WHERE account_name = ${accountName}`, ...chunk]
+          ? [
+              sql`
+                DELETE FROM reconciliation_csv_rows
+                WHERE user_id = ${userId} AND account_name = ${accountName}
+              `,
+              ...chunk,
+            ]
           : chunk,
       );
     }
@@ -133,7 +153,9 @@ export async function POST(request: NextRequest) {
     // Drop the removed copies from the cached match results so they leave the UI.
     await sql`
       DELETE FROM reconciliation_match_cache
-      WHERE account_name = ${accountName} AND bank_hash = ANY(${removedHashes}::text[])
+      WHERE user_id = ${userId}
+        AND account_name = ${accountName}
+        AND bank_hash = ANY(${removedHashes}::text[])
     `;
 
     return NextResponse.json({

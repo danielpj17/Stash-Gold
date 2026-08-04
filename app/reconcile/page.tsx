@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { useDropzone } from "react-dropzone";
@@ -13,29 +13,24 @@ import {
   updateSheetEntryDate,
   type SheetRow,
   type TransferRow,
-} from "@/services/sheetsApi";
+} from "@/services/transactionsApi";
 import { EXPENSE_TYPE_OPTIONS } from "@/lib/constants";
-import { getLatestSnaptradeBalances } from "@/services/snaptradeApi";
 import type { BankTransaction, MatchResult } from "@/services/reconciliationService";
 import { generateMerchantFingerprint } from "@/lib/merchantFingerprint";
 import {
   computeAccountBalances,
   getAccountAnchors,
-  mapAccountNameToBalanceKey,
 } from "@/services/accountBalancesService";
+import Link from "next/link";
+import { useAccounts } from "@/contexts/AccountsContext";
+import CsvMappingModal from "@/components/CsvMappingModal";
 import { RECONCILIATION_RESET_CONFIRM } from "@/lib/reconciliationReset";
 
-type AccountOption =
-  | "WF Checking"
-  | "WF Savings"
-  | "Fidelity"
-  | "Venmo - Daniel"
-  | "Venmo - Katie"
-  | "Capital One"
-  | "Discover"
-  | "Schwab"
-  | "America First"
-  | "Ally";
+/**
+ * An account's UUID. Accounts are user-defined now, so this can't be a closed
+ * union â€” the id is the stable internal key and `labelFor(id)` renders it.
+ */
+type AccountOption = string;
 
 type MatchResponse = {
   bankTransactions: BankTransaction[];
@@ -159,39 +154,13 @@ type UserStatementClaimModalState = {
   error: string;
 };
 
-const ACCOUNT_OPTIONS: AccountOption[] = [
-  "WF Checking",
-  "WF Savings",
-  "Fidelity",
-  "Venmo - Daniel",
-  "Venmo - Katie",
-  "Capital One",
-  "Discover",
-  "Schwab",
-  "America First",
-  "Ally",
-];
 const ALL_ACCOUNTS_OPTION = "All";
-
-const ACCOUNT_DROPDOWN_OPTIONS: GlassDropdownOption[] = [
-  { value: ALL_ACCOUNTS_OPTION, label: ALL_ACCOUNTS_OPTION },
-  ...ACCOUNT_OPTIONS.map((a) => ({ value: a, label: a })),
-];
-
-const CSV_PARSER_READY_ACCOUNTS = new Set<AccountOption>([
-  "WF Checking",
-  "WF Savings",
-  "Venmo - Daniel",
-  "Venmo - Katie",
-  "Capital One",
-]);
-const RECONCILE_STORAGE_KEY = "reconcile-page-state-v3";
 
 function claimKey(sheetName: string, rowId: string): string {
   return `${sheetName}:${rowId}`;
 }
 
-/** Extracts the raw sheet row ID from an entry id like `"Expenses:uuid"` → `"uuid"`. */
+/** Extracts the raw sheet row ID from an entry id like `"Expenses:uuid"` â†’ `"uuid"`. */
 function rowIdFromEntryId(entryId: string): string {
   const parsed = parseSheetDismissKeyFromEntryId(entryId);
   return parsed?.sheetRowId ?? "";
@@ -210,48 +179,13 @@ function parseSheetDismissKeyFromEntryId(
   return { sheetName: sheetPrefix, sheetRowId: rest };
 }
 
+/**
+ * Universal client-side key for a bank row. Uses the raw account id, never a
+ * display name — this keys React lists, modal targets, dismissal notes and
+ * bulk selection, so it must not change when an account is renamed.
+ */
 function idForTx(tx: BankTransaction): string {
   return `${tx.accountName}|${tx.hash}`;
-}
-
-/** Legacy bucket: CSV used BANK_PROFILES key "Wells Fargo"; UI accounts are WF Checking / WF Savings only. */
-const LEGACY_WF_PROFILE_BUCKET = "Wells Fargo";
-
-function mergeWellsFargoBucketIntoChecking(
-  prev: Record<string, MatchResult[]>,
-): Record<string, MatchResult[]> {
-  const legacy = prev[LEGACY_WF_PROFILE_BUCKET];
-  if (legacy === undefined) return prev;
-  if (!legacy.length) {
-    const next = { ...prev };
-    delete next[LEGACY_WF_PROFILE_BUCKET];
-    return next;
-  }
-
-  const checkingKey: AccountOption = "WF Checking";
-  const retagged = legacy.map((m) => ({
-    ...m,
-    bankTransaction: {
-      ...m.bankTransaction,
-      accountName: checkingKey,
-    },
-  }));
-
-  const existing = prev[checkingKey] ?? [];
-  const byHash = new Map<string, MatchResult>();
-  for (const row of existing) {
-    byHash.set(row.bankTransaction.hash, row);
-  }
-  for (const row of retagged) {
-    if (!byHash.has(row.bankTransaction.hash)) {
-      byHash.set(row.bankTransaction.hash, row);
-    }
-  }
-
-  const next: Record<string, MatchResult[]> = { ...prev };
-  delete next[LEGACY_WF_PROFILE_BUCKET];
-  next[checkingKey] = Array.from(byHash.values());
-  return next;
 }
 
 /** Merge match arrays by hash; incoming rows replace older versions of same hash. */
@@ -291,7 +225,7 @@ function fmtMoney(amount: number): string {
 }
 
 function fmtDate(raw?: string): string {
-  if (!raw) return "—";
+  if (!raw) return "â€”";
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return raw;
   return d.toLocaleDateString("en-US");
@@ -327,7 +261,7 @@ function hasLinkedOrClaimedEntry(
   return hasLinkedUserInputtedEntry(match) || bankHashesWithNeonClaim.has(match.bankTransaction.hash);
 }
 
-/** Processed in Neon but no row in claim tables — should show in review, not "closed without sheet". */
+/** Processed in Neon but no row in claim tables â€” should show in review, not "closed without sheet". */
 function isProcessedWithoutNeonClaim(
   match: MatchResult,
   processedHashes: Set<string>,
@@ -341,10 +275,6 @@ function isProcessedWithoutNeonClaim(
     !dismissalNotesById[id] &&
     !bankHashesWithNeonClaim.has(hash)
   );
-}
-
-function accountHasConfiguredParser(account: string): boolean {
-  return CSV_PARSER_READY_ACCOUNTS.has(account as AccountOption);
 }
 
 function normalizeDateOnly(raw?: string): string {
@@ -507,7 +437,7 @@ const MATCH_CACHE_DEFAULT_DAYS = 30;
 const MATCH_CACHE_LOAD_MORE_DAYS = 30;
 
 /**
- * True for rows that structurally can't match an expense — money-in
+ * True for rows that structurally can't match an expense â€” money-in
  * (income/deposit) and account-to-account transfers. Used to keep the
  * "needs an expense" queue clean without deleting these rows.
  */
@@ -551,26 +481,26 @@ function summarizeActivityPayload(actionType: string, payload: unknown): string 
       const linkSummary = links
         .map((l: any) => `${l.sheetName ?? "?"}:${l.sheetRowId ?? "?"} ($${((l.amountCents ?? 0) / 100).toFixed(2)})`)
         .join(", ");
-      return `${p.accountName ?? "—"} • $${(p.bankAmount ?? 0).toFixed?.(2) ?? p.bankAmount} • ${p.bankDate ?? ""}\n${p.bankDescription ?? ""}\n→ ${linkSummary}`;
+      return `${p.accountName ?? "â€”"} â€¢ $${(p.bankAmount ?? 0).toFixed?.(2) ?? p.bankAmount} â€¢ ${p.bankDate ?? ""}\n${p.bankDescription ?? ""}\nâ†’ ${linkSummary}`;
     }
     case "claim_delete":
-      return `Removed claims for hash ${String(p.bankHash ?? "").slice(0, 12)}…`;
+      return `Removed claims for hash ${String(p.bankHash ?? "").slice(0, 12)}â€¦`;
     case "transfer_claim_create":
-      return `Transfer leg: row ${p.transferRowId ?? "?"} • $${((p.bankAmountCents ?? 0) / 100).toFixed(2)} • ${p.bankAccountName ?? "—"}`;
+      return `Transfer leg: row ${p.transferRowId ?? "?"} â€¢ $${((p.bankAmountCents ?? 0) / 100).toFixed(2)} â€¢ ${p.bankAccountName ?? "â€”"}`;
     case "transfer_claim_delete":
-      return `Removed transfer claim for hash ${String(p.bankHash ?? "").slice(0, 12)}…`;
+      return `Removed transfer claim for hash ${String(p.bankHash ?? "").slice(0, 12)}â€¦`;
     case "dismiss_create":
-      return `Dismissed ${p.accountName ?? "—"}: ${p.note ?? ""}`;
+      return `Dismissed ${p.accountName ?? "â€”"}: ${p.note ?? ""}`;
     case "dismiss_delete":
-      return `Removed dismissal for hash ${String(p.hash ?? "").slice(0, 12)}…`;
+      return `Removed dismissal for hash ${String(p.hash ?? "").slice(0, 12)}â€¦`;
     case "user_dismiss_create":
-      return `Dismissed sheet row ${p.sheetName}:${p.sheetRowId} — ${p.note ?? ""}`;
+      return `Dismissed sheet row ${p.sheetName}:${p.sheetRowId} â€” ${p.note ?? ""}`;
     case "user_dismiss_delete":
       return `Restored sheet row ${p.sheetName}:${p.sheetRowId}`;
     case "processed_mark":
-      return `Marked processed: ${String(p.hash ?? "").slice(0, 12)}…`;
+      return `Marked processed: ${String(p.hash ?? "").slice(0, 12)}â€¦`;
     case "processed_unmark":
-      return `Unmarked processed: ${String(p.hash ?? "").slice(0, 12)}…`;
+      return `Unmarked processed: ${String(p.hash ?? "").slice(0, 12)}â€¦`;
     default:
       return JSON.stringify(p, null, 2).slice(0, 240);
   }
@@ -631,25 +561,62 @@ async function saveCsvRowsToNeon(accountName: string, rows: string[][]): Promise
 }
 
 export default function ReconcilePage() {
-  const [selectedAccount, setSelectedAccount] = useState<AccountOption>("WF Checking");
+  const {
+    accounts,
+    activeAccounts,
+    byId: accountsById,
+    labelFor,
+    loading: accountsLoading,
+    setAccounts,
+  } = useAccounts();
+
+  const accountIds = useMemo(() => new Set(accounts.map((a) => a.id)), [accounts]);
+  const accountDropdownOptions = useMemo<GlassDropdownOption[]>(
+    () => [
+      { value: ALL_ACCOUNTS_OPTION, label: ALL_ACCOUNTS_OPTION },
+      ...activeAccounts.map((a) => ({ value: a.id, label: a.name })),
+    ],
+    [activeAccounts],
+  );
+  /** An account can only parse a CSV once its column mapping is confirmed. */
+  const accountHasConfiguredParser = useCallback(
+    (accountId: string) => Boolean(accountsById.get(accountId)?.csvProfile),
+    [accountsById],
+  );
+
+  const [selectedAccount, setSelectedAccount] = useState<AccountOption>("");
+  /** Set when a dropped file needs its column mapping confirmed first. */
+  const [csvMapping, setCsvMapping] = useState<{
+    accountId: string;
+    rows: string[][];
+    pendingFile: File;
+  } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [removingDuplicates, setRemovingDuplicates] = useState(false);
   const [rematching, setRematching] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const matchedSectionRef = useRef<HTMLElement | null>(null);
   const [matchesByAccount, setMatchesByAccount] = useState<Record<string, MatchResult[]>>({});
-  const [activeTab, setActiveTab] = useState<string>(ACCOUNT_OPTIONS[0]);
+  const [activeTab, setActiveTab] = useState<string>("");
   const [viewMode, setViewMode] = useState<ReconcileViewMode>("home");
+
+  // Accounts are user-defined, so the initial selection can only be resolved
+  // once they've loaded.
+  useEffect(() => {
+    if (accountsLoading || activeAccounts.length === 0) return;
+    setSelectedAccount((prev) => (prev && accountIds.has(prev) ? prev : activeAccounts[0].id));
+    setActiveTab((prev) => (prev && accountIds.has(prev) ? prev : activeAccounts[0].id));
+  }, [accountsLoading, activeAccounts, accountIds]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const accountParam = params.get("account");
-    if (accountParam && ACCOUNT_OPTIONS.includes(accountParam as AccountOption)) {
+    if (accountParam && accountIds.has(accountParam)) {
       setSelectedAccount(accountParam as AccountOption);
       setActiveTab(accountParam);
       setViewMode("accountDetail");
     }
-  }, []);
+  }, [accountIds]);
   const [dismissalNotesById, setDismissalNotesById] = useState<Record<string, string>>({});
   const [userDismissedRowKeys, setUserDismissedRowKeys] = useState<Set<string>>(new Set());
   const [userDismissalNotesByEntryId, setUserDismissalNotesByEntryId] = useState<Record<string, string>>(
@@ -667,7 +634,7 @@ export default function ReconcilePage() {
   const [bankHashesWithNeonClaim, setBankHashesWithNeonClaim] = useState<Set<string>>(new Set());
   const [transferClaimStatusByRowId, setTransferClaimStatusByRowId] =
     useState<TransferClaimStatusByRowId>({});
-  /** Merged raw CSV rows per account — used to re-run /match for every account after a transfer leg claim. */
+  /** Merged raw CSV rows per account â€” used to re-run /match for every account after a transfer leg claim. */
   const statementCsvRowsByAccountRef = useRef<Record<string, string[][]>>({});
   const [quickAdd, setQuickAdd] = useState<QuickAddState>({
     open: false,
@@ -754,14 +721,14 @@ export default function ReconcilePage() {
   );
   const [loadingOlderMatches, setLoadingOlderMatches] = useState(false);
 
-  // Bulk Approve state — Phase 6. Multi-select for the standing review queue.
+  // Bulk Approve state â€” Phase 6. Multi-select for the standing review queue.
   type BulkFilter = "all" | "needs_expense" | "high_confidence" | "transfers" | "suggested" | "income";
   const [bulkFilter, setBulkFilter] = useState<BulkFilter>("all");
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
   const [bulkApproving, setBulkApproving] = useState(false);
   const [bulkError, setBulkError] = useState("");
 
-  // Merchant Memory state — Phase 4.
+  // Merchant Memory state â€” Phase 4.
   type MemoryEntry = {
     fingerprint: string;
     bankAccountName: string;
@@ -784,7 +751,7 @@ export default function ReconcilePage() {
     forgettingKey: null,
   });
 
-  // Activity Log state — Phase 3.
+  // Activity Log state â€” Phase 3.
   type ActivityEntry = {
     id: string;
     occurredAt: string;
@@ -833,7 +800,7 @@ export default function ReconcilePage() {
         data.matchesByAccount && typeof data.matchesByAccount === "object" && !Array.isArray(data.matchesByAccount)
           ? data.matchesByAccount
           : {};
-      setMatchesByAccount(mergeWellsFargoBucketIntoChecking(fetched));
+      setMatchesByAccount(fetched);
       setMatchCacheSinceDate(nextSince);
     } catch {
       // Non-fatal; user can retry.
@@ -1111,7 +1078,7 @@ export default function ReconcilePage() {
           `Approved ${successful.length} of ${matchesToApprove.length}. ${failures.length} failed: ${failures
             .slice(0, 3)
             .map((f) => f.reason)
-            .join("; ")}${failures.length > 3 ? "…" : ""}`,
+            .join("; ")}${failures.length > 3 ? "â€¦" : ""}`,
         );
       }
     },
@@ -1173,70 +1140,12 @@ export default function ReconcilePage() {
 
         if (cancelled) return;
 
-        const neonHasData = Object.keys(neonMatches).length > 0;
+        // The old localStorage -> Neon migration is gone. It read an unscoped
+        // key, so on a shared browser it would have pushed one user's cached
+        // reconciliation state into another user's account. Neon is the only
+        // source of truth now.
 
-        if (!neonHasData && typeof window !== "undefined") {
-          const raw = window.localStorage.getItem(RECONCILE_STORAGE_KEY);
-          if (raw) {
-            try {
-              const parsed = JSON.parse(raw) as {
-                selectedAccount?: string;
-                activeTab?: string;
-                matchesByAccount?: Record<string, MatchResult[]>;
-                statementCsvRowsByAccount?: Record<string, unknown>;
-              };
-
-              const localMatches =
-                parsed.matchesByAccount && typeof parsed.matchesByAccount === "object" && !Array.isArray(parsed.matchesByAccount)
-                  ? (parsed.matchesByAccount as Record<string, MatchResult[]>)
-                  : {};
-              const localCsv = parseStoredStatementCsvRows(parsed.statementCsvRowsByAccount);
-              const hasLocalData = Object.values(localMatches).some((arr) => arr.length > 0);
-
-              if (hasLocalData) {
-                let allSucceeded = true;
-                for (const [accountName, matches] of Object.entries(localMatches)) {
-                  if (matches.length > 0) {
-                    try {
-                      await saveMatchCacheToNeon(accountName, matches);
-                    } catch {
-                      allSucceeded = false;
-                    }
-                  }
-                }
-                for (const [accountName, rows] of Object.entries(localCsv)) {
-                  if (rows.length > 0) {
-                    try {
-                      await saveCsvRowsToNeon(accountName, rows);
-                    } catch {
-                      allSucceeded = false;
-                    }
-                  }
-                }
-
-                if (cancelled) return;
-
-                if (allSucceeded) {
-                  window.localStorage.removeItem(RECONCILE_STORAGE_KEY);
-                }
-
-                neonMatches = localMatches;
-                neonCsvRows = localCsv;
-              }
-
-              if (parsed.selectedAccount && ACCOUNT_OPTIONS.includes(parsed.selectedAccount as AccountOption)) {
-                setSelectedAccount(parsed.selectedAccount as AccountOption);
-              }
-              if (typeof parsed.activeTab === "string" && parsed.activeTab.trim()) {
-                setActiveTab(parsed.activeTab);
-              }
-            } catch {
-              // Ignore corrupted localStorage during migration.
-            }
-          }
-        }
-
-        setMatchesByAccount(mergeWellsFargoBucketIntoChecking(neonMatches));
+        setMatchesByAccount(neonMatches);
         statementCsvRowsByAccountRef.current = neonCsvRows;
       } catch {
         // Non-fatal; page works with empty state.
@@ -1249,11 +1158,7 @@ export default function ReconcilePage() {
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    setMatchesByAccount((prev) => mergeWellsFargoBucketIntoChecking(prev));
-  }, [matchesByAccount[LEGACY_WF_PROFILE_BUCKET]?.length]);
-
-  // localStorage persistence removed — Neon is the source of truth for matchesByAccount and CSV rows.
+  // localStorage persistence removed â€” Neon is the source of truth for matchesByAccount and CSV rows.
 
   useEffect(() => {
     let cancelled = false;
@@ -1319,50 +1224,11 @@ export default function ReconcilePage() {
       }
     }
 
-    async function migrateLegacyLocalUploadedFiles() {
-      if (typeof window === "undefined") return;
-      const migrationKey = "reconcile-uploaded-files-migrated-v1";
-      if (window.localStorage.getItem(migrationKey) === "1") return;
-      try {
-        const raw = window.localStorage.getItem(RECONCILE_STORAGE_KEY);
-        if (!raw) {
-          window.localStorage.setItem(migrationKey, "1");
-          return;
-        }
-        const parsed = JSON.parse(raw) as { uploadedFilesByAccount?: Record<string, unknown> };
-        const legacy = parsed.uploadedFilesByAccount;
-        if (!legacy || typeof legacy !== "object" || Array.isArray(legacy)) {
-          window.localStorage.setItem(migrationKey, "1");
-          return;
-        }
-
-        const writes: Promise<Response>[] = [];
-        for (const [accountName, files] of Object.entries(legacy)) {
-          if (!Array.isArray(files)) continue;
-          for (const file of files) {
-            const fileName = String(file).trim();
-            if (!fileName) continue;
-            writes.push(
-              fetch("/api/reconciliation/uploaded-files", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ accountName, fileName }),
-              }),
-            );
-          }
-        }
-        if (writes.length > 0) {
-          await Promise.all(writes);
-          await loadUploadedFilesFromNeon();
-        }
-        window.localStorage.setItem(migrationKey, "1");
-      } catch {
-        // Retry migration next load if parsing/network fails.
-      }
-    }
+    // The legacy localStorage upload-history migration was removed with the
+    // rest of the unscoped-cache reads: it would have replayed one user's file
+    // history into whoever happened to be signed in.
 
     void loadUploadedFilesFromNeon();
-    void migrateLegacyLocalUploadedFiles();
     return () => {
       cancelled = true;
     };
@@ -1417,19 +1283,15 @@ export default function ReconcilePage() {
   const allMatches = useMemo(() => Object.values(matchesByAccount).flat(), [matchesByAccount]);
 
   const tabAccounts = useMemo(() => {
-    const uploaded = Object.keys(matchesByAccount).filter((a) => a !== LEGACY_WF_PROFILE_BUCKET);
-    const merged = [...ACCOUNT_OPTIONS];
-    for (const account of uploaded) {
-      if (!merged.includes(account as AccountOption)) merged.push(account as AccountOption);
+    // The user's accounts, plus any account id that still has stored matches
+    // (e.g. an archived account) so its rows stay reachable.
+    const merged: AccountOption[] = activeAccounts.map((a) => a.id);
+    for (const account of Object.keys(matchesByAccount)) {
+      if (!merged.includes(account)) merged.push(account);
     }
     return merged;
   }, [matchesByAccount]);
 
-  useEffect(() => {
-    if (activeTab === LEGACY_WF_PROFILE_BUCKET) {
-      setActiveTab("WF Checking");
-    }
-  }, [activeTab]);
 
   const statementRowsByAccount = useMemo(() => {
     const byAccount: Record<string, MatchResult[]> = {};
@@ -1450,7 +1312,7 @@ export default function ReconcilePage() {
     // balance). The copies share a date/amount/description, so they collapse to the
     // same base hash but get distinct "-2"/"-3" disambiguation suffixes. The original
     // copy is claimed/processed (and shows in the matched section); the suffixed copy
-    // is unclaimed and would otherwise reappear here as unmatched — the same bank
+    // is unclaimed and would otherwise reappear here as unmatched â€” the same bank
     // transaction showing up in both sections. Strip the suffix to compare identity.
     const baseHash = (hash: string) => hash.replace(/-\d+$/, "");
     const byAccount: Record<string, MatchResult[]> = {};
@@ -1484,7 +1346,7 @@ export default function ReconcilePage() {
       }
 
       // Suppress pending rows that duplicate a resolved row, but only up to the
-      // number of resolved copies — so genuine duplicate purchases that both still
+      // number of resolved copies â€” so genuine duplicate purchases that both still
       // need matching are preserved.
       const consumed = new Map<string, number>();
       byAccount[account] = rows.filter((match) => {
@@ -1631,7 +1493,7 @@ export default function ReconcilePage() {
         source: "Expenses",
         dateValue,
         title: row.description || row.expenseType || "Expense row",
-        subtitle: `${row.account ?? "No account"} • ${fmtDate(dateValue)}`,
+        subtitle: `${row.account ?? "No account"} â€¢ ${fmtDate(dateValue)}`,
         amount: Number(row.amount ?? 0),
         isCompleted: claimed || tiedByExactMatch || autoCompleted || userDismissed,
         expenseAccount: row.account?.trim() || undefined,
@@ -1643,7 +1505,7 @@ export default function ReconcilePage() {
       const status = rowId ? transferClaimStatusByRowId[rowId] : undefined;
       const claimed = rowId ? claimedRowKeys.has(claimKey("Transfers", rowId)) : false;
       const dateValue = sheetTransferDateRaw(row);
-      const title = `${row.transferFrom || "—"} → ${row.transferTo || "—"}`;
+      const title = `${row.transferFrom || "â€”"} â†’ ${row.transferTo || "â€”"}`;
       const autoCompleted = autoCompletedTransferSignatures.has(
         buildTransferSignature(
           Number(row.amount ?? 0),
@@ -1659,7 +1521,7 @@ export default function ReconcilePage() {
         source: "Transfers",
         dateValue,
         title,
-        subtitle: `Transfer • ${fmtDate(dateValue)}`,
+        subtitle: `Transfer â€¢ ${fmtDate(dateValue)}`,
         amount: Number(row.amount ?? 0),
         isCompleted: claimed || Boolean(status?.isComplete) || autoCompleted || userDismissed,
         transferFrom: row.transferFrom,
@@ -1679,7 +1541,7 @@ export default function ReconcilePage() {
     userDismissedRowKeys,
   ]);
 
-  /** Unprocessed bank lines across accounts — includes exact_match etc., not only manual-review rows.
+  /** Unprocessed bank lines across accounts â€” includes exact_match etc., not only manual-review rows.
    *  Also includes "processed without claim" rows (hash in processedHashes but no claim link) because
    *  those show in the review queue and should be selectable for re-linking. */
   const allUnprocessedStatementMatchesForClaim = useMemo(() => {
@@ -1755,7 +1617,7 @@ export default function ReconcilePage() {
     return sortByNewestDate(list, (m) => m.bankTransaction.date);
   }, [statementAutoMatchedRowsByAccount, statementCompletedRowsByAccount, tabAccounts]);
 
-  /** Real sheet ↔ bank pairs only (excludes “approve checkmark” / dismiss with no expense or transfer row). */
+  /** Real sheet â†” bank pairs only (excludes â€œapprove checkmarkâ€ / dismiss with no expense or transfer row). */
   const allHomeUserLinkedMatchedMatches = useMemo(
     () => allHomeMatchedMatches.filter((m) => hasLinkedOrClaimedEntry(m, bankHashesWithNeonClaim)),
     [allHomeMatchedMatches, bankHashesWithNeonClaim],
@@ -1971,15 +1833,15 @@ export default function ReconcilePage() {
         })
         .map((row) => {
           const rowId = (row.transferRowId ?? "").trim();
-          const from = row.transferFrom?.trim() || "—";
-          const to = row.transferTo?.trim() || row.description?.trim() || "—";
+          const from = row.transferFrom?.trim() || "â€”";
+          const to = row.transferTo?.trim() || row.description?.trim() || "â€”";
           return {
             key: claimKey("Transfers", rowId),
             sheetName: "Transfers" as const,
             rowId,
             amount: Math.abs(Number(row.amount)),
             expenseType: "Transfer",
-            description: `${from} → ${to}`,
+            description: `${from} â†’ ${to}`,
             timestamp: row.timestamp,
             date: row.date,
             account: undefined,
@@ -2083,17 +1945,15 @@ export default function ReconcilePage() {
       error: "",
     });
     try {
-      const [rows, transfers, latestBroker, anchors] = await Promise.all([
+      const [rows, transfers, anchors] = await Promise.all([
         getExpenses(),
         getTransfers(),
-        getLatestSnaptradeBalances(),
         getAccountAnchors(),
       ]);
-      const balances = computeAccountBalances(rows, transfers, latestBroker.balances ?? {}, anchors);
-      const key = mapAccountNameToBalanceKey(selectedAccount);
-      const balance = balances[key];
+      const balances = computeAccountBalances(rows, transfers, anchors, activeAccounts);
+      const balance = balances[selectedAccount];
       if (!Number.isFinite(balance)) {
-        throw new Error(`Could not determine current balance for ${selectedAccount}.`);
+        throw new Error(`Could not determine current balance for ${labelFor(selectedAccount)}.`);
       }
       setAnchorModal((prev) => ({
         ...prev,
@@ -2168,7 +2028,7 @@ export default function ReconcilePage() {
         }),
       });
     } catch {
-      // Memory recording is non-fatal — don't block the user's claim flow.
+      // Memory recording is non-fatal â€” don't block the user's claim flow.
     }
   }, []);
 
@@ -2199,7 +2059,7 @@ export default function ReconcilePage() {
 
   // Auto-approve an exact_match by persisting its claim link (not just the
   // processed hash). Without the claim link the transaction becomes "processed
-  // but unclaimed" — on the next reload/re-match the matcher short-circuits it to
+  // but unclaimed" â€” on the next reload/re-match the matcher short-circuits it to
   // "processed" and stops suggesting the sheet row, so it resurfaces as
   // "No candidate match". Mirrors the claim creation in handleApprove.
   // Returns the claim key (`"Expenses:rowId"`) when a link was created, else null.
@@ -2212,7 +2072,7 @@ export default function ReconcilePage() {
       const expenseRowId = String(match.matchedSheetExpense?.rowId ?? "").trim();
 
       // Only expense matches carry a Row ID here. Transfer/restored matches keep
-      // the prior behaviour (mark processed only — they already have claim links).
+      // the prior behaviour (mark processed only â€” they already have claim links).
       if (!expenseRowId) {
         await persistProcessedHash(tx, { csvUploadId: meta?.csvUploadId, actor: "auto_match" });
         return null;
@@ -2412,7 +2272,7 @@ export default function ReconcilePage() {
                 amount: Math.abs(Number(exp.amount)),
                 timestamp: exp.timestamp ?? selected.bankTransaction.date,
                 description: exp.description ?? "",
-                expenseType: exp.expenseType ?? "—",
+                expenseType: exp.expenseType ?? "â€”",
                 account: exp.account ?? selected.bankTransaction.accountName,
                 rowId: exp.rowId,
                 date: exp.date,
@@ -2583,7 +2443,7 @@ export default function ReconcilePage() {
         (match) =>
           match.matchType === "exact_match" &&
           hasLinkedUserInputtedEntry(match) &&
-          // Skip rows restored from existing claim links — already claimed.
+          // Skip rows restored from existing claim links â€” already claimed.
           !bankHashSetRematch.has(match.bankTransaction.hash),
       );
       const newAutoHashes: string[] = [];
@@ -2627,7 +2487,7 @@ export default function ReconcilePage() {
         return next;
       });
     }
-    setMatchesByAccount((prev) => mergeWellsFargoBucketIntoChecking({ ...prev, ...nextMatches }));
+    setMatchesByAccount((prev) => ({ ...prev, ...nextMatches }));
 
     // Persist updated match results to Neon (replace mode per account).
     const rematchErrors: string[] = [];
@@ -2714,7 +2574,7 @@ export default function ReconcilePage() {
                           amount: Math.abs(Number(exp.amount)),
                           timestamp: exp.timestamp ?? tx.date,
                           description: exp.description ?? "",
-                          expenseType: exp.expenseType ?? "—",
+                          expenseType: exp.expenseType ?? "â€”",
                           account: exp.account ?? tx.accountName,
                           rowId: exp.rowId,
                           date: exp.date,
@@ -2723,7 +2583,7 @@ export default function ReconcilePage() {
                           amount: Math.abs(userEntry.amount),
                           timestamp: userEntry.dateValue || tx.date,
                           description: userEntry.title,
-                          expenseType: "—",
+                          expenseType: "â€”",
                           account: tx.accountName,
                           rowId: expenseRowIdFromEntry,
                           date: userEntry.dateValue || tx.date,
@@ -2837,8 +2697,8 @@ export default function ReconcilePage() {
                   matchedSheetTransfer: {
                     amount: amountSignedForTransfer,
                     transferRowId: transferRowIdFromEntry,
-                    transferFrom: tr?.transferFrom ?? userEntry.transferFrom ?? "—",
-                    transferTo: tr?.transferTo ?? userEntry.transferTo ?? "—",
+                    transferFrom: tr?.transferFrom ?? userEntry.transferFrom ?? "â€”",
+                    transferTo: tr?.transferTo ?? userEntry.transferTo ?? "â€”",
                     timestamp: tr?.timestamp ?? userEntry.dateValue ?? tx.date,
                     date: tr?.date ?? userEntry.dateValue ?? tx.date,
                   },
@@ -2929,7 +2789,7 @@ export default function ReconcilePage() {
                     amount: Math.abs(Number(exp.amount)),
                     timestamp: exp.timestamp ?? tx.date,
                     description: exp.description ?? "",
-                    expenseType: exp.expenseType ?? "—",
+                    expenseType: exp.expenseType ?? "â€”",
                     account: exp.account ?? tx.accountName,
                     rowId: exp.rowId,
                     date: exp.date,
@@ -3131,7 +2991,7 @@ export default function ReconcilePage() {
     async (accountName: string) => {
       if (typeof window !== "undefined") {
         const ok = window.confirm(
-          `Remove already-reconciled duplicate statement rows for "${accountName}"?\n\nThis deletes redundant copies of transactions that are already matched or processed — the leftovers from re-importing overlapping statements. Your matches, claims, and genuinely-unmatched transactions are not affected.`,
+          `Remove already-reconciled duplicate statement rows for "${accountName}"?\n\nThis deletes redundant copies of transactions that are already matched or processed â€” the leftovers from re-importing overlapping statements. Your matches, claims, and genuinely-unmatched transactions are not affected.`,
         );
         if (!ok) return;
       }
@@ -3166,7 +3026,7 @@ export default function ReconcilePage() {
             for (const [acct, rows] of Object.entries(prev)) {
               next[acct] = rows.filter((m) => !removedSet.has(m.bankTransaction.hash));
             }
-            return mergeWellsFargoBucketIntoChecking(next);
+            return next;
           });
         }
         if (typeof window !== "undefined") {
@@ -3294,7 +3154,7 @@ export default function ReconcilePage() {
                 };
               });
             }
-            return mergeWellsFargoBucketIntoChecking(next);
+            return next;
           });
         };
         try {
@@ -3545,45 +3405,17 @@ export default function ReconcilePage() {
       const tx = selected.bankTransaction;
       const quickAddRowId = quickAdd.rowId;
 
-      // Snapshot the current sheet row ids so we can identify the row we're about to
-      // create by set-difference — robust even when an identical older expense exists.
-      const beforeRowIds = new Set(
-        sheetExpenses.map((r) => (r.rowId ?? "").trim()).filter(Boolean),
-      );
-
-      await submitExpense({
+      // POST returns the created row, id included. (This used to be a
+      // poll-and-diff loop: Apps Script's response carried no row id, so the
+      // page re-fetched every expense up to 3x and took a set-difference.)
+      const createdRow = await submitExpense({
         expenseType,
         amount: amountNum,
         description,
         date: tx.date,
+        account: selectedAccount || undefined,
       });
-
-      // Find the newly-created sheet row so we can create a claim link. Apps Script
-      // does not return the row id, so we re-fetch and pick the row whose id is *new*
-      // (falling back to the newest content match). Retry a few times to tolerate
-      // Google Sheets propagation / Row-ID assignment lag.
-      const matchesContent = (row: SheetRow) =>
-        toCents(Math.abs(Number(row.amount ?? 0))) === toCents(amountNum) &&
-        (row.expenseType ?? "").trim() === expenseType &&
-        (row.description ?? "").trim().toLowerCase() === description.toLowerCase();
-      let createdRow: SheetRow | undefined;
-      for (let attempt = 0; attempt < 3 && !createdRow; attempt++) {
-        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 700));
-        try {
-          const freshExpenses = await getExpenses();
-          const candidates = freshExpenses.filter(matchesContent);
-          const found =
-            candidates.find(
-              (row) => (row.rowId ?? "").trim() && !beforeRowIds.has((row.rowId ?? "").trim()),
-            ) ?? [...candidates].reverse().find((row) => (row.rowId ?? "").trim());
-          if (found) {
-            createdRow = found;
-            setSheetExpenses(freshExpenses);
-          }
-        } catch {
-          // Best-effort; retry, then fall through to the re-match recovery below.
-        }
-      }
+      setSheetExpenses((prev) => [...prev, createdRow]);
 
       const linkedRowId = (createdRow?.rowId ?? "").trim();
       let linked = false;
@@ -3639,7 +3471,7 @@ export default function ReconcilePage() {
             }
             return next;
           });
-          // Persist the linked match so a reload restores the connected pair — the
+          // Persist the linked match so a reload restores the connected pair â€” the
           // match cache is the only source hydrated on reload (no re-match runs),
           // so an unmatched-origin row without this write degrades to bare "Processed".
           try {
@@ -3659,7 +3491,7 @@ export default function ReconcilePage() {
         // We created the sheet expense but couldn't capture its row id / link it.
         // Recover by re-matching from the sheet: the new expense shares this bank
         // line's amount and date, so it auto-claims as an exact match (creating the
-        // claim link and persisting the cache). Do NOT mark the hash processed here —
+        // claim link and persisting the cache). Do NOT mark the hash processed here â€”
         // a processed hash short-circuits the matcher and would orphan the row.
         await rematchAllStoredAccounts();
         void refreshBankHashesWithNeonClaim();
@@ -4069,13 +3901,29 @@ export default function ReconcilePage() {
       if (!file) return;
       setUploadError("");
       setActionError("");
+
+      if (!selectedAccount) {
+        setUploadError("Pick an account before uploading a statement.");
+        return;
+      }
+
+      const parsedRows = await parseCsvFile(file).catch(() => [] as string[][]);
+      if (parsedRows.length === 0) {
+        setUploadError("CSV file has no data rows.");
+        return;
+      }
+
+      // First statement for this account: confirm the column mapping before
+      // anything is stored. Parsing with a wrong mapping would produce
+      // plausible-but-wrong hashes, and claims key off those.
+      if (!accountHasConfiguredParser(selectedAccount)) {
+        setCsvMapping({ accountId: selectedAccount, rows: parsedRows, pendingFile: file });
+        return;
+      }
+
       setIsUploading(true);
 
       try {
-        const parsedRows = await parseCsvFile(file);
-        if (parsedRows.length === 0) {
-          throw new Error("CSV file has no data rows.");
-        }
 
         // Tag every audit-log entry from this upload with a single UUID so future
         // CSV-cascade-delete (Phase 3 follow-up) can group them.
@@ -4220,7 +4068,7 @@ export default function ReconcilePage() {
           (match) =>
             match.matchType === "exact_match" &&
             hasLinkedUserInputtedEntry(match) &&
-            // Skip rows restored from existing claim links — already claimed.
+            // Skip rows restored from existing claim links â€” already claimed.
             !bankHashSetUpload.has(match.bankTransaction.hash),
         );
         const autoApprovedHashes: string[] = [];
@@ -4246,11 +4094,10 @@ export default function ReconcilePage() {
           }),
         );
 
-        setMatchesByAccount((prev) =>
-          mergeWellsFargoBucketIntoChecking({
-            ...prev,
-            [selectedAccount]: mergeMatchArrays(prev[selectedAccount], data.matches),
-          }),
+        setMatchesByAccount((prev) => ({
+          ...prev,
+          [selectedAccount]: mergeMatchArrays(prev[selectedAccount], data.matches),
+        }),
         );
         // Persist match results to Neon. CSV rows were already stored by the
         // server-side merge above.
@@ -4315,13 +4162,13 @@ export default function ReconcilePage() {
         setIsUploading(false);
       }
     },
-    [persistAutoClaim, selectedAccount],
+    [persistAutoClaim, selectedAccount, accountHasConfiguredParser],
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     multiple: false,
-    // Accept CSV regardless of MIME type — Windows often reports text/plain or
+    // Accept CSV regardless of MIME type â€” Windows often reports text/plain or
     // application/vnd.ms-excel for .csv files, which would silently reject them.
     accept: {
       "text/csv": [".csv"],
@@ -4331,7 +4178,7 @@ export default function ReconcilePage() {
     },
     onDropRejected: (rejections) => {
       const firstName = rejections[0]?.file?.name ?? "file";
-      setUploadError(`"${firstName}" was rejected — make sure it is a .csv file.`);
+      setUploadError(`"${firstName}" was rejected â€” make sure it is a .csv file.`);
     },
   });
 
@@ -4356,12 +4203,48 @@ export default function ReconcilePage() {
   );
   const selectedAccountUploadedFiles = uploadedFilesByAccount[selectedAccount] ?? [];
 
-  if (neonStateLoading) {
+  if (neonStateLoading || accountsLoading) {
     return (
       <DashboardLayout>
         <div className="flex items-center justify-center py-32">
           <Loader2 className="h-8 w-8 animate-spin text-accent" />
-          <span className="ml-3 text-gray-400 text-lg">Loading reconciliation data…</span>
+          <span className="ml-3 text-gray-400 text-lg">Loading reconciliation dataâ€¦</span>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  // Reconciliation is meaningless without somewhere to put a statement, so send
+  // a brand-new user to set up their first account rather than showing them an
+  // empty dropdown and a dead upload zone.
+  if (activeAccounts.length === 0) {
+    return (
+      <DashboardLayout>
+        <div className="max-w-md mx-auto mt-16 rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
+          <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark">
+            <h1 className="text-white font-semibold">Add an account first</h1>
+          </div>
+          <div className="p-4 space-y-3">
+            <p className="text-sm text-gray-300">
+              Reconciling matches your bank statements against the expenses you&apos;ve logged.
+              Create an account — checking, credit card, whatever you use — and you&apos;ll be able
+              to upload its statement here.
+            </p>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/settings/accounts"
+                className="inline-block rounded-md bg-[#50C878] px-4 py-2 font-semibold text-charcoal hover:brightness-110 transition"
+              >
+                Set up accounts
+              </Link>
+              <Link
+                href="/guide/reconcile"
+                className="text-sm text-gray-300 hover:text-white transition"
+              >
+                How this works
+              </Link>
+            </div>
+          </div>
         </div>
       </DashboardLayout>
     );
@@ -4373,6 +4256,12 @@ export default function ReconcilePage() {
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h1 className="text-2xl font-semibold text-white">Reconcile</h1>
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            <Link
+              href="/guide/reconcile"
+              className="px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-sm hover:text-white hover:bg-[#2d2d2d] transition-colors"
+            >
+              How this works
+            </Link>
             <button
               type="button"
               onClick={openResetReconcileModal}
@@ -4416,7 +4305,7 @@ export default function ReconcilePage() {
                 setViewMode("accountDetail");
                 history.replaceState(null, "", `${window.location.pathname}?account=${encodeURIComponent(account)}`);
               }}
-              options={ACCOUNT_DROPDOWN_OPTIONS}
+              options={accountDropdownOptions}
               className="min-w-[10rem]"
               aria-label="Account"
             />
@@ -4439,11 +4328,12 @@ export default function ReconcilePage() {
                 {isDragActive ? "Drop the CSV here..." : "Drop a CSV here, or click to upload"}
               </p>
               <p className="text-xs text-gray-500 mt-1">
-                Account profile: <span className="text-gray-300">{selectedAccount}</span>
+                Account: <span className="text-gray-300">{labelFor(selectedAccount)}</span>
               </p>
               {!accountHasConfiguredParser(selectedAccount) && (
                 <p className="text-xs text-yellow-300/90 mt-1">
-                  CSV parser not configured yet for this account. Upload may return no transactions.
+                  No CSV format set up yet â€” drop a file and you&apos;ll be asked to map its
+                  columns once.
                 </p>
               )}
               {isUploading && (
@@ -4497,7 +4387,7 @@ export default function ReconcilePage() {
                           onClick={() => void handleClearFile(selectedAccount, fileName)}
                           className="flex-shrink-0 text-gray-500 hover:text-red-400 transition-colors"
                         >
-                          ✕
+                          âœ•
                         </button>
                       </div>
                     ))}
@@ -4534,7 +4424,7 @@ export default function ReconcilePage() {
                       type="search"
                       value={homeSearchQuery}
                       onChange={(e) => setHomeSearchQuery(e.target.value)}
-                      placeholder="Search incomplete & matched lists (user text, bank description, account…)"
+                      placeholder="Search incomplete & matched lists (user text, bank description, accountâ€¦)"
                       className="w-full px-3 py-1.5 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
                     />
                   </div>
@@ -4549,7 +4439,7 @@ export default function ReconcilePage() {
                       onChange={(v) =>
                         setHomeAccountFilter(v as AccountOption | typeof ALL_ACCOUNTS_OPTION)
                       }
-                      options={ACCOUNT_DROPDOWN_OPTIONS}
+                      options={accountDropdownOptions}
                       className="min-w-[10rem]"
                       aria-label="Filter by account"
                     />
@@ -4588,14 +4478,14 @@ export default function ReconcilePage() {
                                 <>
                                   <p className="text-yellow-300 text-sm truncate">{entry.title}</p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    {entry.subtitle} • {fmtMoney(entry.amount)}
+                                    {entry.subtitle} â€¢ {fmtMoney(entry.amount)}
                                   </p>
                                 </>
                               ) : (
                                 <>
                                   <p className="text-green-300 text-sm truncate">{entry.title}</p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    {entry.subtitle} • {fmtMoney(entry.amount)}
+                                    {entry.subtitle} â€¢ {fmtMoney(entry.amount)}
                                   </p>
                                 </>
                               )}
@@ -4606,9 +4496,9 @@ export default function ReconcilePage() {
                               </p>
                               {tx ? (
                                 <>
-                                  <p className="text-gray-200 font-medium truncate">{tx.description || "—"}</p>
+                                  <p className="text-gray-200 font-medium truncate">{tx.description || "â€”"}</p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    {tx.accountName} • {fmtDate(tx.date)} • {fmtMoney(tx.amount)}
+                                    {labelFor(tx.accountName)} â€¢ {fmtDate(tx.date)} â€¢ {fmtMoney(tx.amount)}
                                   </p>
                                 </>
                               ) : (
@@ -4701,7 +4591,7 @@ export default function ReconcilePage() {
                 <p className="text-xs text-gray-500 mb-3">
                   When a suggested row has a sheet Row ID, the checkmark saves a real Neon link between that expense
                   or transfer and the bank line (same as Claim). If there is no Row ID, the checkmark only marks the
-                  statement processed—see{" "}
+                  statement processedâ€”see{" "}
                   <span className="text-gray-400">Statement: closed without sheet row</span>. Use{" "}
                   <span className="text-gray-400">Disconnect</span> to undo a link and match again.
                 </p>
@@ -4732,31 +4622,31 @@ export default function ReconcilePage() {
                               ) : match.matchedSheetExpense ? (
                                 <>
                                   <p className="text-green-300 text-sm truncate">
-                                    {match.matchedSheetExpense.description || "—"}
+                                    {match.matchedSheetExpense.description || "â€”"}
                                   </p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    {(match.matchedSheetExpense.expenseType ?? "—")} •{" "}
+                                    {(match.matchedSheetExpense.expenseType ?? "â€”")} â€¢{" "}
                                     {fmtDate(
                                       match.matchedSheetExpense.timestamp ?? match.matchedSheetExpense.date,
                                     )}{" "}
-                                    • {fmtMoney(match.matchedSheetExpense.amount)}
+                                    â€¢ {fmtMoney(match.matchedSheetExpense.amount)}
                                     {match.matchedSheetExpense.account
-                                      ? ` • ${match.matchedSheetExpense.account}`
+                                      ? ` â€¢ ${match.matchedSheetExpense.account}`
                                       : ""}
                                   </p>
                                 </>
                               ) : match.matchedSheetTransfer ? (
                                 <>
                                   <p className="text-green-300 text-sm truncate">
-                                    {(match.matchedSheetTransfer.transferFrom ?? "—")} →{" "}
-                                    {(match.matchedSheetTransfer.transferTo ?? "—")}
+                                    {(match.matchedSheetTransfer.transferFrom ?? "â€”")} â†’{" "}
+                                    {(match.matchedSheetTransfer.transferTo ?? "â€”")}
                                   </p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    Transfer •{" "}
+                                    Transfer â€¢{" "}
                                     {fmtDate(
                                       match.matchedSheetTransfer.timestamp ?? match.matchedSheetTransfer.date,
                                     )}{" "}
-                                    • {fmtMoney(match.matchedSheetTransfer.amount)}
+                                    â€¢ {fmtMoney(match.matchedSheetTransfer.amount)}
                                   </p>
                                 </>
                               ) : (
@@ -4767,9 +4657,9 @@ export default function ReconcilePage() {
                               <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
                                 Bank Transaction
                               </p>
-                              <p className="text-gray-200 truncate">{tx.description || "—"}</p>
+                              <p className="text-gray-200 truncate">{tx.description || "â€”"}</p>
                               <p className="text-xs text-gray-400 mt-0.5">
-                                {tx.accountName} • {fmtDate(tx.date)} • {fmtMoney(tx.amount)}
+                                {labelFor(tx.accountName)} â€¢ {fmtDate(tx.date)} â€¢ {fmtMoney(tx.amount)}
                               </p>
                             </div>
                             <div className="shrink-0 flex items-start pt-0.5">
@@ -4833,7 +4723,7 @@ export default function ReconcilePage() {
                                   </p>
                                 ) : (
                                   <p className="text-xs text-gray-500">
-                                    Processed on statement only — no linked expense or transfer row in the matcher.
+                                    Processed on statement only â€” no linked expense or transfer row in the matcher.
                                   </p>
                                 )}
                               </div>
@@ -4841,9 +4731,9 @@ export default function ReconcilePage() {
                                 <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
                                   Bank transaction
                                 </p>
-                                <p className="text-gray-200 truncate">{tx.description || "—"}</p>
+                                <p className="text-gray-200 truncate">{tx.description || "â€”"}</p>
                                 <p className="text-xs text-gray-400 mt-0.5">
-                                  {tx.accountName} • {fmtDate(tx.date)} • {fmtMoney(tx.amount)}
+                                  {labelFor(tx.accountName)} â€¢ {fmtDate(tx.date)} â€¢ {fmtMoney(tx.amount)}
                                 </p>
                               </div>
                               <div className="shrink-0 flex items-start pt-0.5">
@@ -4898,14 +4788,14 @@ export default function ReconcilePage() {
                               <>
                                 <p className="text-yellow-300 text-sm truncate">{entry.title}</p>
                                 <p className="text-xs text-gray-400 mt-0.5">
-                                  {entry.subtitle} • {fmtMoney(entry.amount)}
+                                  {entry.subtitle} â€¢ {fmtMoney(entry.amount)}
                                 </p>
                               </>
                             ) : (
                               <>
                                 <p className="text-green-300 text-sm truncate">{entry.title}</p>
                                 <p className="text-xs text-gray-400 mt-0.5">
-                                  {entry.subtitle} • {fmtMoney(entry.amount)}
+                                  {entry.subtitle} â€¢ {fmtMoney(entry.amount)}
                                 </p>
                               </>
                             )}
@@ -4915,7 +4805,7 @@ export default function ReconcilePage() {
                               Note
                             </p>
                             <p className="text-amber-200/90 text-sm whitespace-pre-wrap break-words">
-                              {userDismissalNotesByEntryId[entry.id] ?? "—"}
+                              {userDismissalNotesByEntryId[entry.id] ?? "â€”"}
                             </p>
                           </div>
                         </div>
@@ -4948,13 +4838,13 @@ export default function ReconcilePage() {
                       className="rounded-lg border border-charcoal-dark bg-[#2c2c2c] px-3 py-3"
                     >
                       <div className="flex items-center justify-between gap-3">
-                        <p className="text-gray-100 font-medium">{account}</p>
+                        <p className="text-gray-100 font-medium">{labelFor(account)}</p>
                         <button
                           type="button"
                           onClick={() => {
                             setActiveTab(account);
-                            if (ACCOUNT_OPTIONS.includes(account as AccountOption)) {
-                              setSelectedAccount(account as AccountOption);
+                            if (accountIds.has(account)) {
+                              setSelectedAccount(account);
                             }
                             setViewMode("accountDetail");
                             history.replaceState(null, "", `${window.location.pathname}?account=${encodeURIComponent(account)}`);
@@ -4977,7 +4867,7 @@ export default function ReconcilePage() {
           <>
             <section className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
               <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3">
-                <h2 className="text-white font-semibold">{activeTab}: Unmatched / Suggested</h2>
+                <h2 className="text-white font-semibold">{labelFor(activeTab)}: Unmatched / Suggested</h2>
                 <span className="text-xs text-gray-300">{activeReviewRows.length}</span>
                 <button
                   type="button"
@@ -5074,7 +4964,7 @@ export default function ReconcilePage() {
                         {bulkApproving ? (
                           <>
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            Approving {bulkSelected.size}…
+                            Approving {bulkSelected.size}â€¦
                           </>
                         ) : (
                           <>Approve {bulkSelected.size} selected</>
@@ -5102,7 +4992,7 @@ export default function ReconcilePage() {
                           }
                           className="px-3 py-1.5 rounded-lg bg-accent/20 border border-accent/40 text-accent text-xs font-medium hover:bg-accent/30 transition-colors shrink-0"
                         >
-                          View matched ↓
+                          View matched â†“
                         </button>
                       </div>
                     )}
@@ -5147,9 +5037,9 @@ export default function ReconcilePage() {
                               <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
                                 Bank Transaction
                               </p>
-                              <p className="text-gray-200 font-medium truncate">{tx.description || "—"}</p>
+                              <p className="text-gray-200 font-medium truncate">{tx.description || "â€”"}</p>
                               <p className="text-xs text-gray-400 mt-0.5">
-                                {tx.accountName} • {fmtDate(tx.date)} • {fmtMoney(tx.amount)}
+                                {labelFor(tx.accountName)} â€¢ {fmtDate(tx.date)} â€¢ {fmtMoney(tx.amount)}
                               </p>
                             </div>
                             <div className="min-w-0">
@@ -5159,19 +5049,19 @@ export default function ReconcilePage() {
                               {(match.matchType === "questionable_match_fuzzy" || match.matchType === "suggested_match") && match.matchedSheetExpense ? (
                                 <>
                                   <p className={`text-sm truncate ${match.matchType === "suggested_match" ? "text-blue-300" : "text-yellow-300"}`}>
-                                    {match.matchedSheetExpense.description || "—"}
+                                    {match.matchedSheetExpense.description || "â€”"}
                                   </p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    {(match.matchedSheetExpense.expenseType ?? "—")} •{" "}
-                                    {fmtDate(match.matchedSheetExpense.timestamp ?? match.matchedSheetExpense.date)} •{" "}
+                                    {(match.matchedSheetExpense.expenseType ?? "â€”")} â€¢{" "}
+                                    {fmtDate(match.matchedSheetExpense.timestamp ?? match.matchedSheetExpense.date)} â€¢{" "}
                                     {fmtMoney(match.matchedSheetExpense.amount)}
                                     {match.matchedSheetExpense.account
-                                      ? ` • ${match.matchedSheetExpense.account}`
+                                      ? ` â€¢ ${match.matchedSheetExpense.account}`
                                       : ""}
                                   </p>
                                   {match.matchType === "suggested_match" && (
                                     <p className="text-[11px] text-blue-400/70 mt-0.5">
-                                      Suggested — approve to confirm
+                                      Suggested â€” approve to confirm
                                     </p>
                                   )}
                                 </>
@@ -5185,30 +5075,30 @@ export default function ReconcilePage() {
                                       match.matchType === "transfer" ? "text-green-300" : match.matchType === "suggested_match" ? "text-blue-300" : "text-yellow-300"
                                     }`}
                                   >
-                                    {(match.matchedSheetTransfer.transferFrom ?? "—")} →{" "}
-                                    {(match.matchedSheetTransfer.transferTo ?? "—")}
+                                    {(match.matchedSheetTransfer.transferFrom ?? "â€”")} â†’{" "}
+                                    {(match.matchedSheetTransfer.transferTo ?? "â€”")}
                                   </p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    Transfer •{" "}
+                                    Transfer â€¢{" "}
                                     {fmtDate(
                                       match.matchedSheetTransfer.timestamp ??
                                         match.matchedSheetTransfer.date,
                                     )}{" "}
-                                    • {fmtMoney(match.matchedSheetTransfer.amount)}
+                                    â€¢ {fmtMoney(match.matchedSheetTransfer.amount)}
                                   </p>
                                   <p className="text-[11px] text-gray-500 mt-0.5">
                                     Transfer Row ID: {match.matchedSheetTransfer.transferRowId ?? "missing"}
                                   </p>
                                   {match.matchType === "suggested_match" && (
                                     <p className="text-[11px] text-blue-400/70 mt-0.5">
-                                      Suggested — approve to confirm
+                                      Suggested â€” approve to confirm
                                     </p>
                                   )}
                                 </>
                               ) : match.unmatchedCategory === "income" ? (
-                                <p className="text-xs text-emerald-400/80">Income / deposit — no expense needed</p>
+                                <p className="text-xs text-emerald-400/80">Income / deposit â€” no expense needed</p>
                               ) : match.unmatchedCategory === "internal_transfer" ? (
-                                <p className="text-xs text-sky-400/80">Internal transfer — log in Transfers</p>
+                                <p className="text-xs text-sky-400/80">Internal transfer â€” log in Transfers</p>
                               ) : (
                                 <p className="text-xs text-gray-500">No candidate match</p>
                               )}
@@ -5271,7 +5161,7 @@ export default function ReconcilePage() {
 
             <section ref={matchedSectionRef} className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
               <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3">
-                <h2 className="text-white font-semibold">{activeTab}: Matched to sheet</h2>
+                <h2 className="text-white font-semibold">{labelFor(activeTab)}: Matched to sheet</h2>
                 <span className="text-xs text-gray-300">{activeUserLinkedMatchedRows.length}</span>
               </div>
               <div className="p-3 text-sm">
@@ -5298,9 +5188,9 @@ export default function ReconcilePage() {
                               <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
                                 Bank Transaction
                               </p>
-                              <p className="text-gray-200 truncate">{tx.description || "—"}</p>
+                              <p className="text-gray-200 truncate">{tx.description || "â€”"}</p>
                               <p className="text-xs text-gray-400 mt-0.5">
-                                {tx.accountName} • {fmtDate(tx.date)} • {fmtMoney(tx.amount)}
+                                {labelFor(tx.accountName)} â€¢ {fmtDate(tx.date)} â€¢ {fmtMoney(tx.amount)}
                               </p>
                             </div>
                             <div className="min-w-0">
@@ -5314,28 +5204,28 @@ export default function ReconcilePage() {
                               ) : match.matchedSheetExpense ? (
                                 <>
                                   <p className="text-green-300 text-sm truncate">
-                                    {match.matchedSheetExpense.description || "—"}
+                                    {match.matchedSheetExpense.description || "â€”"}
                                   </p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    {(match.matchedSheetExpense.expenseType ?? "—")} •{" "}
+                                    {(match.matchedSheetExpense.expenseType ?? "â€”")} â€¢{" "}
                                     {fmtDate(
                                       match.matchedSheetExpense.timestamp ?? match.matchedSheetExpense.date,
                                     )}{" "}
-                                    • {fmtMoney(match.matchedSheetExpense.amount)}
+                                    â€¢ {fmtMoney(match.matchedSheetExpense.amount)}
                                   </p>
                                 </>
                               ) : match.matchedSheetTransfer ? (
                                 <>
                                   <p className="text-green-300 text-sm truncate">
-                                    {(match.matchedSheetTransfer.transferFrom ?? "—")} →{" "}
-                                    {(match.matchedSheetTransfer.transferTo ?? "—")}
+                                    {(match.matchedSheetTransfer.transferFrom ?? "â€”")} â†’{" "}
+                                    {(match.matchedSheetTransfer.transferTo ?? "â€”")}
                                   </p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    Transfer •{" "}
+                                    Transfer â€¢{" "}
                                     {fmtDate(
                                       match.matchedSheetTransfer.timestamp ?? match.matchedSheetTransfer.date,
                                     )}{" "}
-                                    • {fmtMoney(match.matchedSheetTransfer.amount)}
+                                    â€¢ {fmtMoney(match.matchedSheetTransfer.amount)}
                                   </p>
                                 </>
                               ) : (
@@ -5370,7 +5260,7 @@ export default function ReconcilePage() {
             {activeStatementClosedOnlyRows.length > 0 && (
               <section className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
                 <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3">
-                  <h2 className="text-white font-semibold">{activeTab}: Closed on statement (no sheet link)</h2>
+                  <h2 className="text-white font-semibold">{labelFor(activeTab)}: Closed on statement (no sheet link)</h2>
                   <span className="text-xs text-gray-300">{activeStatementClosedOnlyRows.length}</span>
                 </div>
                 <div className="p-3 text-sm">
@@ -5393,9 +5283,9 @@ export default function ReconcilePage() {
                               <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
                                 Bank Transaction
                               </p>
-                              <p className="text-gray-200 truncate">{tx.description || "—"}</p>
+                              <p className="text-gray-200 truncate">{tx.description || "â€”"}</p>
                               <p className="text-xs text-gray-400 mt-0.5">
-                                {tx.accountName} • {fmtDate(tx.date)} • {fmtMoney(tx.amount)}
+                                {labelFor(tx.accountName)} â€¢ {fmtDate(tx.date)} â€¢ {fmtMoney(tx.amount)}
                               </p>
                             </div>
                             <div className="min-w-0">
@@ -5408,7 +5298,7 @@ export default function ReconcilePage() {
                                 </p>
                               ) : (
                                 <p className="text-xs text-gray-500">
-                                  Processed on statement only — no linked sheet row.
+                                  Processed on statement only â€” no linked sheet row.
                                 </p>
                               )}
                             </div>
@@ -5450,7 +5340,7 @@ export default function ReconcilePage() {
                 {loadingOlderMatches ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    Loading older…
+                    Loading olderâ€¦
                   </>
                 ) : (
                   <>Load older matched rows</>
@@ -5464,9 +5354,9 @@ export default function ReconcilePage() {
               return (
                 <p className="text-xs text-gray-500">
                   Showing {activeReviewRows.length} unmatched/suggested row
-                  {activeReviewRows.length === 1 ? "" : "s"} for {activeTab}
+                  {activeReviewRows.length === 1 ? "" : "s"} for {labelFor(activeTab)}
                   {incomeCount > 0
-                    ? ` — ${needsExpense} need an expense, ${incomeCount} income/transfer (no expense expected).`
+                    ? ` â€” ${needsExpense} need an expense, ${incomeCount} income/transfer (no expense expected).`
                     : "."}
                 </p>
               );
@@ -5510,7 +5400,7 @@ export default function ReconcilePage() {
               {memoryModal.loading ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="w-5 h-5 animate-spin text-accent" />
-                  <span className="ml-2 text-gray-400 text-sm">Loading memory…</span>
+                  <span className="ml-2 text-gray-400 text-sm">Loading memoryâ€¦</span>
                 </div>
               ) : memoryModal.entries.length === 0 ? (
                 <p className="text-gray-400 text-sm text-center py-8">
@@ -5538,8 +5428,8 @@ export default function ReconcilePage() {
                                   isAutoClaiming ? "text-accent" : "text-gray-500"
                                 }`}
                               >
-                                {entry.confirmedCount}× confirmed
-                                {isAutoClaiming ? " • auto-claims" : " • not yet auto"}
+                                {entry.confirmedCount}Ã— confirmed
+                                {isAutoClaiming ? " â€¢ auto-claims" : " â€¢ not yet auto"}
                               </span>
                             </div>
                             <p className="text-xs text-gray-300 mt-1 font-mono break-words">{entry.fingerprint}</p>
@@ -5556,7 +5446,7 @@ export default function ReconcilePage() {
                             {isForgetting ? (
                               <>
                                 <Loader2 className="w-3 h-3 animate-spin" />
-                                Forgetting…
+                                Forgettingâ€¦
                               </>
                             ) : (
                               <>Forget</>
@@ -5617,7 +5507,7 @@ export default function ReconcilePage() {
               {activityModal.loading ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="w-5 h-5 animate-spin text-accent" />
-                  <span className="ml-2 text-gray-400 text-sm">Loading activity…</span>
+                  <span className="ml-2 text-gray-400 text-sm">Loading activityâ€¦</span>
                 </div>
               ) : activityModal.entries.length === 0 ? (
                 <p className="text-gray-400 text-sm text-center py-8">No activity in this window.</p>
@@ -5668,7 +5558,7 @@ export default function ReconcilePage() {
                             {isUndoing ? (
                               <>
                                 <Loader2 className="w-3 h-3 animate-spin" />
-                                Undoing…
+                                Undoingâ€¦
                               </>
                             ) : (
                               <>Undo</>
@@ -5811,11 +5701,11 @@ export default function ReconcilePage() {
               <div className="rounded-md border border-charcoal-dark bg-charcoal px-3 py-2 text-sm text-gray-300">
                 <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Bank</p>
                 <p className="text-gray-100 truncate">
-                  {dismissModal.match.bankTransaction.description || "—"}
+                  {dismissModal.match.bankTransaction.description || "â€”"}
                 </p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  {dismissModal.match.bankTransaction.accountName} •{" "}
-                  {fmtDate(dismissModal.match.bankTransaction.date)} •{" "}
+                  {labelFor(dismissModal.match.bankTransaction.accountName)} â€¢{" "}
+                  {fmtDate(dismissModal.match.bankTransaction.date)} â€¢{" "}
                   {fmtMoney(dismissModal.match.bankTransaction.amount)}
                 </p>
               </div>
@@ -5886,7 +5776,7 @@ export default function ReconcilePage() {
                 </p>
                 <p className="text-gray-100 truncate">{userDismissModal.entry.title}</p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  {userDismissModal.entry.subtitle} • {fmtMoney(userDismissModal.entry.amount)}
+                  {userDismissModal.entry.subtitle} â€¢ {fmtMoney(userDismissModal.entry.amount)}
                 </p>
               </div>
               <div>
@@ -6029,18 +5919,18 @@ export default function ReconcilePage() {
               {splitTargetTransaction && (
                 <div className="rounded-md border border-charcoal-dark bg-charcoal px-3 py-2 text-sm text-gray-300">
                   <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Selected Transaction</p>
-                  <p className="text-gray-100 truncate">{splitTargetTransaction.description || "—"}</p>
+                  <p className="text-gray-100 truncate">{splitTargetTransaction.description || "â€”"}</p>
                   <p className="text-xs text-gray-400 mt-0.5">
-                    {splitTargetTransaction.accountName} • {fmtDate(splitTargetTransaction.date)} •{" "}
+                    {labelFor(splitTargetTransaction.accountName)} â€¢ {fmtDate(splitTargetTransaction.date)} â€¢{" "}
                     {fmtMoney(splitTargetTransaction.amount)}
                   </p>
                 </div>
               )}
               <div className="rounded-md border border-charcoal-dark bg-charcoal px-3 py-2 text-sm text-gray-300">
                 Target: <span className="text-white">{fmtMoney(splitTargetAmount)}</span>
-                <span className="text-gray-500"> • </span>
+                <span className="text-gray-500"> â€¢ </span>
                 Entered: <span className="text-white">{fmtMoney(splitEnteredAmount)}</span>
-                <span className="text-gray-500"> • </span>
+                <span className="text-gray-500"> â€¢ </span>
                 Remaining:{" "}
                 <span
                   className={
@@ -6095,12 +5985,12 @@ export default function ReconcilePage() {
                               {row.sheetName}
                             </p>
                             <p className="text-sm text-gray-200 truncate">
-                              {row.expenseType || "—"} • {row.description || "—"}
+                              {row.expenseType || "â€”"} â€¢ {row.description || "â€”"}
                             </p>
                             <p className="text-xs text-gray-400 mt-0.5">
                               {fmtMoney(row.amount)}
-                              {row.timestamp ? ` • ${fmtDate(row.timestamp)}` : ""}
-                              {row.account ? ` • ${row.account}` : ""}
+                              {row.timestamp ? ` â€¢ ${fmtDate(row.timestamp)}` : ""}
+                              {row.account ? ` â€¢ ${row.account}` : ""}
                             </p>
                             <p className="text-[11px] text-gray-500 mt-0.5">
                               {row.sheetName === "Transfers" ? "Transfer Row ID" : "Row ID"}: {row.rowId}
@@ -6166,7 +6056,7 @@ export default function ReconcilePage() {
                 <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">User-inputted</p>
                 <p className="text-gray-100 truncate">{userStatementClaimModal.entry.title}</p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  {userStatementClaimModal.entry.source} • {userStatementClaimModal.entry.subtitle} •{" "}
+                  {userStatementClaimModal.entry.source} â€¢ {userStatementClaimModal.entry.subtitle} â€¢{" "}
                   {fmtMoney(userStatementClaimModal.entry.amount)}
                 </p>
               </div>
@@ -6187,7 +6077,7 @@ export default function ReconcilePage() {
                         error: "",
                       }))
                     }
-                    placeholder="Description, date, account…"
+                    placeholder="Description, date, accountâ€¦"
                     className="w-full px-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
                   />
                 </div>
@@ -6206,7 +6096,7 @@ export default function ReconcilePage() {
                         error: "",
                       }))
                     }
-                    options={ACCOUNT_DROPDOWN_OPTIONS}
+                    options={accountDropdownOptions}
                     className="min-w-[10rem]"
                     aria-label="Filter statement lines by account"
                   />
@@ -6243,13 +6133,13 @@ export default function ReconcilePage() {
                           />
                           <div className="min-w-0">
                             <p className="text-[10px] uppercase tracking-wide text-gray-500 mb-0.5">
-                              {m.bankTransaction.accountName}
+                              {labelFor(m.bankTransaction.accountName)}
                             </p>
                             <p className="text-sm text-gray-200 truncate">
-                              {m.bankTransaction.description || "—"}
+                              {m.bankTransaction.description || "â€”"}
                             </p>
                             <p className="text-xs text-gray-400 mt-0.5">
-                              {fmtDate(m.bankTransaction.date)} • {fmtMoney(m.bankTransaction.amount)}
+                              {fmtDate(m.bankTransaction.date)} â€¢ {fmtMoney(m.bankTransaction.amount)}
                             </p>
                           </div>
                         </label>
@@ -6390,7 +6280,7 @@ export default function ReconcilePage() {
             </div>
             <div className="p-4 space-y-3">
               <p className="text-sm text-gray-300">
-                Account: <span className="text-white">{selectedAccount}</span>
+                Account: <span className="text-white">{labelFor(selectedAccount)}</span>
               </p>
               {anchorModal.loading ? (
                 <div className="inline-flex items-center gap-2 text-sm text-gray-300">
@@ -6476,7 +6366,7 @@ export default function ReconcilePage() {
                   {editEntryModal.entry.title}
                 </p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  {editEntryModal.entry.subtitle} • {fmtMoney(editEntryModal.entry.amount)}
+                  {editEntryModal.entry.subtitle} â€¢ {fmtMoney(editEntryModal.entry.amount)}
                 </p>
               </div>
               <div>
@@ -6510,6 +6400,22 @@ export default function ReconcilePage() {
             </div>
           </div>
         </div>
+      )}
+
+      {csvMapping && accountsById.get(csvMapping.accountId) && (
+        <CsvMappingModal
+          account={accountsById.get(csvMapping.accountId)!}
+          rows={csvMapping.rows}
+          onCancel={() => setCsvMapping(null)}
+          onSaved={(updatedAccounts) => {
+            const pending = csvMapping.pendingFile;
+            setCsvMapping(null);
+            // The context must know about the new profile before the retry, or
+            // onDrop would bounce straight back into this modal.
+            setAccounts(updatedAccounts);
+            void onDrop([pending]);
+          }}
+        />
       )}
     </DashboardLayout>
   );

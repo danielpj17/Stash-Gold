@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   createContext,
@@ -7,9 +7,11 @@ import {
   useEffect,
   type ReactNode,
 } from "react";
+import { useSession } from "next-auth/react";
 import { useRefresh } from "@/contexts/RefreshContext";
-import { getExpenses, getTransfers } from "@/services/sheetsApi";
-import type { SheetRow, TransferRow } from "@/services/sheetsApi";
+import { CACHE_KEYS, readScopedCache, writeScopedCache } from "@/lib/clientCache";
+import { getExpenses, getTransfers } from "@/services/transactionsApi";
+import type { SheetRow, TransferRow } from "@/services/transactionsApi";
 
 type ExpensesDataContextType = {
   allRows: SheetRow[];
@@ -20,54 +22,52 @@ type ExpensesDataContextType = {
 
 const ExpensesDataContext = createContext<ExpensesDataContextType | null>(null);
 
-const CACHE_KEY = "stash_expenses_v1";
-
 type CachedData = {
   allRows: SheetRow[];
   allTransfers: TransferRow[];
 };
 
-function readCache(): CachedData | null {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as CachedData;
-  } catch {
-    return null;
-  }
-}
-
-function writeCache(allRows: SheetRow[], allTransfers: TransferRow[]) {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ allRows, allTransfers }));
-  } catch {
-    // localStorage full or unavailable — silently skip
-  }
-}
-
 /**
  * Fetches full-year expenses and transfers once (no month filter) and keeps them in memory.
  * Pages filter by selectedMonth client-side for instant month/page switching.
  * On return visits, renders immediately from localStorage while revalidating in the background.
+ *
+ * The cache is keyed by user id. The root layout seeds SessionProvider from the
+ * server, so the id is already available in these useState initializers â€” no
+ * empty flash while the session resolves.
  */
 export function ExpensesDataProvider({ children }: { children: ReactNode }) {
   const { refreshKey } = useRefresh();
+  const { data: session, status } = useSession();
+  const userId = session?.user?.id ?? null;
 
-  const [allRows, setAllRows] = useState<SheetRow[]>(() => {
-    if (typeof window === "undefined") return [];
-    return readCache()?.allRows ?? [];
-  });
-  const [allTransfers, setAllTransfers] = useState<TransferRow[]>(() => {
-    if (typeof window === "undefined") return [];
-    return readCache()?.allTransfers ?? [];
-  });
-  const [loading, setLoading] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return readCache() === null;
-  });
+  const [allRows, setAllRows] = useState<SheetRow[]>(
+    () => readScopedCache<CachedData>(CACHE_KEYS.expenses, userId)?.allRows ?? [],
+  );
+  const [allTransfers, setAllTransfers] = useState<TransferRow[]>(
+    () => readScopedCache<CachedData>(CACHE_KEYS.expenses, userId)?.allTransfers ?? [],
+  );
+  const [loading, setLoading] = useState(
+    () => readScopedCache<CachedData>(CACHE_KEYS.expenses, userId) === null,
+  );
   const [error, setError] = useState<string | null>(null);
 
+  // Swap in the new user's cached data if the signed-in user changes without a
+  // full reload; drop the previous user's rows immediately either way.
   useEffect(() => {
+    const cached = readScopedCache<CachedData>(CACHE_KEYS.expenses, userId);
+    setAllRows(cached?.allRows ?? []);
+    setAllTransfers(cached?.allTransfers ?? []);
+  }, [userId]);
+
+  useEffect(() => {
+    if (status !== "authenticated" || !userId) {
+      // Signed out (or still resolving): nothing to fetch, and "no session" is
+      // not the same as "no data" â€” don't report an error for it.
+      setLoading(status === "loading");
+      return;
+    }
+
     let cancelled = false;
     setError(null);
 
@@ -76,7 +76,7 @@ export function ExpensesDataProvider({ children }: { children: ReactNode }) {
         if (!cancelled) {
           setAllRows(rows);
           setAllTransfers(transfers);
-          writeCache(rows, transfers);
+          writeScopedCache(CACHE_KEYS.expenses, userId, { allRows: rows, allTransfers: transfers });
           setError(null);
         }
       })
@@ -89,7 +89,7 @@ export function ExpensesDataProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [refreshKey, status, userId]);
 
   return (
     <ExpensesDataContext.Provider

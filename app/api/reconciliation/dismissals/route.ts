@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 import {
   buildActivityLogInsert,
-  ensureActivityLogTable,
   parseActivityGroupingIds,
   type ActivityActor,
 } from "@/lib/activityLog";
@@ -22,30 +21,16 @@ function normalizeActor(value: unknown): ActivityActor {
   return "user";
 }
 
-async function ensureDismissalsTable(sql: any) {
-  await sql`
-    CREATE TABLE IF NOT EXISTS reconciliation_statement_dismissals (
-      hash TEXT NOT NULL,
-      account_name TEXT NOT NULL,
-      note TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT now(),
-      PRIMARY KEY (hash, account_name)
-    )
-  `;
-}
-
 export async function GET() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ dismissals: [] as unknown[] });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   try {
-    const sql = neon(connectionString);
-    await ensureDismissalsTable(sql);
     const rows = (await sql`
       SELECT hash, account_name, note, created_at
       FROM reconciliation_statement_dismissals
+      WHERE user_id = ${userId}
       ORDER BY created_at DESC
     `) as DismissalRow[];
 
@@ -67,10 +52,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: unknown;
   try {
@@ -105,12 +89,9 @@ export async function POST(request: NextRequest) {
   const actor = normalizeActor((body as { actor?: unknown }).actor);
   const grouping = parseActivityGroupingIds(body);
 
-  const sql = neon(connectionString);
   try {
-    await ensureDismissalsTable(sql);
-    await ensureActivityLogTable(sql);
-
     const { id: actionId, query: logInsert } = buildActivityLogInsert(sql, {
+      userId,
       actionType: "dismiss_create",
       actor,
       payload: { hash, accountName, note },
@@ -121,14 +102,14 @@ export async function POST(request: NextRequest) {
 
     await sql.transaction([
       sql`
-        INSERT INTO reconciliation_statement_dismissals (hash, account_name, note)
-        VALUES (${hash}, ${accountName}, ${note})
-        ON CONFLICT (hash, account_name) DO UPDATE SET note = EXCLUDED.note
+        INSERT INTO reconciliation_statement_dismissals (user_id, hash, account_name, note)
+        VALUES (${userId}::uuid, ${hash}, ${accountName}, ${note})
+        ON CONFLICT (user_id, hash, account_name) DO UPDATE SET note = EXCLUDED.note
       `,
       sql`
-        INSERT INTO processed_transactions (hash, account_name)
-        VALUES (${hash}, ${accountName})
-        ON CONFLICT (hash) DO UPDATE SET account_name = EXCLUDED.account_name
+        INSERT INTO processed_transactions (user_id, hash, account_name)
+        VALUES (${userId}::uuid, ${hash}, ${accountName})
+        ON CONFLICT (user_id, hash) DO UPDATE SET account_name = EXCLUDED.account_name
       `,
       logInsert,
     ]);
@@ -143,10 +124,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: unknown;
   try {
@@ -172,23 +152,20 @@ export async function DELETE(request: NextRequest) {
   const grouping = parseActivityGroupingIds(body);
 
   try {
-    const sql = neon(connectionString);
-    await ensureDismissalsTable(sql);
-    await ensureActivityLogTable(sql);
-
     const existing = accountName
       ? ((await sql`
           SELECT hash, account_name, note
           FROM reconciliation_statement_dismissals
-          WHERE hash = ${hash} AND account_name = ${accountName}
+          WHERE user_id = ${userId} AND hash = ${hash} AND account_name = ${accountName}
         `) as DismissalRow[])
       : ((await sql`
           SELECT hash, account_name, note
           FROM reconciliation_statement_dismissals
-          WHERE hash = ${hash}
+          WHERE user_id = ${userId} AND hash = ${hash}
         `) as DismissalRow[]);
 
     const { id: actionId, query: logInsert } = buildActivityLogInsert(sql, {
+      userId,
       actionType: "dismiss_delete",
       actor,
       payload: {
@@ -208,11 +185,11 @@ export async function DELETE(request: NextRequest) {
     const deleteQuery = accountName
       ? sql`
           DELETE FROM reconciliation_statement_dismissals
-          WHERE hash = ${hash} AND account_name = ${accountName}
+          WHERE user_id = ${userId} AND hash = ${hash} AND account_name = ${accountName}
         `
       : sql`
           DELETE FROM reconciliation_statement_dismissals
-          WHERE hash = ${hash}
+          WHERE user_id = ${userId} AND hash = ${hash}
         `;
 
     await sql.transaction([deleteQuery, logInsert]);

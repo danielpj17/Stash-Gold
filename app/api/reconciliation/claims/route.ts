@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 import {
   buildActivityLogInsert,
-  ensureActivityLogTable,
   parseActivityGroupingIds,
   type ActivityActor,
 } from "@/lib/activityLog";
@@ -47,33 +46,16 @@ function toCents(value: number): number {
   return Math.round(value * 100);
 }
 
-async function ensureClaimsTable(sql: any) {
-  await sql`
-    CREATE TABLE IF NOT EXISTS reconciliation_claim_links (
-      bank_hash TEXT NOT NULL,
-      account_name TEXT,
-      sheet_name TEXT NOT NULL DEFAULT 'Expenses',
-      sheet_row_id TEXT NOT NULL,
-      amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
-      created_at TIMESTAMP DEFAULT now(),
-      PRIMARY KEY (bank_hash, sheet_name, sheet_row_id),
-      UNIQUE (sheet_name, sheet_row_id)
-    )
-  `;
-}
-
 export async function GET() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ claims: [], claimedRowIds: [] as string[] });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   try {
-    const sql = neon(connectionString);
-    await ensureClaimsTable(sql);
     const rows = (await sql`
       SELECT bank_hash, account_name, sheet_name, sheet_row_id, amount_cents, created_at
       FROM reconciliation_claim_links
+      WHERE user_id = ${userId}
       ORDER BY created_at DESC
     `) as ClaimRow[];
 
@@ -98,10 +80,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: ClaimRequestBody;
   try {
@@ -164,15 +145,12 @@ export async function POST(request: NextRequest) {
   const grouping = parseActivityGroupingIds(body);
 
   try {
-    const sql = neon(connectionString);
-    await ensureClaimsTable(sql);
-    await ensureActivityLogTable(sql);
-
     const sheetNames = normalizedLinks.map((link) => link.sheetName);
     const sheetRowIds = normalizedLinks.map((link) => link.sheetRowId);
     const amountCents = normalizedLinks.map((link) => link.amountCents);
 
     const { id: actionId, query: logInsert } = buildActivityLogInsert(sql, {
+      userId,
       actionType: "claim_create",
       actor,
       payload: {
@@ -192,6 +170,7 @@ export async function POST(request: NextRequest) {
     await sql.transaction([
       sql`
         INSERT INTO reconciliation_claim_links (
+          user_id,
           bank_hash,
           account_name,
           sheet_name,
@@ -199,6 +178,7 @@ export async function POST(request: NextRequest) {
           amount_cents
         )
         SELECT
+          ${userId}::uuid,
           ${bankHash},
           ${accountName || null},
           links.sheet_name,
@@ -211,9 +191,9 @@ export async function POST(request: NextRequest) {
         ) AS links(sheet_name, sheet_row_id, amount_cents)
       `,
       sql`
-        INSERT INTO processed_transactions (hash, account_name)
-        VALUES (${bankHash}, ${accountName || null})
-        ON CONFLICT (hash) DO UPDATE SET account_name = EXCLUDED.account_name
+        INSERT INTO processed_transactions (user_id, hash, account_name)
+        VALUES (${userId}::uuid, ${bankHash}, ${accountName || null})
+        ON CONFLICT (user_id, hash) DO UPDATE SET account_name = EXCLUDED.account_name
       `,
       logInsert,
     ]);
@@ -232,10 +212,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: {
     bankTransaction?: {
@@ -268,23 +247,20 @@ export async function DELETE(request: NextRequest) {
   const grouping = parseActivityGroupingIds(body);
 
   try {
-    const sql = neon(connectionString);
-    await ensureClaimsTable(sql);
-    await ensureActivityLogTable(sql);
-
     const existing = accountName
       ? ((await sql`
           SELECT bank_hash, account_name, sheet_name, sheet_row_id, amount_cents
           FROM reconciliation_claim_links
-          WHERE bank_hash = ${bankHash} AND account_name = ${accountName}
+          WHERE user_id = ${userId} AND bank_hash = ${bankHash} AND account_name = ${accountName}
         `) as ClaimRow[])
       : ((await sql`
           SELECT bank_hash, account_name, sheet_name, sheet_row_id, amount_cents
           FROM reconciliation_claim_links
-          WHERE bank_hash = ${bankHash}
+          WHERE user_id = ${userId} AND bank_hash = ${bankHash}
         `) as ClaimRow[]);
 
     const { id: actionId, query: logInsert } = buildActivityLogInsert(sql, {
+      userId,
       actionType: "claim_delete",
       actor,
       payload: {
@@ -304,11 +280,11 @@ export async function DELETE(request: NextRequest) {
     const deleteQuery = accountName
       ? sql`
           DELETE FROM reconciliation_claim_links
-          WHERE bank_hash = ${bankHash} AND account_name = ${accountName}
+          WHERE user_id = ${userId} AND bank_hash = ${bankHash} AND account_name = ${accountName}
         `
       : sql`
           DELETE FROM reconciliation_claim_links
-          WHERE bank_hash = ${bankHash}
+          WHERE user_id = ${userId} AND bank_hash = ${bankHash}
         `;
 
     await sql.transaction([deleteQuery, logInsert]);

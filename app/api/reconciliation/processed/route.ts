@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 import {
   buildActivityLogInsert,
-  ensureActivityLogTable,
   parseActivityGroupingIds,
   type ActivityActor,
 } from "@/lib/activityLog";
@@ -16,16 +15,15 @@ function normalizeActor(value: unknown): ActivityActor {
 }
 
 export async function GET() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ hashes: [] as string[] });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   try {
-    const sql = neon(connectionString);
     const rows = (await sql`
       SELECT hash
       FROM processed_transactions
+      WHERE user_id = ${userId}
       ORDER BY processed_at DESC
     `) as { hash: string }[];
     return NextResponse.json({ hashes: rows.map((r) => r.hash) });
@@ -39,13 +37,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json(
-      { error: "DATABASE_URL not configured" },
-      { status: 503 },
-    );
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: unknown;
   try {
@@ -69,11 +63,8 @@ export async function POST(request: NextRequest) {
   const grouping = parseActivityGroupingIds(body);
 
   try {
-    const sql = neon(connectionString);
-    await ensureActivityLogTable(sql);
-
     const existing = (await sql`
-      SELECT hash FROM processed_transactions WHERE hash = ${hash}
+      SELECT hash FROM processed_transactions WHERE user_id = ${userId} AND hash = ${hash}
     `) as Array<{ hash: string }>;
     const wasAlreadyProcessed = existing.length > 0;
 
@@ -82,6 +73,7 @@ export async function POST(request: NextRequest) {
     }
 
     const { id: actionId, query: logInsert } = buildActivityLogInsert(sql, {
+      userId,
       actionType: "processed_mark",
       actor,
       payload: { hash, accountName: accountName || null, wasAlreadyProcessed },
@@ -92,9 +84,9 @@ export async function POST(request: NextRequest) {
 
     await sql.transaction([
       sql`
-        INSERT INTO processed_transactions (hash, account_name)
-        VALUES (${hash}, ${accountName || null})
-        ON CONFLICT (hash) DO UPDATE SET account_name = EXCLUDED.account_name
+        INSERT INTO processed_transactions (user_id, hash, account_name)
+        VALUES (${userId}::uuid, ${hash}, ${accountName || null})
+        ON CONFLICT (user_id, hash) DO UPDATE SET account_name = EXCLUDED.account_name
       `,
       logInsert,
     ]);
@@ -109,13 +101,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json(
-      { error: "DATABASE_URL not configured" },
-      { status: 503 },
-    );
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: unknown;
   try {
@@ -139,10 +127,8 @@ export async function DELETE(request: NextRequest) {
   const grouping = parseActivityGroupingIds(body);
 
   try {
-    const sql = neon(connectionString);
-    await ensureActivityLogTable(sql);
-
     const { id: actionId, query: logInsert } = buildActivityLogInsert(sql, {
+      userId,
       actionType: "processed_unmark",
       actor,
       payload: { hash, accountName: accountName || null },
@@ -154,11 +140,11 @@ export async function DELETE(request: NextRequest) {
     const deleteQuery = accountName
       ? sql`
           DELETE FROM processed_transactions
-          WHERE hash = ${hash} AND account_name = ${accountName}
+          WHERE user_id = ${userId} AND hash = ${hash} AND account_name = ${accountName}
         `
       : sql`
           DELETE FROM processed_transactions
-          WHERE hash = ${hash}
+          WHERE user_id = ${userId} AND hash = ${hash}
         `;
 
     await sql.transaction([deleteQuery, logInsert]);

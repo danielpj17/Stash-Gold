@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 import {
   migrateBudgetCategoryKeys,
   type MonthlyBudgets,
@@ -31,13 +31,11 @@ function normalizeBody(raw: unknown): MonthlyBudgets | null {
 }
 
 export async function GET() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({});
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
   try {
-    const sql = neon(connectionString);
-    const rows = await sql`SELECT data FROM budget_store WHERE id = 1`;
+    const rows = await sql`SELECT data FROM budget_store WHERE user_id = ${userId}`;
     const raw = rows[0]?.data ?? {};
     const base =
       typeof raw === "object" && raw !== null && !Array.isArray(raw)
@@ -45,7 +43,10 @@ export async function GET() {
         : {};
     const data = migrateBudgetCategoryKeys(base);
     if (data !== base) {
-      await sql`INSERT INTO budget_store (id, data) VALUES (1, ${data}) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`;
+      await sql`
+        INSERT INTO budget_store (user_id, data) VALUES (${userId}::uuid, ${data})
+        ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data
+      `;
     }
     return NextResponse.json(data);
   } catch (err) {
@@ -58,13 +59,9 @@ export async function GET() {
 }
 
 export async function PUT(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json(
-      { error: "DATABASE_URL not configured" },
-      { status: 503 }
-    );
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
   let body: unknown;
   try {
     body = await request.json();
@@ -77,8 +74,10 @@ export async function PUT(request: NextRequest) {
   }
   const data = migrateBudgetCategoryKeys(normalized);
   try {
-    const sql = neon(connectionString);
-    await sql`INSERT INTO budget_store (id, data) VALUES (1, ${data}) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`;
+    await sql`
+      INSERT INTO budget_store (user_id, data) VALUES (${userId}::uuid, ${data})
+      ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data
+    `;
     return NextResponse.json(data);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,32 +13,16 @@ type MemoryRow = {
   last_confirmed_at: string;
 };
 
-async function ensureMemoryTable(sql: any) {
-  await sql`
-    CREATE TABLE IF NOT EXISTS reconciliation_merchant_memory (
-      fingerprint TEXT NOT NULL,
-      bank_account_name TEXT NOT NULL,
-      sheet_category TEXT,
-      sheet_account TEXT,
-      confirmed_count INTEGER NOT NULL DEFAULT 1,
-      last_confirmed_at TIMESTAMP DEFAULT now(),
-      PRIMARY KEY (fingerprint, bank_account_name)
-    )
-  `;
-}
-
 export async function GET() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ entries: [] });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   try {
-    const sql = neon(connectionString);
-    await ensureMemoryTable(sql);
     const rows = (await sql`
       SELECT fingerprint, bank_account_name, sheet_category, sheet_account, confirmed_count, last_confirmed_at
       FROM reconciliation_merchant_memory
+      WHERE user_id = ${userId}
       ORDER BY confirmed_count DESC, last_confirmed_at DESC
     `) as MemoryRow[];
 
@@ -61,10 +45,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: {
     fingerprint?: unknown;
@@ -98,15 +81,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const sql = neon(connectionString);
-    await ensureMemoryTable(sql);
-
     const rows = (await sql`
       INSERT INTO reconciliation_merchant_memory (
-        fingerprint, bank_account_name, sheet_category, sheet_account, confirmed_count
+        user_id, fingerprint, bank_account_name, sheet_category, sheet_account, confirmed_count
       )
-      VALUES (${fingerprint}, ${bankAccountName}, ${sheetCategory}, ${sheetAccount}, 1)
-      ON CONFLICT (fingerprint, bank_account_name) DO UPDATE SET
+      VALUES (${userId}::uuid, ${fingerprint}, ${bankAccountName}, ${sheetCategory}, ${sheetAccount}, 1)
+      ON CONFLICT (user_id, fingerprint, bank_account_name) DO UPDATE SET
         confirmed_count = reconciliation_merchant_memory.confirmed_count + 1,
         last_confirmed_at = now(),
         sheet_category = COALESCE(EXCLUDED.sheet_category, reconciliation_merchant_memory.sheet_category),
@@ -130,10 +110,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: { fingerprint?: unknown; bankAccountName?: unknown };
   try {
@@ -154,11 +133,9 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    const sql = neon(connectionString);
-    await ensureMemoryTable(sql);
     const rows = (await sql`
       DELETE FROM reconciliation_merchant_memory
-      WHERE fingerprint = ${fingerprint} AND bank_account_name = ${bankAccountName}
+      WHERE user_id = ${userId} AND fingerprint = ${fingerprint} AND bank_account_name = ${bankAccountName}
       RETURNING fingerprint
     `) as Array<{ fingerprint: string }>;
 

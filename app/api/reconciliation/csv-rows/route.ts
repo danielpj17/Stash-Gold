@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
+import { getBankProfile } from "@/lib/accounts";
+import type { Sql } from "@/lib/db";
 import { mergeCsvRowsByIdentity } from "@/services/reconciliationService";
 
 export const runtime = "nodejs";
@@ -15,18 +17,6 @@ type CsvRowRecord = {
   cells: string[];
 };
 
-async function ensureCsvRowsTable(sql: any) {
-  await sql`
-    CREATE TABLE IF NOT EXISTS reconciliation_csv_rows (
-      account_name TEXT NOT NULL,
-      dedupe_key   TEXT NOT NULL,
-      cells        JSONB NOT NULL,
-      created_at   TIMESTAMP DEFAULT now(),
-      PRIMARY KEY (account_name, dedupe_key)
-    )
-  `;
-}
-
 function csvRowDedupeKey(row: string[]): string {
   return row.map((c) => String(c).trim()).join("\t");
 }
@@ -36,12 +26,22 @@ function toCells(row: unknown): string[] | null {
   return row.map((c: unknown) => (c === null || c === undefined ? "" : String(c)));
 }
 
-async function readStoredRowsForAccount(sql: any, accountName: string): Promise<string[][]> {
+/**
+ * Row order matters: it drives the -2/-3 suffixes disambiguateHashes() appends
+ * to duplicate bank hashes, which are the keys reconciliation_claim_links uses.
+ * created_at alone is ambiguous (it is transaction time, so a whole chunk
+ * shares one value), so seq breaks the tie deterministically.
+ */
+async function readStoredRowsForAccount(
+  sql: Sql,
+  userId: string,
+  accountName: string,
+): Promise<string[][]> {
   const rows = (await sql`
     SELECT cells
     FROM reconciliation_csv_rows
-    WHERE account_name = ${accountName}
-    ORDER BY created_at ASC
+    WHERE user_id = ${userId} AND account_name = ${accountName}
+    ORDER BY created_at ASC, seq ASC
   `) as Array<{ cells: unknown }>;
   return rows
     .map((r) => (Array.isArray(r.cells) ? r.cells.map((c: unknown) => String(c ?? "")) : null))
@@ -49,18 +49,16 @@ async function readStoredRowsForAccount(sql: any, accountName: string): Promise<
 }
 
 export async function GET() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ rowsByAccount: {} as Record<string, string[][]> });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   try {
-    const sql = neon(connectionString);
-    await ensureCsvRowsTable(sql);
     const rows = (await sql`
       SELECT account_name, cells
       FROM reconciliation_csv_rows
-      ORDER BY created_at ASC
+      WHERE user_id = ${userId}
+      ORDER BY created_at ASC, seq ASC
     `) as CsvRowRecord[];
 
     const rowsByAccount: Record<string, string[][]> = {};
@@ -85,10 +83,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: { accountName?: unknown; rows?: unknown; merge?: unknown };
   try {
@@ -112,27 +109,28 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const sql = neon(connectionString);
-    await ensureCsvRowsTable(sql);
-
     // --- Merge mode: identity-merge incoming with stored rows, then replace. ---
     if (body.merge === true) {
-      const existing = await readStoredRowsForAccount(sql, accountName);
-      const merged = mergeCsvRowsByIdentity(accountName, existing, incoming);
+      const profile = await getBankProfile(sql, userId, accountName);
+      const existing = await readStoredRowsForAccount(sql, userId, accountName);
+      const merged = mergeCsvRowsByIdentity(accountName, existing, incoming, profile);
 
       // Replace stored rows for the account. The DELETE rides with the first
       // insert chunk so an empty/failed write never wipes existing data silently.
       const inserts = merged.rows.map((cells, i) =>
         sql`
-          INSERT INTO reconciliation_csv_rows (account_name, dedupe_key, cells)
-          VALUES (${accountName}, ${merged.keys[i]}, ${JSON.stringify(cells)}::jsonb)
-          ON CONFLICT (account_name, dedupe_key)
+          INSERT INTO reconciliation_csv_rows (user_id, account_name, dedupe_key, cells)
+          VALUES (${userId}::uuid, ${accountName}, ${merged.keys[i]}, ${JSON.stringify(cells)}::jsonb)
+          ON CONFLICT (user_id, account_name, dedupe_key)
           DO UPDATE SET cells = EXCLUDED.cells, created_at = now()
         `,
       );
 
       if (inserts.length === 0) {
-        await sql`DELETE FROM reconciliation_csv_rows WHERE account_name = ${accountName}`;
+        await sql`
+          DELETE FROM reconciliation_csv_rows
+          WHERE user_id = ${userId} AND account_name = ${accountName}
+        `;
         return NextResponse.json({ success: true, rows: [], count: 0 });
       }
 
@@ -141,7 +139,13 @@ export async function POST(request: NextRequest) {
         const isFirst = i === 0;
         await sql.transaction(
           isFirst
-            ? [sql`DELETE FROM reconciliation_csv_rows WHERE account_name = ${accountName}`, ...chunk]
+            ? [
+                sql`
+                  DELETE FROM reconciliation_csv_rows
+                  WHERE user_id = ${userId} AND account_name = ${accountName}
+                `,
+                ...chunk,
+              ]
             : chunk,
         );
       }
@@ -168,9 +172,9 @@ export async function POST(request: NextRequest) {
     await sql.transaction(
       validRows.map((r) =>
         sql`
-          INSERT INTO reconciliation_csv_rows (account_name, dedupe_key, cells)
-          VALUES (${accountName}, ${r.key}, ${JSON.stringify(r.cells)}::jsonb)
-          ON CONFLICT (account_name, dedupe_key)
+          INSERT INTO reconciliation_csv_rows (user_id, account_name, dedupe_key, cells)
+          VALUES (${userId}::uuid, ${accountName}, ${r.key}, ${JSON.stringify(r.cells)}::jsonb)
+          ON CONFLICT (user_id, account_name, dedupe_key)
           DO UPDATE SET cells = EXCLUDED.cells, created_at = now()
         `,
       ),

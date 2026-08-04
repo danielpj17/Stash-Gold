@@ -1,21 +1,30 @@
-"use client";
+﻿"use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import GlassDropdown from "@/components/GlassDropdown";
 import { useRefresh } from "@/contexts/RefreshContext";
-import { submitExpense } from "@/services/sheetsApi";
+import { useAccounts } from "@/contexts/AccountsContext";
+import { submitExpense } from "@/services/transactionsApi";
 import { EXPENSE_TYPE_OPTIONS } from "@/lib/constants";
 import { Loader2 } from "lucide-react";
 import Link from "next/link";
 
 export default function NewExpensePage() {
   const { triggerRefresh } = useRefresh();
+  const { activeAccounts, loading: accountsLoading } = useAccounts();
   const [expenseType, setExpenseType] = useState("");
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
+  const [account, setAccount] = useState("");
   const [status, setStatus] = useState<"idle" | "submitting" | "success" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState("");
+
+  // Default to the first account so the common case is one tap fewer. Without
+  // an account the entry still records, it just can't move a balance.
+  useEffect(() => {
+    if (!account && activeAccounts.length > 0) setAccount(activeAccounts[0].id);
+  }, [account, activeAccounts]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,6 +41,7 @@ export default function NewExpensePage() {
         expenseType,
         amount: num,
         description: description.trim(),
+        account: account || undefined,
       });
       triggerRefresh();
       setStatus("success");
@@ -87,6 +97,33 @@ export default function NewExpensePage() {
             </div>
 
             <div>
+              <label htmlFor="account" className="block text-sm font-medium text-gray-300 mb-1">
+                Account
+              </label>
+              {accountsLoading ? (
+                <p className="text-sm text-gray-500 py-2">Loading accountsâ€¦</p>
+              ) : activeAccounts.length === 0 ? (
+                <p className="text-sm text-gray-400 py-2">
+                  No accounts yet â€”{" "}
+                  <Link href="/settings/accounts" className="text-accent hover:brightness-110">
+                    add one
+                  </Link>{" "}
+                  so this shows up in your balances.
+                </p>
+              ) : (
+                <GlassDropdown
+                  id="account"
+                  value={account}
+                  onChange={setAccount}
+                  options={activeAccounts.map((a) => ({ value: a.id, label: a.name }))}
+                  placeholder="Select account"
+                  className="w-full"
+                  aria-label="Account"
+                />
+              )}
+            </div>
+
+            <div>
               <label htmlFor="description" className="block text-sm font-medium text-gray-300 mb-1">
                 Description
               </label>
@@ -116,7 +153,7 @@ export default function NewExpensePage() {
                 {status === "submitting" ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Saving…
+                    Savingâ€¦
                   </>
                 ) : (
                   "Save"

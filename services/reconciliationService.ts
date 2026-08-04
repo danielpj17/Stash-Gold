@@ -3,66 +3,25 @@ import { generateMerchantFingerprint } from "@/lib/merchantFingerprint";
 
 export { generateMerchantFingerprint };
 
+/**
+ * How to read one bank's CSV. Previously a hardcoded per-bank constant; now
+ * stored per account in `account_csv_profiles` and passed in by the caller, so
+ * any bank works without a code change.
+ *
+ * The parsing itself is unchanged — only the source of these indexes moved.
+ */
 export type BankProfile = {
   dateIndex: number | null;
   amountIndex: number | null;
   descriptionIndex: number | null;
   debitIndex?: number | null;
   creditIndex?: number | null;
-};
-
-export const BANK_PROFILES: Record<string, BankProfile> = {
-  "Wells Fargo": {
-    dateIndex: 0,
-    amountIndex: 1,
-    descriptionIndex: 4,
-  },
-  Venmo: {
-    dateIndex: 1,
-    amountIndex: 7,
-    descriptionIndex: 4,
-  },
-  "Capital One": {
-    dateIndex: 0,
-    amountIndex: null,
-    descriptionIndex: 3,
-    debitIndex: 5,
-    creditIndex: 6,
-  },
-  "America First": {
-    dateIndex: null,
-    amountIndex: null,
-    descriptionIndex: null,
-  },
-  Discover: {
-    dateIndex: null,
-    amountIndex: null,
-    descriptionIndex: null,
-  },
-};
-
-type ResolvedBankProfile = {
-  profile: BankProfile;
-  startRowIndex: number;
-};
-
-/**
- * Maps a UI account name to the bank profile used to parse its CSV.
- * Shared by the match route and the CSV identity-dedup helper so both resolve
- * the same profile (e.g. "WF Checking" -> "Wells Fargo").
- */
-export const PROFILE_BY_ACCOUNT: Record<string, string> = {
-  "WF Checking": "Wells Fargo",
-  "WF Savings": "Wells Fargo",
-  Fidelity: "Fidelity",
-  "Venmo - Daniel": "Venmo",
-  "Venmo - Katie": "Venmo",
-  Venmo: "Venmo",
-  "Capital One": "Capital One",
-  "America First": "America First",
-  Discover: "Discover",
-  Schwab: "Charles Schwab",
-  Ally: "Ally",
+  /**
+   * Extract "PURCHASE AUTHORIZED ON MM/DD" from the description and use it as
+   * the transaction date instead of the posted date. Wells-Fargo-style CSVs
+   * post with a lag, which otherwise causes false fuzzy matches.
+   */
+  deriveDateFromDescription?: boolean;
 };
 
 export type BankTransaction = {
@@ -290,7 +249,7 @@ function parseBankAmount(rawValue: string): number | null {
   return isParenthesizedNegative ? -Math.abs(numeric) : numeric;
 }
 
-function normalizeHeaderCell(value: string): string {
+export function normalizeHeaderCell(value: string): string {
   return String(value)
     .trim()
     .toLowerCase()
@@ -298,86 +257,6 @@ function normalizeHeaderCell(value: string): string {
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
-
-function isVenmoProfile(accountName: string): boolean {
-  return accountName.trim().toLowerCase() === "venmo";
-}
-
-function isCapitalOneProfile(accountName: string): boolean {
-  return accountName.trim().toLowerCase() === "capital one";
-}
-
-function isWellsFargoProfile(accountName: string): boolean {
-  return accountName.trim().toLowerCase() === "wells fargo";
-}
-
-function resolveVenmoProfile(rows: string[][], fallback: BankProfile): ResolvedBankProfile {
-  if (!Array.isArray(rows) || !isProfileConfigured(fallback)) {
-    return { profile: fallback, startRowIndex: 0 };
-  }
-
-  for (let i = 0; i < rows.length; i += 1) {
-    const row = rows[i] ?? [];
-    const normalized = row.map((cell) => normalizeHeaderCell(cell));
-    const dateIndex = normalized.findIndex(
-      (cell) => cell === "datetime" || cell === "date time" || cell === "date",
-    );
-    const amountIndex = normalized.findIndex(
-      (cell) => cell === "amount total" || cell === "total amount" || cell === "amount",
-    );
-    const descriptionIndex = normalized.findIndex(
-      (cell) => cell === "note" || cell === "description" || cell === "details",
-    );
-    if (dateIndex >= 0 && amountIndex >= 0 && descriptionIndex >= 0) {
-      return {
-        profile: {
-          dateIndex,
-          amountIndex,
-          descriptionIndex,
-        },
-        startRowIndex: i + 1,
-      };
-    }
-  }
-
-  return { profile: fallback, startRowIndex: 0 };
-}
-
-function resolveCapitalOneProfile(rows: string[][], fallback: BankProfile): ResolvedBankProfile {
-  if (!Array.isArray(rows)) {
-    return { profile: fallback, startRowIndex: 0 };
-  }
-
-  for (let i = 0; i < rows.length; i += 1) {
-    const row = rows[i] ?? [];
-    const normalized = row.map((cell) => normalizeHeaderCell(cell));
-    const dateIndex = normalized.findIndex(
-      (cell) =>
-        cell === "transaction date" ||
-        cell === "transactiondate" ||
-        cell === "date",
-    );
-    const descriptionIndex = normalized.findIndex((cell) => cell === "description");
-    const debitIndex = normalized.findIndex((cell) => cell === "debit");
-    const creditIndex = normalized.findIndex((cell) => cell === "credit");
-
-    if (dateIndex >= 0 && descriptionIndex >= 0 && debitIndex >= 0 && creditIndex >= 0) {
-      return {
-        profile: {
-          dateIndex,
-          amountIndex: null,
-          descriptionIndex,
-          debitIndex,
-          creditIndex,
-        },
-        startRowIndex: i + 1,
-      };
-    }
-  }
-
-  return { profile: fallback, startRowIndex: 0 };
-}
-
 
 function formatDateKeyFromDate(date: Date): string {
   const year = date.getUTCFullYear();
@@ -387,17 +266,19 @@ function formatDateKeyFromDate(date: Date): string {
 }
 
 /**
- * Wells Fargo often includes "PURCHASE AUTHORIZED ON MM/DD ..." in the description.
- * Use that embedded purchase date (when present) to reduce false fuzzy matches caused by posting-date lag.
+ * Some banks (Wells Fargo notably) include "PURCHASE AUTHORIZED ON MM/DD ..."
+ * in the description. Using that embedded purchase date instead of the posted
+ * date reduces false fuzzy matches caused by posting lag.
+ *
+ * Gated by the account's CSV profile rather than a hardcoded bank name — the
+ * logic below is unchanged.
  */
 function deriveBankTransactionDate(
-  accountName: string,
+  deriveFromDescription: boolean,
   postedDateRaw: string,
   rawDescription: string,
 ): string {
-  const normalizedAccount = accountName.trim().toLowerCase();
-  const isWells = normalizedAccount === "wells fargo";
-  if (!isWells) return postedDateRaw;
+  if (!deriveFromDescription) return postedDateRaw;
 
   const match = rawDescription.match(/purchase\s+authorized\s+on\s+(\d{1,2})\/(\d{1,2})/i);
   if (!match) return postedDateRaw;
@@ -536,11 +417,10 @@ function classifyUnmatched(
 }
 
 export function mapBankRowToTransaction(
-  accountName: keyof typeof BANK_PROFILES | string,
+  accountName: string,
   row: string[],
-  profileOverride?: BankProfile,
+  profile: BankProfile,
 ): BankTransaction | null {
-  const profile = profileOverride ?? BANK_PROFILES[accountName];
   if (!profile || !isProfileConfigured(profile)) return null;
 
   const dateIndex = profile.dateIndex as number;
@@ -548,7 +428,11 @@ export function mapBankRowToTransaction(
   const postedDate = String(row[dateIndex] ?? "").trim();
   const rawDescription = String(row[descriptionIndex] ?? "").trim();
   const description = cleanBankDescription(rawDescription);
-  const derivedDate = deriveBankTransactionDate(String(accountName), postedDate, rawDescription);
+  const derivedDate = deriveBankTransactionDate(
+    profile.deriveDateFromDescription === true,
+    postedDate,
+    rawDescription,
+  );
   const date = normalizeDateOnly(derivedDate);
   let amount: number | null = null;
   if (profile.amountIndex !== null) {
@@ -590,37 +474,24 @@ function disambiguateHashes(txs: BankTransaction[]): BankTransaction[] {
   });
 }
 
+/**
+ * Parse every row of a stored CSV for one account.
+ *
+ * Header and otherwise-unparseable rows fall out naturally: they produce no
+ * date/amount/description and `mapBankRowToTransaction` returns null. That is
+ * more robust than slicing at a fixed header offset, because a merged CSV can
+ * contain header rows from several uploads interleaved with data.
+ */
 export function mapBankRowsToTransactions(
-  accountName: keyof typeof BANK_PROFILES | string,
+  accountName: string,
   rows: string[][],
+  profile: BankProfile | null | undefined,
 ): BankTransaction[] {
-  const fallbackProfile = BANK_PROFILES[accountName];
-  if (!fallbackProfile || !isProfileConfigured(fallbackProfile)) return [];
-
-  // Wells Fargo changed CSV format: old format has amount at col 1, new format has
-  // a header row (DATE, DESCRIPTION, AMOUNT, ...) with description at col 1 and amount at col 2.
-  // The stored mergedCsv can contain both formats simultaneously, so we detect per-row.
-  if (isWellsFargoProfile(String(accountName))) {
-    const newFormatProfile: BankProfile = { dateIndex: 0, amountIndex: 2, descriptionIndex: 1 };
-    return disambiguateHashes(rows.flatMap((row): BankTransaction[] => {
-      // Old format: col 1 is a numeric amount. New format: col 1 is description text.
-      const isOldFormat = parseBankAmount(String(row[1] ?? "")) !== null;
-      const profile = isOldFormat ? fallbackProfile : newFormatProfile;
-      const tx = mapBankRowToTransaction(accountName, row, profile);
-      return tx ? [tx] : [];
-    }));
-  }
-
-  const resolved = isVenmoProfile(String(accountName))
-    ? resolveVenmoProfile(rows, fallbackProfile)
-    : isCapitalOneProfile(String(accountName))
-      ? resolveCapitalOneProfile(rows, fallbackProfile)
-      : { profile: fallbackProfile, startRowIndex: 0 };
+  if (!profile || !isProfileConfigured(profile)) return [];
 
   return disambiguateHashes(
     rows
-      .slice(resolved.startRowIndex)
-      .map((row) => mapBankRowToTransaction(accountName, row, resolved.profile))
+      .map((row) => mapBankRowToTransaction(accountName, row, profile))
       .filter((tx): tx is BankTransaction => tx !== null),
   );
 }
@@ -640,16 +511,16 @@ function fullRowKey(row: string[]): string {
  * - Parseable rows -> `id:${tx.hash}`. The hash is already occurrence-
  *   disambiguated (X, X-2, ...), so two identical lines in one file get distinct
  *   keys and are both kept.
- * - Rows that produce no transaction (header rows, unconfigured banks) -> an
- *   occurrence-indexed full-row key (`raw:...`), preserving today's behaviour so
- *   header rows survive for Venmo/Capital One profile resolution.
+ * - Rows that produce no transaction (header rows, accounts with no CSV profile
+ *   yet) -> an occurrence-indexed full-row key (`raw:...`), so header rows are
+ *   preserved rather than silently dropped from storage.
  */
 export function computeCsvIdentityKeys(
   accountName: string,
   rows: string[][],
+  profile: BankProfile | null | undefined,
 ): string[] {
-  const profileAccount = PROFILE_BY_ACCOUNT[accountName] ?? accountName;
-  const transactions = mapBankRowsToTransactions(profileAccount, rows);
+  const transactions = mapBankRowsToTransactions(accountName, rows, profile);
   const keyByRawRef = new Map<string[], string>();
   for (const tx of transactions) {
     if (tx.raw) keyByRawRef.set(tx.raw, `id:${tx.hash}`);
@@ -676,9 +547,10 @@ export function mergeCsvRowsByIdentity(
   accountName: string,
   existing: string[][],
   incoming: string[][],
+  profile: BankProfile | null | undefined,
 ): { rows: string[][]; keys: string[] } {
-  const existingKeys = computeCsvIdentityKeys(accountName, existing);
-  const incomingKeys = computeCsvIdentityKeys(accountName, incoming);
+  const existingKeys = computeCsvIdentityKeys(accountName, existing, profile);
+  const incomingKeys = computeCsvIdentityKeys(accountName, incoming, profile);
   const byKey = new Map<string, string[]>();
   existing.forEach((row, i) => byKey.set(existingKeys[i], row));
   incoming.forEach((row, i) => byKey.set(incomingKeys[i], row));
@@ -686,25 +558,6 @@ export function mergeCsvRowsByIdentity(
     rows: Array.from(byKey.values()),
     keys: Array.from(byKey.keys()),
   };
-}
-
-async function getProcessedTransactionHashes(): Promise<Set<string>> {
-  if (typeof window !== "undefined") return new Set<string>();
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) return new Set<string>();
-
-  try {
-    const { neon } = await import("@neondatabase/serverless");
-    const sql = neon(connectionString);
-    const rows = (await sql`
-      SELECT hash
-      FROM processed_transactions
-    `) as { hash: string }[];
-    return new Set(rows.map((r) => r.hash));
-  } catch {
-    // Gracefully skip Neon hash matching when table/env is not ready.
-    return new Set<string>();
-  }
 }
 
 /**
@@ -723,8 +576,13 @@ async function getProcessedTransactionHashes(): Promise<Set<string>> {
 export async function findMatches(
   bankTransactions: BankTransaction[],
   sheetExpenses: SheetExpenseLike[],
-  options?: {
-    processedHashes?: Iterable<string>;
+  options: {
+    /**
+     * Required. The caller must pass the acting user's processed hashes —
+     * this function must never read them itself, because a query here would
+     * not be scoped to a user and would leak hashes across accounts.
+     */
+    processedHashes: Iterable<string>;
     sheetTransfers?: SheetTransferLike[];
     transferClaimStatusByRowId?: Record<string, TransferClaimStatus>;
     merchantMemory?: MerchantMemoryEntry[];
@@ -736,9 +594,7 @@ export async function findMatches(
     outgoingIsPositive?: boolean;
   },
 ): Promise<MatchResult[]> {
-  const processedHashes = options?.processedHashes
-    ? new Set(options.processedHashes)
-    : await getProcessedTransactionHashes();
+  const processedHashes = new Set(options.processedHashes);
   const exactSheetIndex = toIndexedMap(sheetExpenses);
   const amountIndex = toAmountOnlyIndex(sheetExpenses);
   const clusterSet = buildClusterSet(bankTransactions);

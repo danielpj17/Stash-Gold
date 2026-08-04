@@ -21,6 +21,8 @@ export type ActivityActionType =
 export type ActivityActor = "user" | "auto_match" | "memory_match";
 
 export type ActivityLogParams = {
+  /** Owner of the action. `actor` is provenance; this is identity. */
+  userId: string;
   actionType: ActivityActionType;
   actor: ActivityActor;
   payload: Record<string, unknown>;
@@ -28,31 +30,6 @@ export type ActivityLogParams = {
   bulkActionId?: string | null;
   parentActionId?: string | null;
 };
-
-export async function ensureActivityLogTable(sql: any): Promise<void> {
-  await sql`
-    CREATE TABLE IF NOT EXISTS reconciliation_activity_log (
-      id UUID PRIMARY KEY,
-      occurred_at TIMESTAMP NOT NULL DEFAULT now(),
-      action_type TEXT NOT NULL,
-      actor TEXT NOT NULL,
-      csv_upload_id UUID,
-      bulk_action_id UUID,
-      parent_action_id UUID,
-      payload JSONB NOT NULL,
-      reverted_at TIMESTAMP,
-      reverted_by_action_id UUID
-    )
-  `;
-  await sql`
-    CREATE INDEX IF NOT EXISTS idx_activity_log_occurred
-    ON reconciliation_activity_log(occurred_at DESC)
-  `;
-  await sql`
-    CREATE INDEX IF NOT EXISTS idx_activity_log_csv
-    ON reconciliation_activity_log(csv_upload_id)
-  `;
-}
 
 function normalizeUuid(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -83,6 +60,7 @@ export function buildActivityLogInsert(
   const query = sql`
     INSERT INTO reconciliation_activity_log (
       id,
+      user_id,
       action_type,
       actor,
       csv_upload_id,
@@ -92,6 +70,7 @@ export function buildActivityLogInsert(
     )
     VALUES (
       ${id}::uuid,
+      ${params.userId}::uuid,
       ${params.actionType},
       ${params.actor},
       ${csvUploadId}::uuid,
@@ -114,7 +93,6 @@ export async function logActivity(
   params: ActivityLogParams,
 ): Promise<string | null> {
   try {
-    await ensureActivityLogTable(sql);
     const { id, query } = buildActivityLogInsert(sql, params);
     await query;
     return id;

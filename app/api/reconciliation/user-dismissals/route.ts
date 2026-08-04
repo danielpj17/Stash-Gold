@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 import {
   buildActivityLogInsert,
-  ensureActivityLogTable,
   parseActivityGroupingIds,
   type ActivityActor,
 } from "@/lib/activityLog";
@@ -22,34 +21,20 @@ type UserDismissalRow = {
   created_at: string;
 };
 
-async function ensureUserDismissalsTable(sql: any) {
-  await sql`
-    CREATE TABLE IF NOT EXISTS reconciliation_user_sheet_dismissals (
-      sheet_name TEXT NOT NULL,
-      sheet_row_id TEXT NOT NULL,
-      note TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT now(),
-      PRIMARY KEY (sheet_name, sheet_row_id)
-    )
-  `;
-}
-
 function claimKey(sheetName: string, sheetRowId: string): string {
   return `${sheetName}:${sheetRowId}`;
 }
 
 export async function GET() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ dismissedKeys: [] as string[] });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   try {
-    const sql = neon(connectionString);
-    await ensureUserDismissalsTable(sql);
     const rows = (await sql`
       SELECT sheet_name, sheet_row_id, note, created_at
       FROM reconciliation_user_sheet_dismissals
+      WHERE user_id = ${userId}
       ORDER BY created_at DESC
     `) as UserDismissalRow[];
 
@@ -72,10 +57,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: { sheetName?: unknown; sheetRowId?: unknown; note?: unknown };
   try {
@@ -106,12 +90,9 @@ export async function POST(request: NextRequest) {
   const actor = normalizeActor((body as { actor?: unknown }).actor);
   const grouping = parseActivityGroupingIds(body);
 
-  const sql = neon(connectionString);
   try {
-    await ensureUserDismissalsTable(sql);
-    await ensureActivityLogTable(sql);
-
     const { id: actionId, query: logInsert } = buildActivityLogInsert(sql, {
+      userId,
       actionType: "user_dismiss_create",
       actor,
       payload: { sheetName, sheetRowId, note },
@@ -122,9 +103,9 @@ export async function POST(request: NextRequest) {
 
     await sql.transaction([
       sql`
-        INSERT INTO reconciliation_user_sheet_dismissals (sheet_name, sheet_row_id, note)
-        VALUES (${sheetName}, ${sheetRowId}, ${note})
-        ON CONFLICT (sheet_name, sheet_row_id) DO UPDATE SET note = EXCLUDED.note
+        INSERT INTO reconciliation_user_sheet_dismissals (user_id, sheet_name, sheet_row_id, note)
+        VALUES (${userId}::uuid, ${sheetName}, ${sheetRowId}, ${note})
+        ON CONFLICT (user_id, sheet_name, sheet_row_id) DO UPDATE SET note = EXCLUDED.note
       `,
       logInsert,
     ]);
@@ -146,10 +127,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: {
     sheetName?: unknown;
@@ -179,17 +159,14 @@ export async function DELETE(request: NextRequest) {
   const grouping = parseActivityGroupingIds(body);
 
   try {
-    const sql = neon(connectionString);
-    await ensureUserDismissalsTable(sql);
-    await ensureActivityLogTable(sql);
-
     const existing = (await sql`
       SELECT sheet_name, sheet_row_id, note
       FROM reconciliation_user_sheet_dismissals
-      WHERE sheet_name = ${sheetName} AND sheet_row_id = ${sheetRowId}
+      WHERE user_id = ${userId} AND sheet_name = ${sheetName} AND sheet_row_id = ${sheetRowId}
     `) as UserDismissalRow[];
 
     const { id: actionId, query: logInsert } = buildActivityLogInsert(sql, {
+      userId,
       actionType: "user_dismiss_delete",
       actor,
       payload: {
@@ -205,7 +182,7 @@ export async function DELETE(request: NextRequest) {
     await sql.transaction([
       sql`
         DELETE FROM reconciliation_user_sheet_dismissals
-        WHERE sheet_name = ${sheetName} AND sheet_row_id = ${sheetRowId}
+        WHERE user_id = ${userId} AND sheet_name = ${sheetName} AND sheet_row_id = ${sheetRowId}
       `,
       logInsert,
     ]);

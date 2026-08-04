@@ -1,5 +1,25 @@
 # Stash – Complete Reconstruction Handoff
 
+> ## ⚠️ OUT OF DATE — describes the single-user build
+>
+> This document was written for the original single-user app and has **not**
+> been updated for the multi-user rewrite. Everything below is wrong in at
+> least these ways:
+>
+> - Transactions no longer live in **Google Sheets**; they are in Neon
+>   (`transactions` table). `/api/sheets` and the Apps Script are deleted.
+> - There is no **SnapTrade** integration.
+> - Accounts and bank CSV formats are **user-defined**, not hardcoded
+>   (`BANK_PROFILES`, `PROFILE_BY_ACCOUNT`, `BASE_ACCOUNT_BALANCES` are gone).
+> - Every table is scoped by `user_id`, and the app requires **authentication**.
+> - The schema SQL quoted here is superseded by `docs/neon-setup.sql`.
+>
+> **Current sources of truth:** `CLAUDE.md` (architecture and invariants),
+> `docs/neon-setup.sql` (schema), `docs/reconciliation-guide.md` (user guide),
+> `app/reconcile/CLAUDE.md` (reconciliation internals).
+>
+> Kept only as a historical record of the pre-migration design.
+
 This document gives Claude Code everything it needs to recreate the Stash personal finance dashboard from scratch. It includes all verbatim source files, detailed specs for large files, manual setup steps the user must complete, and architectural notes.
 
 ---

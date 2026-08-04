@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,35 +11,16 @@ type UploadedFileRow = {
   bank_hashes: string[] | null;
 };
 
-async function ensureUploadedFilesTable(sql: any) {
-  await sql`
-    CREATE TABLE IF NOT EXISTS reconciliation_uploaded_files (
-      account_name TEXT NOT NULL,
-      file_name    TEXT NOT NULL,
-      created_at   TIMESTAMP DEFAULT now(),
-      bank_hashes  JSONB,
-      PRIMARY KEY (account_name, file_name)
-    )
-  `;
-  // Add column to existing tables that predate this schema.
-  await sql`
-    ALTER TABLE reconciliation_uploaded_files
-    ADD COLUMN IF NOT EXISTS bank_hashes JSONB
-  `;
-}
-
 export async function GET() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ filesByAccount: {} as Record<string, string[]> });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   try {
-    const sql = neon(connectionString);
-    await ensureUploadedFilesTable(sql);
     const rows = (await sql`
       SELECT account_name, file_name, created_at
       FROM reconciliation_uploaded_files
+      WHERE user_id = ${userId}
       ORDER BY created_at DESC
     `) as UploadedFileRow[];
 
@@ -64,10 +45,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: { accountName?: unknown; fileName?: unknown; bankHashes?: unknown };
   try {
@@ -90,12 +70,10 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const sql = neon(connectionString);
-    await ensureUploadedFilesTable(sql);
     await sql`
-      INSERT INTO reconciliation_uploaded_files (account_name, file_name, bank_hashes)
-      VALUES (${accountName}, ${fileName}, ${bankHashes ? JSON.stringify(bankHashes) : null}::jsonb)
-      ON CONFLICT (account_name, file_name)
+      INSERT INTO reconciliation_uploaded_files (user_id, account_name, file_name, bank_hashes)
+      VALUES (${userId}::uuid, ${accountName}, ${fileName}, ${bankHashes ? JSON.stringify(bankHashes) : null}::jsonb)
+      ON CONFLICT (user_id, account_name, file_name)
       DO UPDATE SET bank_hashes = EXCLUDED.bank_hashes, created_at = now()
     `;
     return NextResponse.json({ success: true, accountName, fileName });
@@ -108,10 +86,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: { accountName?: unknown; fileName?: unknown };
   try {
@@ -128,14 +105,11 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    const sql = neon(connectionString);
-    await ensureUploadedFilesTable(sql);
-
     // Fetch the stored bank hashes for this file.
     const fileRows = (await sql`
       SELECT bank_hashes
       FROM reconciliation_uploaded_files
-      WHERE account_name = ${accountName} AND file_name = ${fileName}
+      WHERE user_id = ${userId} AND account_name = ${accountName} AND file_name = ${fileName}
     `) as Array<{ bank_hashes: string[] | null }>;
 
     const rawHashes = fileRows[0]?.bank_hashes;
@@ -146,18 +120,23 @@ export async function DELETE(request: NextRequest) {
     if (hashes.length > 0) {
       // Remove all reconciliation state for these bank hashes.
       await sql.transaction([
-        sql`DELETE FROM reconciliation_claim_links WHERE bank_hash = ANY(${hashes}::text[])`,
-        sql`DELETE FROM reconciliation_transfer_claim_links WHERE bank_hash = ANY(${hashes}::text[])`,
-        sql`DELETE FROM processed_transactions WHERE hash = ANY(${hashes}::text[])`,
-        sql`DELETE FROM reconciliation_statement_dismissals WHERE hash = ANY(${hashes}::text[])`,
-        sql`DELETE FROM reconciliation_match_cache WHERE bank_hash = ANY(${hashes}::text[])`,
+        sql`DELETE FROM reconciliation_claim_links
+            WHERE user_id = ${userId} AND bank_hash = ANY(${hashes}::text[])`,
+        sql`DELETE FROM reconciliation_transfer_claim_links
+            WHERE user_id = ${userId} AND bank_hash = ANY(${hashes}::text[])`,
+        sql`DELETE FROM processed_transactions
+            WHERE user_id = ${userId} AND hash = ANY(${hashes}::text[])`,
+        sql`DELETE FROM reconciliation_statement_dismissals
+            WHERE user_id = ${userId} AND hash = ANY(${hashes}::text[])`,
+        sql`DELETE FROM reconciliation_match_cache
+            WHERE user_id = ${userId} AND bank_hash = ANY(${hashes}::text[])`,
       ]);
     }
 
     // Delete the file record itself.
     await sql`
       DELETE FROM reconciliation_uploaded_files
-      WHERE account_name = ${accountName} AND file_name = ${fileName}
+      WHERE user_id = ${userId} AND account_name = ${accountName} AND file_name = ${fileName}
     `;
 
     return NextResponse.json({ success: true, clearedHashes: hashes });

@@ -54,8 +54,6 @@ EXPENSE_CATEGORIES.forEach((cat, i) => {
   CATEGORY_COLORS[cat] = PIE_COLORS[i % PIE_COLORS.length];
 });
 
-export const BUDGET_STORAGE_KEY = "financial-dashboard-budget-goals";
-
 export const ASSET_CATEGORIES = ["Real Estate", "Vehicle", "Personal"] as const;
 
 export const LIABILITY_CATEGORIES = ["Credit Card", "Loan", "Mortgage"] as const;

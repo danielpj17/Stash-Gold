@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { auth } from "@/auth";
 import Providers from "@/components/Providers";
 
 export const viewport: Viewport = {
@@ -24,15 +25,21 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Resolving the session here and seeding SessionProvider with it means
+  // useSession() is populated on the very first client render — no extra
+  // /api/auth/session round trip, and cache readers can key by user id
+  // synchronously instead of waiting a tick and flashing empty.
+  const session = await auth();
+
   return (
     <html lang="en">
       <body className="min-h-screen bg-charcoal">
-        <Providers>{children}</Providers>
+        <Providers session={session}>{children}</Providers>
       </body>
     </html>
   );

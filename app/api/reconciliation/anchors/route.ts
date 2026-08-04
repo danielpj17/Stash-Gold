@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,20 +11,15 @@ type AnchorRow = {
 };
 
 export async function GET() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json({ anchors: [] as Array<{
-      accountName: string;
-      confirmedBalance: number;
-      asOfDate: string;
-    }> });
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   try {
-    const sql = neon(connectionString);
     const rows = (await sql`
       SELECT account_name, confirmed_balance, as_of_date
       FROM account_anchors
+      WHERE user_id = ${userId}
       ORDER BY as_of_date DESC
     `) as AnchorRow[];
     return NextResponse.json({
@@ -44,13 +39,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    return NextResponse.json(
-      { error: "DATABASE_URL not configured" },
-      { status: 503 },
-    );
-  }
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
 
   let body: unknown;
   try {
@@ -78,11 +69,10 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const sql = neon(connectionString);
     await sql`
-      INSERT INTO account_anchors (account_name, confirmed_balance, as_of_date)
-      VALUES (${accountName}, ${confirmedBalance}, ${asOfDate})
-      ON CONFLICT (account_name) DO UPDATE
+      INSERT INTO account_anchors (user_id, account_name, confirmed_balance, as_of_date)
+      VALUES (${userId}::uuid, ${accountName}, ${confirmedBalance}, ${asOfDate})
+      ON CONFLICT (user_id, account_name) DO UPDATE
       SET confirmed_balance = EXCLUDED.confirmed_balance,
           as_of_date = EXCLUDED.as_of_date
     `;

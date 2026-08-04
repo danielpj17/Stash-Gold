@@ -9,8 +9,10 @@ import {
   ClipboardCheck,
   Menu,
   BarChart2,
+  Settings,
 } from "lucide-react";
 import { useSidebar } from "@/contexts/SidebarContext";
+import SignOutButton from "./SignOutButton";
 import StashLogo from "./StashLogo";
 
 const navItems = [
@@ -19,6 +21,7 @@ const navItems = [
   { href: "/net-worth", label: "Net Worth", icon: TrendingUp },
   { href: "/reconcile", label: "Reconcile", icon: ClipboardCheck },
   { href: "/investment-calculator", label: "Life-Stage Planner", icon: BarChart2 },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export default function Sidebar() {
@@ -112,8 +115,9 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Optional bottom area */}
-      <div className="p-3 border-t border-charcoal-dark shrink-0">
+      {/* Account */}
+      <div className="p-3 border-t border-charcoal-dark shrink-0 space-y-1">
+        <SignOutButton collapsed={collapsed} />
         {!collapsed && (
           <p className="text-xs text-gray-500 px-3">Stash v1</p>
         )}

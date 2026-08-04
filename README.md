@@ -8,53 +8,50 @@ A responsive financial dashboard built with **Next.js 14**, **Tailwind CSS**, an
 - **Month selector**: Dropdown in the top right (January 2026 – December 2026, plus Full Year 2026)
 - **Responsive layout**: Collapsible sidebar on desktop; drawer overlay on mobile
 - **Theme**: Charcoal (`#1E1E1E`) with light blue accent (`#7BC0FF`)
-- **Google Sheets backend**: Optional; connect via a Google Apps Script Web App (see below).
-- **Budget goals**: Stored in the browser (localStorage).
-- **SnapTrade manual refresh**: Account Balances card can pull live brokerage balances on demand.
-
-## Google Sheets backend
-
-1. Create two tabs:
-   - **Expenses** headers: **Timestamp**, **Expense Type**, **Amount**, **Description**, **Month**, **Row ID**
-   - **Transfers** headers: **Timestamp**, **Transfer from**, **Transfer To**, **Transfer Amount**, **Month**, **Transfer Row ID**
-2. Use the sample script in `docs/google-apps-script-sample.js`: Extensions → Apps Script, paste the code, then Deploy → New deployment → Web app. Copy the Web App URL.
-3. Create `.env.local` from `.env.example` and set `NEXT_PUBLIC_GOOGLE_APPS_SCRIPT_URL` to that URL.
-4. Restart the dev server. The Expenses page will load data from the sheet; the New Expense form will append rows (Timestamp is set by the script).
-
-For reconciliation claim-linking, each expense row must have a stable **Row ID**:
-- new rows created via the sample script will get a UUID automatically
-- older rows should be backfilled once manually in the sheet
-
-For transfer leg claiming, each transfer row must have a stable **Transfer Row ID**:
-- new rows created via the sample script will get a UUID automatically
-- older transfer rows should be backfilled once manually in the sheet
+- **Multi-user**: sign in with an emailed magic link; every account is fully isolated.
+- **User-defined accounts**: name your own checking / savings / credit cards.
+- **Any bank's CSV**: column mappings are detected and confirmed per account.
+- **iOS Shortcut**: log an expense from your phone with no login, via a personal token.
 
 ## Getting started
 
 ```bash
 npm install
+cp .env.example .env.local     # then fill it in
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## SnapTrade manual account-balance refresh
+### Required setup
 
-The Budget page Account Balances card includes a refresh button in the card header. It only
-fetches SnapTrade balances when clicked (no polling, no automatic refresh on page load).
+1. **Create a Neon Postgres database** and put its connection string in
+   `DATABASE_URL`.
+2. **Run `docs/neon-setup.sql` once** in Neon's SQL editor. Sessions live in
+   this database, so sign-in fails until the tables exist.
+3. **Generate an auth secret**: `npx auth secret` → `AUTH_SECRET`. Set
+   `AUTH_URL` to your origin (`http://localhost:3000` locally).
+4. **Set up magic-link email.** Gmail SMTP works and is free: turn on 2-Step
+   Verification, create an **App Password** (a normal password will not work),
+   and fill in the `EMAIL_*` vars.
 
-Add these server-side env vars:
+Then sign in with your email address — the first sign-in creates your account.
+Add your accounts under **Settings → Accounts** before uploading statements.
 
-```bash
-SNAPTRADE_CLIENT_ID=...
-SNAPTRADE_CONSUMER_KEY=...
-SNAPTRADE_USER_ID=...
-SNAPTRADE_USER_SECRET=...
-```
+Verify the database anytime with `node scripts/check-schema.mjs`.
 
-The app calls `/api/snaptrade/refresh-balances` and overlays live values for supported
-brokerages (currently Fidelity, Robinhood, and Charles Schwab) while keeping other accounts
-from local budget math.
+## Reconciling
+
+Matching bank statements against what you logged is documented in
+[docs/reconciliation-guide.md](docs/reconciliation-guide.md), and in the app at
+`/guide/reconcile`.
+
+## Account balances
+
+Balances are computed entirely from your own data: an opening balance per account, plus every
+expense and transfer, optionally rebased on a confirmed statement balance (an "anchor") set
+from the Reconcile page. There is no live brokerage connection — investment accounts are
+tracked as manual assets or as ordinary accounts with anchors.
 
 ## Scripts
 
