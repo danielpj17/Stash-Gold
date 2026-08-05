@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { Copy, Check, Loader2, Plus, Ban } from "lucide-react";
+import { Copy, Check, Loader2, Plus, Ban, Smartphone } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
 import SignOutButton from "@/components/SignOutButton";
 
@@ -44,6 +44,28 @@ function CopyButton({ text, label }: { text: string; label: string }) {
     >
       {copied ? <Check className="w-3.5 h-3.5 text-[#50C878]" /> : <Copy className="w-3.5 h-3.5" />}
       {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+/** Inline "copy link" affordance for prose. */
+function CopyLink({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1800);
+        } catch {
+          /* clipboard unavailable; the link is still visible above */
+        }
+      }}
+      className="underline text-[#50C878] hover:brightness-110"
+    >
+      {copied ? "link copied" : "copy the link"}
     </button>
   );
 }
@@ -126,6 +148,19 @@ export default function SettingsPage() {
 
   const ingestUrl = `${origin || "https://your-app.vercel.app"}/api/ingest`;
   const exampleBody = '{"expenseType":"Groceries","amount":42.50,"description":"Smiths"}';
+
+  /**
+   * A pre-built Shortcut shared as an iCloud link. It prompts for the token on
+   * install (an Import Question), so one link works for everyone — each person
+   * supplies their own.
+   *
+   * iOS requires shortcuts to be signed (macOS-only `shortcuts sign`) and Apple
+   * has no API for minting iCloud links, so this URL can't be generated per
+   * user at runtime. It's authored once by hand and set as an env var. When
+   * it's unset the manual instructions below are the fallback.
+   */
+  const shortcutUrl = (process.env.NEXT_PUBLIC_SHORTCUT_ICLOUD_URL ?? "").trim();
+  const activeToken = tokens.find((t) => !t.revokedAt) ?? null;
 
   return (
     <DashboardLayout>
@@ -236,9 +271,70 @@ export default function SettingsPage() {
               </ul>
             )}
 
+            {shortcutUrl && (
+              <div className="rounded-lg border border-[#50C878]/40 bg-[#50C878]/5 overflow-hidden">
+                <div className="px-3 py-2 bg-[#50C878]/10">
+                  <h3 className="text-sm text-white font-medium">Add it to your iPhone</h3>
+                </div>
+                <div className="p-3 space-y-3 text-sm text-gray-300">
+                  <ol className="space-y-2">
+                    <li className="flex gap-2">
+                      <span className="shrink-0 w-5 h-5 rounded-full bg-[#50C878] text-charcoal text-xs font-bold flex items-center justify-center">
+                        1
+                      </span>
+                      <span>
+                        {activeToken ? (
+                          <>
+                            Copy your token
+                            {freshToken ? " from the green box above." : "."}
+                            {!freshToken && (
+                              <span className="block text-xs text-gray-500 mt-0.5">
+                                Tokens are only shown once, so if you didn&apos;t save it, create a
+                                new one above and revoke the old one.
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            Create a token with <strong>New token</strong> above, and copy it.
+                          </>
+                        )}
+                      </span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="shrink-0 w-5 h-5 rounded-full bg-[#50C878] text-charcoal text-xs font-bold flex items-center justify-center">
+                        2
+                      </span>
+                      <span>
+                        Open this link on your iPhone and tap <strong>Add Shortcut</strong>. It
+                        will ask for your token — paste it in. That&apos;s the whole setup.
+                      </span>
+                    </li>
+                  </ol>
+
+                  <a
+                    href={shortcutUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 rounded-md bg-[#50C878] px-4 py-2 font-semibold text-charcoal hover:brightness-110 transition"
+                  >
+                    <Smartphone className="w-4 h-4" />
+                    Add to iPhone
+                  </a>
+
+                  <p className="text-xs text-gray-500">
+                    Reading this on a computer? Send the link to your phone —{" "}
+                    <CopyLink text={shortcutUrl} />
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="rounded-lg border border-charcoal-dark overflow-hidden">
               <div className="px-3 py-2 bg-[#2C2C2C]">
-                <h3 className="text-sm text-white font-medium">Shortcut setup</h3>
+                <h3 className="text-sm text-white font-medium">
+                  {shortcutUrl ? "Or build it by hand" : "Shortcut setup"}
+                </h3>
               </div>
               <div className="p-3 space-y-3 text-sm text-gray-300">
                 <p>
@@ -288,6 +384,16 @@ export default function SettingsPage() {
                   <code>&quot;date&quot;: &quot;2026-03-14&quot;</code> to back-date it. If you
                   ever lose your phone, revoke the token above — no redeploy needed.
                 </p>
+
+                {!shortcutUrl && (
+                  <p className="text-xs text-gray-500 border-t border-charcoal-dark pt-3">
+                    <strong className="text-gray-400">Running this app?</strong> Build the Shortcut
+                    once with an Import Question for the token, share it as an iCloud link, and set{" "}
+                    <code className="text-gray-400">NEXT_PUBLIC_SHORTCUT_ICLOUD_URL</code> to that
+                    link. An &quot;Add to iPhone&quot; button then replaces these instructions for
+                    everyone. See <code className="text-gray-400">docs/ios-shortcut-setup.md</code>.
+                  </p>
+                )}
               </div>
             </div>
           </div>
