@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { getDefaultAccountId } from "@/lib/accounts";
 import type { Sql } from "@/lib/db";
 
 export type TransactionKind = "expense" | "income" | "transfer";
@@ -177,6 +178,12 @@ export async function insertTransaction(
 ): Promise<TransactionRow> {
   const id = randomUUID();
 
+  // An expense with no account contributes to budgets and totals but moves no
+  // balance, which is a silent surprise. The iOS Shortcut can't reasonably send
+  // a UUID, so fall back to the user's default account.
+  const account =
+    input.kind === "transfer" ? null : input.account ?? (await getDefaultAccountId(sql, userId));
+
   await sql`
     INSERT INTO transactions (
       id, user_id, kind, occurred_at, amount,
@@ -184,7 +191,7 @@ export async function insertTransaction(
     )
     VALUES (
       ${id}, ${userId}::uuid, ${input.kind}, ${input.occurredAt}::timestamptz, ${input.amount},
-      ${input.category}, ${input.description}, ${input.account},
+      ${input.category}, ${input.description}, ${account},
       ${input.transferFrom}, ${input.transferTo}
     )
   `;

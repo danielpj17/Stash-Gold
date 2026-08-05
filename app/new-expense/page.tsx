@@ -12,7 +12,7 @@ import Link from "next/link";
 
 export default function NewExpensePage() {
   const { triggerRefresh } = useRefresh();
-  const { activeAccounts, loading: accountsLoading } = useAccounts();
+  const { activeAccounts, defaultAccount, loading: accountsLoading } = useAccounts();
   const [expenseType, setExpenseType] = useState("");
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
@@ -20,11 +20,11 @@ export default function NewExpensePage() {
   const [status, setStatus] = useState<"idle" | "submitting" | "success" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState("");
 
-  // Default to the first account so the common case is one tap fewer. Without
-  // an account the entry still records, it just can't move a balance.
+  // Preselect the user's default account so the common case is one tap fewer,
+  // and so the form agrees with where a Shortcut-logged expense would land.
   useEffect(() => {
-    if (!account && activeAccounts.length > 0) setAccount(activeAccounts[0].id);
-  }, [account, activeAccounts]);
+    if (!account && defaultAccount) setAccount(defaultAccount.id);
+  }, [account, defaultAccount]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

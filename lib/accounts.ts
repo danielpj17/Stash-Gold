@@ -18,7 +18,14 @@ export type FinancialAccount = {
   kind: AccountKind;
   openingBalance: number;
   isActive: boolean;
+  /** Where expenses land when none is specified (e.g. the iOS Shortcut). */
+  isDefault: boolean;
   sortOrder: number;
+  /**
+   * Soft-deleted. Kept so reconciliation history — which references accounts
+   * by id — can still resolve a name. Hidden from every picker and list.
+   */
+  isDeleted: boolean;
   /** Present once the user has confirmed a CSV mapping for this account. */
   csvProfile: StoredCsvProfile | null;
 };
@@ -61,7 +68,9 @@ type AccountRow = {
   kind: string;
   opening_balance: string | number;
   is_active: boolean;
+  is_default: boolean;
   sort_order: number;
+  deleted_at: string | null;
   has_header: boolean | null;
   header_row_index: number | null;
   date_index: number | null;
@@ -85,7 +94,9 @@ function mapRow(row: AccountRow): FinancialAccount {
     kind: normalizeAccountKind(row.kind),
     openingBalance: Number(row.opening_balance ?? 0),
     isActive: row.is_active !== false,
+    isDefault: row.is_default === true,
     sortOrder: Number(row.sort_order ?? 0),
+    isDeleted: row.deleted_at !== null,
     csvProfile: hasProfile
       ? {
           hasHeader: row.has_header === true,
@@ -108,7 +119,8 @@ function mapRow(row: AccountRow): FinancialAccount {
 
 const SELECT_ACCOUNTS = (sql: Sql, userId: string) => sql`
   SELECT
-    a.id, a.name, a.kind, a.opening_balance, a.is_active, a.sort_order,
+    a.id, a.name, a.kind, a.opening_balance, a.is_active, a.is_default,
+    a.sort_order, a.deleted_at,
     p.has_header, p.header_row_index, p.date_index, p.amount_index,
     p.description_index, p.debit_index, p.credit_index,
     p.outflow_is_positive, p.derive_date_from_description,
@@ -119,6 +131,13 @@ const SELECT_ACCOUNTS = (sql: Sql, userId: string) => sql`
   ORDER BY a.sort_order ASC, a.name ASC
 `;
 
+/**
+ * Every account including soft-deleted ones.
+ *
+ * Deleted accounts have to come back: reconciliation history references
+ * accounts by id, so without them a past match would render its account as a
+ * raw UUID. Callers filter on `isDeleted` for anything user-facing.
+ */
 export async function listAccounts(sql: Sql, userId: string): Promise<FinancialAccount[]> {
   const rows = (await SELECT_ACCOUNTS(sql, userId)) as AccountRow[];
   return rows.map(mapRow);
@@ -131,6 +150,22 @@ export async function getAccount(
 ): Promise<FinancialAccount | null> {
   const accounts = await listAccounts(sql, userId);
   return accounts.find((a) => a.id === accountId) ?? null;
+}
+
+/**
+ * The account an expense belongs to when the caller didn't name one — the
+ * path the iOS Shortcut takes, since it can't reasonably send a UUID.
+ * Falls back to the first live account if no default is marked.
+ */
+export async function getDefaultAccountId(sql: Sql, userId: string): Promise<string | null> {
+  const rows = (await sql`
+    SELECT id
+    FROM financial_accounts
+    WHERE user_id = ${userId} AND deleted_at IS NULL AND is_active
+    ORDER BY is_default DESC, sort_order ASC, created_at ASC
+    LIMIT 1
+  `) as Array<{ id: string }>;
+  return rows[0]?.id ?? null;
 }
 
 /**

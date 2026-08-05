@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import Link from "next/link";
-import { Loader2, Plus, Trash2, Archive, ArchiveRestore } from "lucide-react";
+import { Loader2, Plus, Trash2, Archive, ArchiveRestore, Star } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
 import GlassDropdown from "@/components/GlassDropdown";
 import { useAccounts } from "@/contexts/AccountsContext";
@@ -88,25 +88,20 @@ export default function AccountSettingsPage() {
 
   const handleDelete = useCallback(
     async (account: FinancialAccount) => {
+      const ok = window.confirm(
+        `Delete "${account.name}"?\n\n` +
+          "It disappears from your accounts and pickers. Statements you've already " +
+          "reconciled against it stay matched — nothing is un-matched.\n\n" +
+          "Its transactions stop counting toward any balance, but remain in your " +
+          "expense history and budget totals.",
+      );
+      if (!ok) return;
+
       setBusyId(account.id);
       setFormError("");
       try {
-        // First attempt is unforced: the API refuses with 409 + a count when the
-        // account still has reconciliation data, so a misclick can't wipe it.
-        let res = await fetch(`/api/accounts/${account.id}`, { method: "DELETE" });
-        let data = await res.json().catch(() => ({}));
-
-        if (res.status === 409 && data?.requiresForce) {
-          const ok = window.confirm(
-            `"${account.name}" still has ${data.stateCount} reconciliation record(s).\n\n` +
-              "Deleting it also deletes its statement rows, matches, claims, dismissals and " +
-              "anchors. This cannot be undone.\n\nDelete anyway?",
-          );
-          if (!ok) return;
-          res = await fetch(`/api/accounts/${account.id}?force=true`, { method: "DELETE" });
-          data = await res.json().catch(() => ({}));
-        }
-
+        const res = await fetch(`/api/accounts/${account.id}`, { method: "DELETE" });
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data?.error ?? `Failed to delete (${res.status})`);
         if (Array.isArray(data.accounts)) setAccounts(data.accounts);
       } catch (err) {
@@ -260,6 +255,24 @@ export default function AccountSettingsPage() {
                   </span>
 
                   <div className="flex items-center gap-1 ml-auto">
+                    <button
+                      type="button"
+                      disabled={busyId === account.id || account.isDefault}
+                      onClick={() => void patchAccount(account, { isDefault: true })}
+                      title={
+                        account.isDefault
+                          ? "Default account — expenses with no account chosen land here"
+                          : "Make this the default account"
+                      }
+                      aria-label={`Make ${account.name} the default account`}
+                      className={`p-2 rounded-md transition disabled:cursor-default ${
+                        account.isDefault
+                          ? "text-[#50C878]"
+                          : "text-gray-500 hover:text-[#50C878] hover:bg-charcoal"
+                      }`}
+                    >
+                      <Star className={`w-4 h-4 ${account.isDefault ? "fill-current" : ""}`} />
+                    </button>
                     <button
                       type="button"
                       disabled={busyId === account.id}

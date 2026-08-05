@@ -112,6 +112,13 @@ CREATE INDEX idx_user_tokens_user ON user_tokens(user_id);
 -- defaults to outflow_is_positive = true in its CSV profile.
 -- ---------------------------------------------------------------------
 
+-- `is_default` is the account an expense lands in when none is given — the
+-- iOS Shortcut can't reasonably send a UUID, so without it Shortcut-logged
+-- expenses would move no balance.
+--
+-- `deleted_at` makes deletion a SOFT delete. Reconciliation rows reference an
+-- account by id, so removing the row would leave that history unable to
+-- resolve a name. Keeping it means past matches survive a deletion intact.
 CREATE TABLE financial_accounts (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -120,11 +127,22 @@ CREATE TABLE financial_accounts (
                     CHECK (kind IN ('checking','savings','credit_card','cash','brokerage','other')),
   opening_balance NUMERIC(14,2) NOT NULL DEFAULT 0,
   is_active       BOOLEAN NOT NULL DEFAULT true,
+  is_default      BOOLEAN NOT NULL DEFAULT false,
   sort_order      INTEGER NOT NULL DEFAULT 0,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (user_id, name)
+  deleted_at      TIMESTAMPTZ
 );
 CREATE INDEX idx_financial_accounts_user ON financial_accounts(user_id, sort_order);
+-- Names are unique among LIVE accounts only. A plain UNIQUE (user_id, name)
+-- would mean deleting "Checking" permanently reserved that name, since the
+-- soft-deleted row keeps it.
+CREATE UNIQUE INDEX idx_financial_accounts_name
+  ON financial_accounts (user_id, name)
+  WHERE deleted_at IS NULL;
+-- At most one default per user.
+CREATE UNIQUE INDEX idx_financial_accounts_one_default
+  ON financial_accounts (user_id)
+  WHERE is_default AND deleted_at IS NULL;
 
 
 -- ---------------------------------------------------------------------

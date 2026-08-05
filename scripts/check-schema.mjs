@@ -76,7 +76,14 @@ const EXPECTED_CONSTRAINTS = [
   ["reconciliation_merchant_memory", ["user_id", "fingerprint", "bank_account_name"]],
   ["manual_assets", ["user_id", "id"]],
   ["manual_liabilities", ["user_id", "id"]],
-  ["financial_accounts", ["user_id", "name"]],
+  // financial_accounts' name uniqueness is a PARTIAL index (live rows only),
+  // which doesn't appear in information_schema — checked separately below.
+];
+
+/** Partial unique indexes, which information_schema.table_constraints omits. */
+const EXPECTED_INDEXES = [
+  ["financial_accounts", "idx_financial_accounts_name"],
+  ["financial_accounts", "idx_financial_accounts_one_default"],
 ];
 
 async function main() {
@@ -156,6 +163,31 @@ async function main() {
     );
     if (!found) {
       problems.push(`${table}: no PK/UNIQUE on (${expected.join(", ")}) — ON CONFLICT will fail`);
+    }
+  }
+
+  // Columns added after the initial schema — a database created from an older
+  // neon-setup.sql needs docs/migrations applied.
+  const accountCols = await sql`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'financial_accounts'
+  `;
+  const haveAccountCols = new Set(accountCols.map((r) => r.column_name));
+  for (const col of ["is_default", "deleted_at"]) {
+    if (tables.has("financial_accounts") && !haveAccountCols.has(col)) {
+      problems.push(
+        `financial_accounts is missing "${col}" — run docs/migrations/001-default-account-and-soft-delete.sql`,
+      );
+    }
+  }
+
+  const indexRows = await sql`
+    SELECT tablename, indexname FROM pg_indexes WHERE schemaname = 'public'
+  `;
+  const haveIndexes = new Set(indexRows.map((r) => `${r.tablename}::${r.indexname}`));
+  for (const [table, index] of EXPECTED_INDEXES) {
+    if (tables.has(table) && !haveIndexes.has(`${table}::${index}`)) {
+      problems.push(`${table}: missing index ${index} — run docs/migrations/`);
     }
   }
 

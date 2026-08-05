@@ -14,9 +14,16 @@ import { useRefresh } from "@/contexts/RefreshContext";
 import type { FinancialAccount } from "@/lib/accounts";
 
 type AccountsContextType = {
+  /** Live accounts — what the manage-accounts list shows. Excludes deleted. */
   accounts: FinancialAccount[];
-  /** Active accounts only — what selectors and dropdowns should offer. */
+  /** Live and not archived — what selectors and dropdowns should offer. */
   activeAccounts: FinancialAccount[];
+  /** The user's default account, where un-attributed expenses land. */
+  defaultAccount: FinancialAccount | null;
+  /**
+   * Includes soft-deleted accounts, so `labelFor` can still name an account
+   * that past reconciliation history references.
+   */
   byId: Map<string, FinancialAccount>;
   /** Display name for an account id. Falls back to the id so archived or
    *  deleted accounts still render something recognisable rather than blank. */
@@ -63,10 +70,13 @@ export function AccountsProvider({ children }: { children: ReactNode }) {
   }, [status, refreshKey, refresh]);
 
   const value = useMemo<AccountsContextType>(() => {
+    // byId spans everything, including deleted, so history stays labeled.
     const byId = new Map(accounts.map((a) => [a.id, a]));
+    const live = accounts.filter((a) => !a.isDeleted);
     return {
-      accounts,
-      activeAccounts: accounts.filter((a) => a.isActive),
+      accounts: live,
+      activeAccounts: live.filter((a) => a.isActive),
+      defaultAccount: live.find((a) => a.isDefault) ?? live[0] ?? null,
       byId,
       labelFor: (accountId: string) => byId.get(accountId)?.name ?? accountId,
       loading,

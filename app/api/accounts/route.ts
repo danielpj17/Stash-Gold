@@ -36,6 +36,13 @@ export async function POST(request: NextRequest) {
   if (!name) {
     return NextResponse.json({ error: "name is required" }, { status: 400 });
   }
+  // Reserved: these are the "money left the tracked set" labels transfers use.
+  if (["cash", "parents", "misc.", "other"].includes(name.toLowerCase())) {
+    return NextResponse.json(
+      { error: `"${name}" is reserved for transfers in and out of your accounts.` },
+      { status: 400 },
+    );
+  }
   if (name.length > 60) {
     return NextResponse.json({ error: "name must be 60 characters or fewer" }, { status: 400 });
   }
@@ -48,7 +55,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const rows = (await sql`
-      INSERT INTO financial_accounts (user_id, name, kind, opening_balance, sort_order)
+      INSERT INTO financial_accounts (user_id, name, kind, opening_balance, sort_order, is_default)
       VALUES (
         ${userId}::uuid,
         ${name},
@@ -57,6 +64,12 @@ export async function POST(request: NextRequest) {
         COALESCE(
           (SELECT MAX(sort_order) + 1 FROM financial_accounts WHERE user_id = ${userId}::uuid),
           0
+        ),
+        -- The first account a user creates becomes their default, so expenses
+        -- logged without an account (the iOS Shortcut) have somewhere to go.
+        NOT EXISTS (
+          SELECT 1 FROM financial_accounts
+          WHERE user_id = ${userId}::uuid AND deleted_at IS NULL
         )
       )
       RETURNING id

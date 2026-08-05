@@ -24,6 +24,7 @@ import {
 import Link from "next/link";
 import { useAccounts } from "@/contexts/AccountsContext";
 import CsvMappingModal from "@/components/CsvMappingModal";
+import ManageAccountsModal from "@/components/ManageAccountsModal";
 import { RECONCILIATION_RESET_CONFIRM } from "@/lib/reconciliationReset";
 
 /**
@@ -591,6 +592,7 @@ export default function ReconcilePage() {
     rows: string[][];
     pendingFile: File;
   } | null>(null);
+  const [manageAccountsOpen, setManageAccountsOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [removingDuplicates, setRemovingDuplicates] = useState(false);
   const [rematching, setRematching] = useState(false);
@@ -4256,6 +4258,13 @@ export default function ReconcilePage() {
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h1 className="text-2xl font-semibold text-white">Reconcile</h1>
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            <button
+              type="button"
+              onClick={() => setManageAccountsOpen(true)}
+              className="px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-sm hover:text-white hover:bg-[#2d2d2d] transition-colors"
+            >
+              Accounts
+            </button>
             <Link
               href="/guide/reconcile"
               className="px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-sm hover:text-white hover:bg-[#2d2d2d] transition-colors"
@@ -6401,6 +6410,8 @@ export default function ReconcilePage() {
           </div>
         </div>
       )}
+
+      {manageAccountsOpen && <ManageAccountsModal onClose={() => setManageAccountsOpen(false)} />}
 
       {csvMapping && accountsById.get(csvMapping.accountId) && (
         <CsvMappingModal

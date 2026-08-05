@@ -32,6 +32,7 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
     kind?: unknown;
     openingBalance?: unknown;
     isActive?: unknown;
+    isDefault?: unknown;
     csvProfile?: Record<string, unknown> | null;
   };
   try {
@@ -66,6 +67,21 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
              is_active = ${isActive}
        WHERE user_id = ${userId} AND id = ${accountId}::uuid
     `;
+
+    // Only one default per user (enforced by a partial unique index), so clear
+    // the old one in the same transaction as setting the new one.
+    if (body.isDefault === true) {
+      await sql.transaction([
+        sql`
+          UPDATE financial_accounts SET is_default = false
+           WHERE user_id = ${userId} AND is_default AND id <> ${accountId}::uuid
+        `,
+        sql`
+          UPDATE financial_accounts SET is_default = true
+           WHERE user_id = ${userId} AND id = ${accountId}::uuid AND deleted_at IS NULL
+        `,
+      ]);
+    }
 
     if (body.csvProfile !== undefined) {
       if (body.csvProfile === null) {
@@ -151,13 +167,22 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
 }
 
 /**
- * Delete an account and everything reconciliation-related that references it.
+ * Delete an account — SOFT.
  *
- * Requires ?force=true when the account still has reconciliation state, so a
- * misclick can't silently discard months of matching. Archiving (isActive:false)
- * is the non-destructive alternative.
+ * Reconciliation history references accounts by id: claim links, processed
+ * hashes, dismissals, the match cache, anchors and merchant memory all carry
+ * the account id in `account_name`. Hard-deleting the row would leave all of
+ * that intact but unable to resolve a name, so past matches would render as
+ * raw UUIDs — and deleting the history instead would silently throw away
+ * months of reconciling.
+ *
+ * So the row stays, flagged deleted. It vanishes from every picker and list,
+ * while everything ever matched against it stays matched and correctly labeled.
+ * Transactions that referenced it keep their history too; they simply stop
+ * contributing to any balance, because the account is no longer in the live
+ * set that `computeAccountBalances` seeds from.
  */
-export async function DELETE(request: NextRequest, context: { params: { id: string } }) {
+export async function DELETE(_request: NextRequest, context: { params: { id: string } }) {
   const ctx = await requireUser();
   if (isErrorResponse(ctx)) return ctx;
   const { sql, userId } = ctx;
@@ -166,46 +191,40 @@ export async function DELETE(request: NextRequest, context: { params: { id: stri
   if (!accountId) {
     return NextResponse.json({ error: "id is required" }, { status: 400 });
   }
-  const force = request.nextUrl.searchParams.get("force") === "true";
 
   try {
     const existing = await getAccount(sql, userId, accountId);
     if (!existing) {
       return NextResponse.json({ error: "Account not found" }, { status: 404 });
     }
-
-    const counts = (await sql`
-      SELECT
-        (SELECT count(*) FROM reconciliation_csv_rows
-          WHERE user_id = ${userId} AND account_name = ${accountId}) AS csv_rows,
-        (SELECT count(*) FROM reconciliation_claim_links
-          WHERE user_id = ${userId} AND account_name = ${accountId}) AS claims
-    `) as Array<{ csv_rows: string; claims: string }>;
-    const stateCount = Number(counts[0]?.csv_rows ?? 0) + Number(counts[0]?.claims ?? 0);
-
-    if (stateCount > 0 && !force) {
-      return NextResponse.json(
-        {
-          error: "This account still has reconciliation data.",
-          requiresForce: true,
-          stateCount,
-        },
-        { status: 409 },
-      );
+    if (existing.isDeleted) {
+      return NextResponse.json({ success: true, accounts: await listAccounts(sql, userId) });
     }
 
     await sql.transaction([
-      sql`DELETE FROM reconciliation_csv_rows WHERE user_id = ${userId} AND account_name = ${accountId}`,
-      sql`DELETE FROM reconciliation_match_cache WHERE user_id = ${userId} AND account_name = ${accountId}`,
-      sql`DELETE FROM reconciliation_uploaded_files WHERE user_id = ${userId} AND account_name = ${accountId}`,
-      sql`DELETE FROM reconciliation_claim_links WHERE user_id = ${userId} AND account_name = ${accountId}`,
-      sql`DELETE FROM reconciliation_statement_dismissals WHERE user_id = ${userId} AND account_name = ${accountId}`,
-      sql`DELETE FROM reconciliation_transfer_claim_links WHERE user_id = ${userId} AND bank_account_name = ${accountId}`,
-      sql`DELETE FROM processed_transactions WHERE user_id = ${userId} AND account_name = ${accountId}`,
-      sql`DELETE FROM reconciliation_merchant_memory WHERE user_id = ${userId} AND bank_account_name = ${accountId}`,
-      sql`DELETE FROM account_anchors WHERE user_id = ${userId} AND account_name = ${accountId}`,
-      // account_csv_profiles cascades from financial_accounts.
-      sql`DELETE FROM financial_accounts WHERE user_id = ${userId} AND id = ${accountId}::uuid`,
+      sql`
+        UPDATE financial_accounts
+           SET deleted_at = now(), is_active = false, is_default = false
+         WHERE user_id = ${userId} AND id = ${accountId}::uuid
+      `,
+      // If this was the default, promote the oldest remaining live account so
+      // Shortcut-logged expenses still have somewhere to land.
+      sql`
+        UPDATE financial_accounts
+           SET is_default = true
+         WHERE id = (
+           SELECT id FROM financial_accounts
+            WHERE user_id = ${userId}::uuid
+              AND deleted_at IS NULL
+              AND id <> ${accountId}::uuid
+            ORDER BY sort_order ASC, created_at ASC
+            LIMIT 1
+         )
+           AND NOT EXISTS (
+             SELECT 1 FROM financial_accounts
+              WHERE user_id = ${userId}::uuid AND is_default AND deleted_at IS NULL
+           )
+      `,
     ]);
 
     return NextResponse.json({ success: true, accounts: await listAccounts(sql, userId) });
