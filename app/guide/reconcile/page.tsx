@@ -143,13 +143,17 @@ export default function ReconcileGuidePage() {
 
         <Section id="clearing" title="Clearing the queue">
           <p>
-            Approve rows one at a time, or use <strong className="text-white">Bulk Approve</strong>{" "}
-            — pick a filter chip (<em>High confidence</em> is the safe one), select all visible,
-            approve.
+            Every row carries a <strong className="text-white">Claim</strong> button plus a{" "}
+            <strong className="text-white">⋯</strong> menu holding the rest of its actions.
           </p>
           <p>
-            <strong className="text-white">Quick-add</strong> on an unmatched row logs the missing
-            expense and links it to that bank row in one step.
+            Approve rows one at a time with <em>Approve match</em> in that menu, or use{" "}
+            <strong className="text-white">Bulk Approve</strong> — pick a filter chip (
+            <em>High confidence</em> is the safe one), select all visible, approve.
+          </p>
+          <p>
+            <strong className="text-white">Quick add to sheet</strong> on an unmatched row logs the
+            missing expense and links it to that bank row in one step.
           </p>
           <p>
             <strong className="text-white">Dismiss</strong> a bank row that will never have a
@@ -157,6 +161,28 @@ export default function ReconcileGuidePage() {
             knows why. You can dismiss in the other direction too: something you logged that will
             never hit a statement, like cash handed to a friend.
           </p>
+        </Section>
+
+        <Section id="editing" title="Fixing an entry you logged">
+          <p>
+            Sometimes the reason a row won&apos;t match is the entry itself: you typed $45 when the
+            charge was $45.20, dated it a day late, or filed it under the wrong category.
+          </p>
+          <p>
+            Open the <strong className="text-white">⋯</strong> menu on the entry and pick{" "}
+            <strong className="text-white">Edit entry</strong> to change its date, amount, category
+            and description. Saving re-runs matching, so a corrected entry usually links itself on
+            the spot.
+          </p>
+          <p>
+            <strong className="text-white">Delete entry</strong> in the same menu removes the
+            transaction from Stash entirely — dashboard totals and budgets included. Use it for
+            something logged twice or by mistake.
+          </p>
+          <Note>
+            Deleting can&apos;t be undone. If the entry is real but will simply never appear on a
+            statement, dismiss it instead.
+          </Note>
         </Section>
 
         <Section id="transfers" title="Transfers take two legs">
@@ -175,8 +201,9 @@ export default function ReconcileGuidePage() {
         <Section id="splits" title="Split charges">
           <p>
             One bank charge can cover several logged expenses — a $120 supermarket run split into
-            Groceries $95 and Household $25. Use the split button, tick the entries it covers, and
-            Stash checks the amounts add up exactly before linking.
+            Groceries $95 and Household $25. Use the <strong className="text-white">Claim</strong>{" "}
+            button on the bank row, tick the entries it covers, and Stash checks the amounts add up
+            exactly before linking.
           </p>
         </Section>
 

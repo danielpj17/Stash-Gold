@@ -115,12 +115,15 @@ attached (usually because you dismissed it).
 
 ## Clearing the queue
 
-**Approve one at a time** with the check button, or use **Bulk Approve**:
-select a filter chip (*High confidence* is the safe one), tick "select all
-visible", and approve the lot.
+Every row carries a **Claim** button plus a **⋯** menu holding the rest of its
+actions.
 
-**Add a missing expense** with the quick-add button on an unmatched row. It logs
-the expense *and* links it to that bank row in one step.
+**Approve one at a time** with *Approve match* in the row's ⋯ menu, or use
+**Bulk Approve**: select a filter chip (*High confidence* is the safe one), tick
+"select all visible", and approve the lot.
+
+**Add a missing expense** with *Quick add to sheet* in the ⋯ menu of an unmatched
+row. It logs the expense *and* links it to that bank row in one step.
 
 **Dismiss** a bank row that will never have a logged entry — a bank fee, a
 refund, interest. You'll be asked for a short note so future-you knows why.
@@ -128,6 +131,23 @@ refund, interest. You'll be asked for a short note so future-you knows why.
 You can also dismiss in the other direction: an entry you logged that will never
 appear on a statement (cash you handed someone, a reimbursement that netted
 out).
+
+---
+
+## Fixing an entry you logged
+
+Sometimes the reason a row won't match is the entry itself: you typed $45 when
+the charge was $45.20, dated it a day late, or filed it under the wrong
+category.
+
+Open the ⋯ menu on the entry and pick **Edit entry**. You can change its date,
+amount, category and description. Saving re-runs matching, so a corrected entry
+usually links itself on the spot.
+
+**Delete entry** in the same menu removes the transaction from Stash entirely —
+dashboard totals and budgets included. Use it for something logged twice or by
+mistake. If the entry is real but will simply never appear on a statement,
+dismiss it instead; deleting can't be undone.
 
 ---
 
@@ -148,9 +168,9 @@ withdrawal), claim it as a one-leg transfer.
 ## Split charges
 
 One bank charge can cover several logged expenses — a $120 supermarket run split
-into Groceries $95 and Household $25. Use the **split** button, tick the entries
-it covers, and Stash checks the amounts add up to the charge exactly before
-linking them.
+into Groceries $95 and Household $25. Use the **Claim** button on the bank row,
+tick the entries it covers, and Stash checks the amounts add up to the charge
+exactly before linking them.
 
 ---
 

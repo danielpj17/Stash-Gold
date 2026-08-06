@@ -3,15 +3,19 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import Papa from "papaparse";
-import { Ban, Check, Filter, Link2Off, Loader2, Pencil, PlusCircle, Search, Upload, X } from "lucide-react";
+import { Ban, Check, Filter, Link2Off, Loader2, Pencil, PlusCircle, Search, Trash2, Upload, X } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
 import GlassDropdown, { type GlassDropdownOption } from "@/components/GlassDropdown";
+import RowActionMenu from "@/components/RowActionMenu";
 import {
+  deleteTransaction,
   getExpenses,
   getTransfers,
   submitExpense,
-  updateSheetEntryDate,
+  updateExpense,
+  updateTransfer,
   type SheetRow,
+  type TransactionPatch,
   type TransferRow,
 } from "@/services/transactionsApi";
 import { EXPENSE_TYPE_OPTIONS } from "@/lib/constants";
@@ -99,6 +103,9 @@ type UserInputtedEntry = {
   isCompleted: boolean;
   /** Sheet "account" column for expense rows; used by home account filter. */
   expenseAccount?: string;
+  /** Raw category/description, unlike `title`/`subtitle` which are display strings. */
+  expenseType?: string;
+  description?: string;
   transferFrom?: string;
   transferTo?: string;
 };
@@ -117,6 +124,18 @@ type EditEntryModalState = {
   entry: UserInputtedEntry | null;
   rowId: string;
   date: string;
+  amount: string;
+  /** Empty for transfer rows — they carry no category. */
+  expenseType: string;
+  description: string;
+  submitting: boolean;
+  error: string;
+};
+
+type DeleteEntryModalState = {
+  open: boolean;
+  entry: UserInputtedEntry | null;
+  rowId: string;
   submitting: boolean;
   error: string;
 };
@@ -706,6 +725,16 @@ export default function ReconcilePage() {
     entry: null,
     rowId: "",
     date: "",
+    amount: "",
+    expenseType: "",
+    description: "",
+    submitting: false,
+    error: "",
+  });
+  const [deleteEntryModal, setDeleteEntryModal] = useState<DeleteEntryModalState>({
+    open: false,
+    entry: null,
+    rowId: "",
     submitting: false,
     error: "",
   });
@@ -1499,6 +1528,8 @@ export default function ReconcilePage() {
         amount: Number(row.amount ?? 0),
         isCompleted: claimed || tiedByExactMatch || autoCompleted || userDismissed,
         expenseAccount: row.account?.trim() || undefined,
+        expenseType: row.expenseType || undefined,
+        description: row.description || undefined,
       };
     });
 
@@ -3291,7 +3322,17 @@ export default function ReconcilePage() {
     const raw = entry.dateValue;
     const asDate = raw ? new Date(raw) : null;
     const dateStr = asDate && !isNaN(asDate.getTime()) ? asDate.toISOString().slice(0, 10) : "";
-    setEditEntryModal({ open: true, entry, rowId, date: dateStr, submitting: false, error: "" });
+    setEditEntryModal({
+      open: true,
+      entry,
+      rowId,
+      date: dateStr,
+      amount: entry.amount ? String(entry.amount) : "",
+      expenseType: entry.source === "Expenses" ? entry.expenseType ?? "" : "",
+      description: entry.description ?? "",
+      submitting: false,
+      error: "",
+    });
   }, []);
 
   const closeEditEntryModal = useCallback(() => {
@@ -3299,38 +3340,105 @@ export default function ReconcilePage() {
   }, []);
 
   const handleEditEntrySubmit = useCallback(async () => {
-    const { entry, rowId, date } = editEntryModal;
+    const { entry, rowId, date, amount, expenseType, description } = editEntryModal;
     if (!entry || !rowId) return;
     if (!date) {
       setEditEntryModal((prev) => ({ ...prev, error: "Select a date." }));
       return;
     }
+    const amountNum = Number(amount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      setEditEntryModal((prev) => ({ ...prev, error: "Enter an amount greater than zero." }));
+      return;
+    }
+    if (entry.source === "Expenses" && !expenseType.trim()) {
+      setEditEntryModal((prev) => ({ ...prev, error: "Select a category." }));
+      return;
+    }
+
     setEditEntryModal((prev) => ({ ...prev, submitting: true, error: "" }));
     try {
-      await updateSheetEntryDate({ sheet: entry.source, rowId, date });
+      // Send only what changed: PATCH applies each key independently, and a
+      // no-op write would still bump updated_at.
+      const patch: TransactionPatch = {};
+      const originalDate = entry.dateValue ? new Date(entry.dateValue) : null;
+      const originalDateStr =
+        originalDate && !isNaN(originalDate.getTime()) ? originalDate.toISOString().slice(0, 10) : "";
+      if (date !== originalDateStr) patch.date = date;
+      if (amountNum !== entry.amount) patch.amount = amountNum;
+      if (description.trim() !== (entry.description ?? "")) patch.description = description.trim();
+      if (entry.source === "Expenses" && expenseType.trim() !== (entry.expenseType ?? "")) {
+        patch.expenseType = expenseType.trim();
+      }
+
+      if (Object.keys(patch).length === 0) {
+        closeEditEntryModal();
+        return;
+      }
+
       if (entry.source === "Expenses") {
+        const updated = await updateExpense(rowId, patch);
         setSheetExpenses((prev) =>
-          prev.map((row) =>
-            (row.rowId ?? "").trim() === rowId ? { ...row, timestamp: date, date } : row,
-          ),
+          prev.map((row) => ((row.rowId ?? "").trim() === rowId ? updated : row)),
         );
       } else {
+        const { expenseType: _ignored, ...transferPatch } = patch;
+        const updated = await updateTransfer(rowId, transferPatch);
         setSheetTransfers((prev) =>
-          prev.map((row) =>
-            (row.transferRowId ?? "").trim() === rowId ? { ...row, timestamp: date, date } : row,
-          ),
+          prev.map((row) => ((row.transferRowId ?? "").trim() === rowId ? updated : row)),
         );
       }
       closeEditEntryModal();
+      // Date and amount both feed the matcher, so cached matches are now stale.
       rematchAllStoredAccounts();
     } catch (err) {
       setEditEntryModal((prev) => ({
         ...prev,
         submitting: false,
-        error: err instanceof Error ? err.message : "Failed to update date.",
+        error: err instanceof Error ? err.message : "Failed to save changes.",
       }));
     }
   }, [closeEditEntryModal, editEntryModal, rematchAllStoredAccounts, setSheetExpenses, setSheetTransfers]);
+
+  const openDeleteEntryModal = useCallback((entry: UserInputtedEntry) => {
+    setDeleteEntryModal({
+      open: true,
+      entry,
+      rowId: rowIdFromEntryId(entry.id),
+      submitting: false,
+      error: "",
+    });
+  }, []);
+
+  const closeDeleteEntryModal = useCallback(() => {
+    setDeleteEntryModal((prev) => ({ ...prev, open: false, entry: null, error: "" }));
+  }, []);
+
+  const handleDeleteEntrySubmit = useCallback(async () => {
+    const { entry, rowId } = deleteEntryModal;
+    if (!entry || !rowId) return;
+    setDeleteEntryModal((prev) => ({ ...prev, submitting: true, error: "" }));
+    try {
+      await deleteTransaction(rowId);
+      if (entry.source === "Expenses") {
+        setSheetExpenses((prev) => prev.filter((row) => (row.rowId ?? "").trim() !== rowId));
+      } else {
+        setSheetTransfers((prev) =>
+          prev.filter((row) => (row.transferRowId ?? "").trim() !== rowId),
+        );
+      }
+      setDeleteEntryModal({ open: false, entry: null, rowId: "", submitting: false, error: "" });
+      // The row is gone from the matching pool; anything it was suggested
+      // against should fall back to its next-best candidate.
+      rematchAllStoredAccounts();
+    } catch (err) {
+      setDeleteEntryModal((prev) => ({
+        ...prev,
+        submitting: false,
+        error: err instanceof Error ? err.message : "Failed to delete entry.",
+      }));
+    }
+  }, [deleteEntryModal, rematchAllStoredAccounts, setSheetExpenses, setSheetTransfers]);
 
   const openResetReconcileModal = useCallback(() => {
     setResetReconcileModal({ open: true, confirmText: "", submitting: false, error: "" });
@@ -4521,68 +4629,70 @@ export default function ReconcilePage() {
                             <div className="shrink-0 flex items-center gap-1">
                               <button
                                 type="button"
-                                onClick={() => match && handleApprove(match, entry)}
-                                disabled={!match || processingId === id}
-                                className="p-1.5 rounded-md text-green-300 hover:text-green-200 hover:bg-green-500/10 disabled:opacity-60 transition-colors"
-                                aria-label={isTransferCandidate ? "Claim transfer leg" : "Approve match"}
-                                title={isTransferCandidate ? "Claim transfer leg" : "Approve and mark processed"}
-                              >
-                                {match && processingId === id ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  <Check className="w-4 h-4" />
-                                )}
-                              </button>
-                              {match && (
-                                <button
-                                  type="button"
-                                  onClick={() => openDismissModal(match)}
-                                  className="p-1.5 rounded-md text-amber-300/90 hover:text-amber-200 hover:bg-amber-500/10 transition-colors"
-                                  aria-label="Dismiss statement line with note"
-                                  title="Dismiss statement line (bank) with note"
-                                >
-                                  <Ban className="w-4 h-4" />
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => openUserDismissModal(entry)}
-                                disabled={!parseSheetDismissKeyFromEntryId(entry.id)}
-                                className="p-1.5 rounded-md text-red-300 hover:text-red-200 hover:bg-red-500/10 disabled:opacity-60 transition-colors"
-                                aria-label="Dismiss user-inputted row with note"
-                                title="Dismiss user-inputted row with note"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openEditEntryModal(entry)}
-                                disabled={!rowIdFromEntryId(entry.id)}
-                                className="p-1.5 rounded-md text-gray-400 hover:text-white hover:bg-white/10 disabled:opacity-60 transition-colors"
-                                aria-label="Edit date"
-                                title="Edit transaction date"
-                              >
-                                <Pencil className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => match && openQuickAdd(match)}
-                                disabled={!match || Boolean(match.matchedSheetTransfer)}
-                                className="p-1.5 rounded-md text-blue-300 hover:text-blue-200 hover:bg-blue-500/10 disabled:opacity-60 transition-colors"
-                                aria-label="Quick add"
-                                title="Quick add to sheet"
-                              >
-                                <PlusCircle className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
                                 onClick={() => openUserStatementClaimModal(entry)}
-                                className="px-2 py-1 rounded-md text-[11px] text-purple-300 hover:text-purple-200 hover:bg-purple-500/10 transition-colors"
+                                className="px-2.5 py-1 rounded-md border border-purple-400/30 text-[11px] text-purple-300 hover:text-purple-200 hover:bg-purple-500/10 hover:border-purple-400/50 transition-colors"
                                 aria-label="Claim statement line"
                                 title="Pick a statement line to link"
                               >
                                 Claim
                               </button>
+                              <RowActionMenu
+                                aria-label="More actions for this entry"
+                                busy={Boolean(match) && processingId === id}
+                                actions={[
+                                  {
+                                    key: "approve",
+                                    label: isTransferCandidate ? "Claim transfer leg" : "Approve match",
+                                    icon: <Check className="w-4 h-4" />,
+                                    tone: "positive",
+                                    disabled: !match,
+                                    title: match
+                                      ? "Approve and mark processed"
+                                      : "No suggested statement line yet",
+                                    onSelect: () => match && handleApprove(match, entry),
+                                  },
+                                  {
+                                    key: "quick-add",
+                                    label: "Quick add to sheet",
+                                    icon: <PlusCircle className="w-4 h-4" />,
+                                    disabled: !match || Boolean(match.matchedSheetTransfer),
+                                    onSelect: () => match && openQuickAdd(match),
+                                  },
+                                  {
+                                    key: "edit",
+                                    label: "Edit entry",
+                                    icon: <Pencil className="w-4 h-4" />,
+                                    disabled: !rowIdFromEntryId(entry.id),
+                                    title: "Edit date, amount and category",
+                                    onSelect: () => openEditEntryModal(entry),
+                                  },
+                                  {
+                                    key: "dismiss-statement",
+                                    label: "Dismiss statement line",
+                                    icon: <Ban className="w-4 h-4" />,
+                                    disabled: !match,
+                                    title: "Dismiss the bank line with a note",
+                                    onSelect: () => match && openDismissModal(match),
+                                  },
+                                  {
+                                    key: "dismiss-entry",
+                                    label: "Dismiss this entry",
+                                    icon: <X className="w-4 h-4" />,
+                                    disabled: !parseSheetDismissKeyFromEntryId(entry.id),
+                                    title: "Dismiss the user-inputted row with a note",
+                                    onSelect: () => openUserDismissModal(entry),
+                                  },
+                                  {
+                                    key: "delete",
+                                    label: "Delete entry",
+                                    icon: <Trash2 className="w-4 h-4" />,
+                                    tone: "danger",
+                                    disabled: !rowIdFromEntryId(entry.id),
+                                    title: "Permanently delete this transaction",
+                                    onSelect: () => openDeleteEntryModal(entry),
+                                  },
+                                ]}
+                              />
                             </div>
                           </div>
                         </div>
@@ -5117,47 +5227,42 @@ export default function ReconcilePage() {
                             <div className="shrink-0 flex items-center gap-1">
                               <button
                                 type="button"
-                                onClick={() => handleApprove(match)}
-                                disabled={processingId === id}
-                                className="p-1.5 rounded-md text-green-300 hover:text-green-200 hover:bg-green-500/10 disabled:opacity-60 transition-colors"
-                                aria-label={isTransferCandidate ? "Claim transfer leg" : "Approve match"}
-                                title={isTransferCandidate ? "Claim transfer leg" : "Approve and mark processed"}
-                              >
-                                {processingId === id ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  <Check className="w-4 h-4" />
-                                )}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openDismissModal(match)}
-                                className="p-1.5 rounded-md text-red-300 hover:text-red-200 hover:bg-red-500/10 transition-colors"
-                                aria-label="Dismiss with note"
-                                title="Dismiss with note"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openQuickAdd(match)}
-                                disabled={Boolean(match.matchedSheetTransfer)}
-                                className="p-1.5 rounded-md text-blue-300 hover:text-blue-200 hover:bg-blue-500/10 transition-colors"
-                                aria-label="Quick add"
-                                title="Quick add to sheet"
-                              >
-                                <PlusCircle className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
                                 onClick={() => openSplitModal(match)}
                                 disabled={Boolean(match.matchedSheetTransfer)}
-                                className="px-2 py-1 rounded-md text-[11px] text-purple-300 hover:text-purple-200 hover:bg-purple-500/10 transition-colors"
+                                className="px-2.5 py-1 rounded-md border border-purple-400/30 text-[11px] text-purple-300 hover:text-purple-200 hover:bg-purple-500/10 hover:border-purple-400/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
                                 aria-label="Claim existing rows"
                                 title="Claim existing unmatched sheet rows"
                               >
                                 Claim
                               </button>
+                              <RowActionMenu
+                                aria-label="More actions for this statement line"
+                                busy={processingId === id}
+                                actions={[
+                                  {
+                                    key: "approve",
+                                    label: isTransferCandidate ? "Claim transfer leg" : "Approve match",
+                                    icon: <Check className="w-4 h-4" />,
+                                    tone: "positive",
+                                    title: "Approve and mark processed",
+                                    onSelect: () => handleApprove(match),
+                                  },
+                                  {
+                                    key: "quick-add",
+                                    label: "Quick add to sheet",
+                                    icon: <PlusCircle className="w-4 h-4" />,
+                                    disabled: Boolean(match.matchedSheetTransfer),
+                                    onSelect: () => openQuickAdd(match),
+                                  },
+                                  {
+                                    key: "dismiss",
+                                    label: "Dismiss with note",
+                                    icon: <X className="w-4 h-4" />,
+                                    tone: "danger",
+                                    onSelect: () => openDismissModal(match),
+                                  },
+                                ]}
+                              />
                             </div>
                           </div>
                             </div>
@@ -6354,14 +6459,16 @@ export default function ReconcilePage() {
           onClick={closeEditEntryModal}
           role="dialog"
           aria-modal="true"
-          aria-labelledby="edit-entry-date-title"
+          aria-labelledby="edit-entry-title"
         >
           <div
             className="w-full max-w-sm rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
-              <h2 id="edit-entry-date-title" className="text-white font-semibold">Edit Transaction Date</h2>
+              <h2 id="edit-entry-title" className="text-white font-semibold">
+                {editEntryModal.entry.source === "Expenses" ? "Edit Expense" : "Edit Transfer"}
+              </h2>
               <button
                 type="button"
                 onClick={closeEditEntryModal}
@@ -6381,14 +6488,69 @@ export default function ReconcilePage() {
                 </p>
               </div>
               <div>
-                <label className="block text-xs text-gray-400 mb-1">Date</label>
+                <label htmlFor="edit-entry-date" className="block text-xs text-gray-400 mb-1">Date</label>
                 <input
+                  id="edit-entry-date"
                   type="date"
                   value={editEntryModal.date}
                   onChange={(e) => setEditEntryModal((prev) => ({ ...prev, date: e.target.value }))}
                   className="w-full px-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
                 />
               </div>
+              <div>
+                <label htmlFor="edit-entry-amount" className="block text-xs text-gray-400 mb-1">Amount</label>
+                <input
+                  id="edit-entry-amount"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={editEntryModal.amount}
+                  onChange={(e) => setEditEntryModal((prev) => ({ ...prev, amount: e.target.value }))}
+                  placeholder="0.00"
+                  className="w-full px-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                />
+              </div>
+              {editEntryModal.entry.source === "Expenses" ? (
+                <>
+                  <div>
+                    <label htmlFor="edit-entry-category" className="block text-xs text-gray-400 mb-1">
+                      Category
+                    </label>
+                    <GlassDropdown
+                      id="edit-entry-category"
+                      value={editEntryModal.expenseType}
+                      onChange={(value) => setEditEntryModal((prev) => ({ ...prev, expenseType: value }))}
+                      options={EXPENSE_TYPE_OPTIONS.map((opt) => ({ value: opt, label: opt }))}
+                      placeholder="Select category"
+                      className="w-full"
+                      aria-label="Category"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-entry-description" className="block text-xs text-gray-400 mb-1">
+                      Description
+                    </label>
+                    <input
+                      id="edit-entry-description"
+                      type="text"
+                      value={editEntryModal.description}
+                      onChange={(e) =>
+                        setEditEntryModal((prev) => ({ ...prev, description: e.target.value }))
+                      }
+                      placeholder="Optional notes"
+                      className="w-full px-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                    />
+                  </div>
+                </>
+              ) : (
+                <p className="text-[11px] text-gray-500">
+                  Transfers carry no category. Change the accounts by deleting and re-logging the
+                  transfer.
+                </p>
+              )}
+              <p className="text-[11px] text-gray-500">
+                Changing the date or amount re-runs matching against your uploaded statements.
+              </p>
               {editEntryModal.error && <p className="text-xs text-red-400">{editEntryModal.error}</p>}
             </div>
             <div className="px-4 py-3 border-t border-charcoal-dark flex justify-end gap-2">
@@ -6407,6 +6569,69 @@ export default function ReconcilePage() {
               >
                 {editEntryModal.submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                 Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteEntryModal.open && deleteEntryModal.entry && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+          onClick={closeDeleteEntryModal}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-entry-title"
+        >
+          <div
+            className="w-full max-w-sm rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+              <h2 id="delete-entry-title" className="text-white font-semibold">Delete Entry</h2>
+              <button
+                type="button"
+                onClick={closeDeleteEntryModal}
+                className="p-1 rounded-md text-gray-400 hover:text-white hover:bg-charcoal transition-colors"
+                aria-label="Close modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-4 py-3 space-y-3">
+              <div className="rounded-lg bg-charcoal px-3 py-2 text-sm">
+                <p className={deleteEntryModal.entry.source === "Expenses" ? "text-yellow-300 truncate" : "text-green-300 truncate"}>
+                  {deleteEntryModal.entry.title}
+                </p>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  {deleteEntryModal.entry.subtitle} • {fmtMoney(deleteEntryModal.entry.amount)}
+                </p>
+              </div>
+              <p className="text-sm text-gray-300">
+                This permanently removes the transaction from Stash — dashboard totals and budgets
+                update too. It cannot be undone.
+              </p>
+              <p className="text-[11px] text-gray-500">
+                Dismissing instead keeps the entry but takes it out of the reconcile queue.
+              </p>
+              {deleteEntryModal.error && <p className="text-xs text-red-400">{deleteEntryModal.error}</p>}
+            </div>
+            <div className="px-4 py-3 border-t border-charcoal-dark flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeDeleteEntryModal}
+                className="px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeleteEntrySubmit()}
+                disabled={deleteEntryModal.submitting}
+                className="px-3 py-1.5 rounded-lg text-sm bg-red-500/90 text-white hover:bg-red-500 transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
+              >
+                {deleteEntryModal.submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Delete
               </button>
             </div>
           </div>

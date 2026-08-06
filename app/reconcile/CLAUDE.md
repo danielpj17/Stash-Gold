@@ -37,6 +37,8 @@ Reconciliation produces a claim: a persistent link between a bank transaction ha
 | File | Role |
 |------|------|
 | `app/reconcile/page.tsx` | Main UI (~5100+ lines) — all state, handlers, view logic |
+| `components/RowActionMenu.tsx` | Per-row ⋯ overflow menu (portal + glass panel, styled to match `GlassDropdown`) |
+| `app/api/transactions/[id]/route.ts` | PATCH (date/amount/category/description) + DELETE for a logged entry |
 | `services/reconciliationService.ts` | Match algorithm, bank CSV parsing, hash generation, merchant memory match step |
 | `lib/activityLog.ts` | Server-side activity log helpers (Node.js only — API routes) |
 | `lib/merchantFingerprint.ts` | Browser-safe merchant fingerprint generator (no crypto deps) |
@@ -813,6 +815,28 @@ Used by `rematchAllStoredAccounts()` — survives re-renders without triggering 
 - Surgically removes cleared hashes from `processedHashes`, `matchesByAccount`, and `bankHashesWithNeonClaim` state (no full rematch needed)
 - Removes the file from `uploadedFilesByAccount`
 - UI: ✕ button next to each file name in the Files panel
+
+### `handleEditEntrySubmit()` / `handleDeleteEntrySubmit()`
+
+Edit and delete a **logged entry** (not a bank row), reached from the ⋯ menu on a
+user-inputted review row.
+
+- Edit PATCHes `/api/transactions/[id]` with **only the changed fields** (date,
+  amount, category, description — category is expenses-only), replaces the row in
+  `sheetExpenses`/`sheetTransfers` with the server's response, then calls
+  `rematchAllStoredAccounts()` because date and amount both feed the matcher.
+- Delete DELETEs the same route and drops the row from local state, then
+  re-matches. The route deliberately does not cascade into reconciliation tables;
+  that's safe here because both actions are only offered on **incomplete** rows,
+  and `isCompleted` is true for anything claimed or dismissed — so no claim link
+  or dismissal can point at the row being edited or removed.
+
+### Row actions (⋯ menu)
+
+Both review lists — home "User-inputted: Needs review" and the account-detail
+"Unmatched / Suggested" — expose **Claim** as a visible button and fold the rest
+(approve, quick add, edit, dismiss, delete) into `RowActionMenu`. The menu's
+`busy` prop drives the row spinner that used to live on the check button.
 
 ### `recordMerchantMemory(match, userEntry?)`
 

@@ -154,24 +154,63 @@ export async function submitExpense(payload: {
 }
 
 /**
- * Change the date on an existing transaction.
+ * Fields an existing transaction can be edited on. Every key is optional; only
+ * the ones present are written, so a caller can send just the date.
  *
- * `sheet` is retained in the signature (and ignored) because transaction ids
- * are globally unique — keeping it means callers don't have to change.
+ * `expenseType` is ignored server-side for transfer rows (they have no
+ * category), which is why `updateTransfer` doesn't accept it.
  */
-export async function updateSheetEntryDate(payload: {
-  sheet: "Expenses" | "Transfers";
-  rowId: string;
-  date: string;
-}): Promise<void> {
-  const res = await fetch(`${TRANSACTIONS_API}/${encodeURIComponent(payload.rowId)}`, {
+export type TransactionPatch = {
+  /** YYYY-MM-DD. Anchored at midday UTC server-side. */
+  date?: string;
+  amount?: number;
+  expenseType?: string;
+  description?: string;
+};
+
+async function patchTransaction(
+  rowId: string,
+  patch: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${TRANSACTIONS_API}/${encodeURIComponent(rowId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ date: payload.date }),
+    body: JSON.stringify(patch),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || `Failed to update: ${res.status}`);
+  }
+  return (await res.json()) as Record<string, unknown>;
+}
+
+/** Edit an expense/income row. Returns the row as stored, so callers can
+ *  replace their cached copy rather than guessing the derived fields. */
+export async function updateExpense(rowId: string, patch: TransactionPatch): Promise<SheetRow> {
+  return normalizeRow(await patchTransaction(rowId, patch));
+}
+
+/** Edit a transfer row. Transfers have no category, so `expenseType` is not accepted. */
+export async function updateTransfer(
+  rowId: string,
+  patch: Omit<TransactionPatch, "expenseType">,
+): Promise<TransferRow> {
+  return normalizeTransferRow(await patchTransaction(rowId, patch));
+}
+
+/**
+ * Permanently delete a transaction.
+ *
+ * Reconciliation links are intentionally left behind server-side — see the
+ * comment in `app/api/transactions/[id]/route.ts`.
+ */
+export async function deleteTransaction(rowId: string): Promise<void> {
+  const res = await fetch(`${TRANSACTIONS_API}/${encodeURIComponent(rowId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `Failed to delete: ${res.status}`);
   }
 }
 
