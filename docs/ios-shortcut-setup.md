@@ -36,7 +36,8 @@ Rename this action's variable to `API URL` (long-press → Rename). This is what
 you'll attach the Import Question to in step 2 — Import Questions can only
 target a value, so it needs to live in its own action.
 
-> Use your real production URL. `/settings` shows it in the manual setup block.
+> Use your real production URL. The **iOS Shortcut** box on `/new-expense`
+> shows it in the manual setup block.
 
 ### Add: Text (again)
 
@@ -131,7 +132,8 @@ personal is embedded in the shared shortcut itself.
 Run the Shortcut on your own phone with your own token. Then check:
 
 - The expense appears on the Expenses page.
-- On `/settings`, that token's **last used** date updates to today.
+- In the **iOS Shortcut** box on `/new-expense`, that token's **last used**
+  date updates to today.
 
 If you get a 401, the token is wrong or revoked. If you get 503, the server
 can't reach the database.
@@ -155,14 +157,14 @@ use it), then redeploy.
 > is inlined at build time, so **a change requires a rebuild, not just a
 > restart**. It's a public link by design; there's nothing secret in it.
 
-`/settings` will now show **Add to iPhone** for every user, with the manual
-instructions demoted to "Or build it by hand".
+The **iOS Shortcut** box on `/new-expense` will now show **Add to iPhone** for
+every user, with the manual instructions demoted to "Or build it by hand".
 
 ---
 
 ## What a new person does
 
-1. Sign in, go to **Settings**
+1. Sign in, go to **New Expense** and open the **iOS Shortcut** box
 2. **New token** → copy it
 3. **Add to iPhone** → **Add Shortcut** → paste the token when asked
 
@@ -170,5 +172,6 @@ Then add the Shortcut to their home screen or Back Tap for one-tap logging.
 
 ## If someone loses their phone
 
-Revoke that token on `/settings`. It stops working immediately — no redeploy,
+Revoke that token in the **iOS Shortcut** box on `/new-expense`. It stops
+working immediately — no redeploy,
 and nobody else is affected. Issue a new one and re-install the Shortcut.

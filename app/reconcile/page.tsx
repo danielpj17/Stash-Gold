@@ -4233,12 +4233,13 @@ export default function ReconcilePage() {
               to upload its statement here.
             </p>
             <div className="flex items-center gap-3">
-              <Link
-                href="/settings/accounts"
+              <button
+                type="button"
+                onClick={() => setManageAccountsOpen(true)}
                 className="inline-block rounded-md bg-[#50C878] px-4 py-2 font-semibold text-charcoal hover:brightness-110 transition"
               >
                 Set up accounts
-              </Link>
+              </button>
               <Link
                 href="/guide/reconcile"
                 className="text-sm text-gray-300 hover:text-white transition"
@@ -4248,6 +4249,7 @@ export default function ReconcilePage() {
             </div>
           </div>
         </div>
+        {manageAccountsOpen && <ManageAccountsModal onClose={() => setManageAccountsOpen(false)} />}
       </DashboardLayout>
     );
   }

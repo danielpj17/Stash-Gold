@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   PlusCircle,
   PiggyBank,
@@ -9,7 +10,6 @@ import {
   ClipboardCheck,
   Menu,
   BarChart2,
-  Settings,
 } from "lucide-react";
 import { useSidebar } from "@/contexts/SidebarContext";
 import SignOutButton from "./SignOutButton";
@@ -21,12 +21,13 @@ const navItems = [
   { href: "/net-worth", label: "Net Worth", icon: TrendingUp },
   { href: "/reconcile", label: "Reconcile", icon: ClipboardCheck },
   { href: "/investment-calculator", label: "Life-Stage Planner", icon: BarChart2 },
-  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
   const { collapsed, toggleCollapsed, mobileOpen, closeMobile } = useSidebar();
+  const { data: session } = useSession();
+  const email = session?.user?.email ?? "";
 
   return (
     <>
@@ -117,6 +118,11 @@ export default function Sidebar() {
 
       {/* Account */}
       <div className="p-3 border-t border-charcoal-dark shrink-0 space-y-1">
+        {!collapsed && email && (
+          <p className="text-xs text-gray-400 px-3 pb-1 truncate" title={email}>
+            {email}
+          </p>
+        )}
         <SignOutButton collapsed={collapsed} />
         {!collapsed && (
           <p className="text-xs text-gray-500 px-3">Stash v1</p>

@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import GlassDropdown from "@/components/GlassDropdown";
+import ManageAccountsModal from "@/components/ManageAccountsModal";
+import ShortcutSetupCard from "@/components/ShortcutSetupCard";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { useAccounts } from "@/contexts/AccountsContext";
 import { submitExpense } from "@/services/transactionsApi";
@@ -13,6 +15,7 @@ import Link from "next/link";
 export default function NewExpensePage() {
   const { triggerRefresh } = useRefresh();
   const { activeAccounts, defaultAccount, loading: accountsLoading } = useAccounts();
+  const [manageAccountsOpen, setManageAccountsOpen] = useState(false);
   const [expenseType, setExpenseType] = useState("");
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
@@ -105,9 +108,13 @@ export default function NewExpensePage() {
               ) : activeAccounts.length === 0 ? (
                 <p className="text-sm text-gray-400 py-2">
                   No accounts yet â€”{" "}
-                  <Link href="/settings/accounts" className="text-accent hover:brightness-110">
+                  <button
+                    type="button"
+                    onClick={() => setManageAccountsOpen(true)}
+                    className="text-accent hover:brightness-110 underline"
+                  >
                     add one
-                  </Link>{" "}
+                  </button>{" "}
                   so this shows up in your balances.
                 </p>
               ) : (
@@ -168,7 +175,13 @@ export default function NewExpensePage() {
             </div>
           </form>
         </div>
+
+        <ShortcutSetupCard />
       </div>
+
+      {manageAccountsOpen && (
+        <ManageAccountsModal onClose={() => setManageAccountsOpen(false)} />
+      )}
     </DashboardLayout>
   );
 }

@@ -209,9 +209,29 @@ export default function ManageAccountsModal({ onClose }: { onClose: () => void }
                   className="flex-1 min-w-[9rem] rounded-md bg-[#1f1f1f] border border-charcoal-dark px-3 py-1.5 text-white focus:outline-none focus:border-[#50C878]"
                 />
 
-                <span className="text-xs text-gray-500 w-[6.5rem] shrink-0">
-                  {KIND_LABELS[account.kind]}
-                </span>
+                <div className="w-[8rem] shrink-0">
+                  <GlassDropdown
+                    value={account.kind}
+                    onChange={(v) => void patch(account, { kind: v })}
+                    options={KIND_OPTIONS}
+                    aria-label={`Type for ${account.name}`}
+                  />
+                </div>
+
+                <input
+                  type="number"
+                  step="0.01"
+                  defaultValue={account.openingBalance}
+                  onBlur={(e) => {
+                    const next = Number(e.target.value);
+                    if (Number.isFinite(next) && next !== account.openingBalance) {
+                      void patch(account, { openingBalance: next });
+                    }
+                  }}
+                  aria-label={`Starting balance for ${account.name}`}
+                  title="Starting balance"
+                  className="w-[7rem] shrink-0 rounded-md bg-[#1f1f1f] border border-charcoal-dark px-3 py-1.5 text-white text-right focus:outline-none focus:border-[#50C878]"
+                />
 
                 <span
                   className={`text-xs px-2 py-1 rounded shrink-0 ${
@@ -280,7 +300,9 @@ export default function ManageAccountsModal({ onClose }: { onClose: () => void }
           The <Star className="w-3 h-3 inline -mt-0.5 fill-current text-[#50C878]" /> account is
           where expenses land when no account is chosen — including everything logged from the iOS
           Shortcut. Renaming is always safe. Deleting keeps past matches intact; archiving just
-          hides an account from pickers.
+          hides an account from pickers. Starting balance is what the account held before your
+          first logged transaction — confirming a statement balance overrides it from that date
+          onward.
         </p>
       </div>
     </div>

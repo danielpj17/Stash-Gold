@@ -18,7 +18,7 @@ reconciling is what turns "roughly right" numbers into numbers you trust.
 
 ### 1. Add your accounts
 
-**Settings → Accounts.** Add each account you want to track — checking, savings,
+**Reconcile → Accounts.** Add each account you want to track — checking, savings,
 credit card, a cash-app balance, whatever you actually use. Name them however
 you like; the names are just labels and you can change them later without
 breaking anything.
@@ -33,8 +33,8 @@ transaction. If you don't know, leave it at 0 and fix it later with an anchor
 
 ### 2. Log expenses as you go
 
-Use the **New Expense** page, or set up the iOS Shortcut (Settings → iOS
-Shortcut) to log from your phone in a couple of taps. Pick the account you paid
+Use the **New Expense** page, or set up the iOS Shortcut (the **iOS Shortcut**
+box at the bottom of that same page) to log from your phone in a couple of taps. Pick the account you paid
 from — that's what lets the expense move the right balance.
 
 Log transfers between your own accounts on the **Budget** page. A transfer isn't
@@ -221,7 +221,7 @@ already claimed by another bank row. Check the Matched section, disconnect the
 wrong link, then re-match.
 
 **Everything from one account shows as income.** The sign convention is
-inverted. Settings → Accounts → re-open that account's CSV format and toggle
+inverted. Reconcile → Accounts → re-open that account's CSV format and toggle
 "purchases show as positive".
 
 **Almost no rows were read from my file.** The column mapping is wrong. Re-open

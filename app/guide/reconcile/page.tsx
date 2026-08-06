@@ -36,10 +36,10 @@ export default function ReconcileGuidePage() {
         <Section id="setup" title="Setup (once)">
           <p>
             <strong className="text-white">Add your accounts.</strong>{" "}
-            <Link href="/settings/accounts" className="text-[#50C878] hover:brightness-110">
-              Settings → Accounts
-            </Link>
-            . Add each account you actually use — checking, savings, credit card, cash app. Name
+            <Link href="/reconcile" className="text-[#50C878] hover:brightness-110">
+              Reconcile
+            </Link>{" "}
+            → <strong className="text-white">Accounts</strong>. Add each account you actually use — checking, savings, credit card, cash app. Name
             them however you like; names are labels and can change later without breaking
             anything.
           </p>
@@ -58,11 +58,8 @@ export default function ReconcileGuidePage() {
             <Link href="/new-expense" className="text-[#50C878] hover:brightness-110">
               New Expense
             </Link>{" "}
-            or the{" "}
-            <Link href="/settings" className="text-[#50C878] hover:brightness-110">
-              iOS Shortcut
-            </Link>
-            . Pick the account you paid from — that&apos;s what lets it move the right balance.
+            — or the <strong className="text-white">iOS Shortcut</strong> box at the bottom of
+            that same page. Pick the account you paid from — that&apos;s what lets it move the right balance.
           </p>
         </Section>
 
