@@ -6,7 +6,9 @@ import { signIn } from "next-auth/react";
 import { Loader2, Mail } from "lucide-react";
 
 const ERROR_MESSAGES: Record<string, string> = {
-  Verification: "That sign-in link has expired or was already used. Request a new one.",
+  // Covers both paths: a mistyped code and a stale link land here.
+  Verification:
+    "That code or link didn't work — it may have expired, already been used, or been mistyped. Request a new one below.",
   EmailSignin: "Couldn't send the sign-in email. Check the address and try again.",
   Configuration: "Sign-in isn't configured correctly on the server.",
 };
@@ -36,7 +38,11 @@ function SignInForm() {
         setError(ERROR_MESSAGES[result.error] ?? "Couldn't send the sign-in email.");
         return;
       }
-      window.location.href = "/signin/check-email";
+      // Carry the address through so the code screen can submit it back, and
+      // the callbackUrl so a code sign-in lands where the link would have.
+      window.location.href =
+        `/signin/check-email?email=${encodeURIComponent(trimmed)}` +
+        `&callbackUrl=${encodeURIComponent(callbackUrl)}`;
     } catch {
       setStatus("error");
       setError("Couldn't send the sign-in email. Try again.");
