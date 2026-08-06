@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -138,7 +138,7 @@ function formatDateLabel(isoDate: string): string {
 }
 
 function formatAcquiredDate(dateValue?: string | null): string {
-  if (!dateValue) return "â€”";
+  if (!dateValue) return "—";
   const parsed = new Date(dateValue);
   if (Number.isNaN(parsed.getTime())) return dateValue;
   return parsed.toLocaleDateString("en-US", {

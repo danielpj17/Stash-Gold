@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -70,6 +70,7 @@ export default function NewExpensePage() {
                 options={EXPENSE_TYPE_OPTIONS.map((opt) => ({ value: opt, label: opt }))}
                 placeholder="Select type"
                 className="w-full"
+                size="md"
                 aria-label="Expense type"
               />
             </div>
@@ -121,7 +122,7 @@ export default function NewExpensePage() {
                 {status === "submitting" ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Savingâ€¦
+                    Saving…
                   </>
                 ) : (
                   "Save"

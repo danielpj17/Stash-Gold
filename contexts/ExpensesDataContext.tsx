@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import {
   createContext,
@@ -33,7 +33,7 @@ type CachedData = {
  * On return visits, renders immediately from localStorage while revalidating in the background.
  *
  * The cache is keyed by user id. The root layout seeds SessionProvider from the
- * server, so the id is already available in these useState initializers â€” no
+ * server, so the id is already available in these useState initializers — no
  * empty flash while the session resolves.
  */
 export function ExpensesDataProvider({ children }: { children: ReactNode }) {
@@ -63,7 +63,7 @@ export function ExpensesDataProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (status !== "authenticated" || !userId) {
       // Signed out (or still resolving): nothing to fetch, and "no session" is
-      // not the same as "no data" â€” don't report an error for it.
+      // not the same as "no data" — don't report an error for it.
       setLoading(status === "loading");
       return;
     }

@@ -1,4 +1,4 @@
-﻿import { getExpenses, getTransfers } from "@/services/transactionsApi";
+import { getExpenses, getTransfers } from "@/services/transactionsApi";
 
 const ASSETS_API = "/api/assets";
 const LIABILITIES_API = "/api/liabilities";

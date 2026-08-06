@@ -19,6 +19,17 @@ export type GlassDropdownProps = {
   id?: string;
   disabled?: boolean;
   leadingIcon?: ReactNode;
+  /**
+   * `sm` (default) is the compact control used in toolbars and table rows.
+   * `md` matches the height of a `px-3 py-2` text input, so a dropdown sitting
+   * in a stacked form lines up with the fields above and below it.
+   */
+  size?: "sm" | "md";
+};
+
+const SIZE_CLASSES: Record<"sm" | "md", string> = {
+  sm: "px-2.5 py-1.5 text-sm",
+  md: "px-3 py-2 text-base",
 };
 
 export default function GlassDropdown({
@@ -32,6 +43,7 @@ export default function GlassDropdown({
   id,
   disabled = false,
   leadingIcon,
+  size = "sm",
 }: GlassDropdownProps) {
   const [open, setOpen] = useState(false);
   const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({});
@@ -93,16 +105,16 @@ export default function GlassDropdown({
         type="button"
         disabled={disabled}
         onClick={() => !disabled && setOpen((o) => !o)}
-        className="
+        className={`
           w-full flex items-center gap-2 justify-between min-w-0
-          px-2.5 py-1.5 rounded-lg
+          ${SIZE_CLASSES[size]} rounded-lg
           bg-charcoal/95 border border-charcoal-dark
-          text-gray-200 text-sm text-left
+          text-gray-200 text-left
           hover:border-[#50C878]/40 hover:text-white
           focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent
           disabled:opacity-50 disabled:pointer-events-none
           transition-colors
-        "
+        `}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}

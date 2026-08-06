@@ -1,4 +1,4 @@
-﻿import type { FinancialAccount } from "@/lib/accounts";
+import type { FinancialAccount } from "@/lib/accounts";
 import type { SheetRow, TransferRow } from "@/services/transactionsApi";
 
 export type AccountAnchor = {

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState, useMemo, useCallback } from "react";
 import Link from "next/link";
@@ -48,7 +48,7 @@ type MonthlyBudgets = Record<string, Record<string, number>>;
 
 /**
  * Caches the full budget store in localStorage so the dashboard renders real budget
- * amounts on the first paint of a return visit â€” mirroring how expenses/transfers are
+ * amounts on the first paint of a return visit — mirroring how expenses/transfers are
  * cached in ExpensesDataContext. Without this, budgets sit at $0 until /api/budget lands
  * and every category briefly looks overbudget. Keyed by user id.
  */
@@ -282,7 +282,7 @@ export default function BudgetPage() {
     readBudgetCache(userId),
   );
   // True only once budgets are confirmed loaded from the server this session. Cached budgets
-  // are shown immediately, but editing/saving stays blocked until this is true â€” a save PUTs
+  // are shown immediately, but editing/saving stays blocked until this is true — a save PUTs
   // the entire store, so we must not overwrite Neon based on stale cache.
   const [budgetsConfirmed, setBudgetsConfirmed] = useState(false);
   const [budgetError, setBudgetError] = useState<string | null>(null);
@@ -321,7 +321,7 @@ export default function BudgetPage() {
         if (cancelled) return;
         // A failed GET (e.g. Neon cold-start/hiccup) returns { error } with a non-2xx
         // status. Never treat that as real budget data: keep allBudgets null so the
-        // page stays in an "unloaded" state and saving is blocked â€” otherwise the next
+        // page stays in an "unloaded" state and saving is blocked — otherwise the next
         // save would overwrite the stored budgets with an empty/zeroed object.
         const loadFailed =
           !response.ok ||
@@ -336,7 +336,7 @@ export default function BudgetPage() {
           setBudgetError(
             typeof errMsg === "string"
               ? `Couldn't load saved budgets: ${errMsg}`
-              : "Couldn't load saved budgets. Refresh before editing â€” saving now would overwrite them."
+              : "Couldn't load saved budgets. Refresh before editing — saving now would overwrite them."
           );
           return;
         }
@@ -354,7 +354,7 @@ export default function BudgetPage() {
         if (!cancelled) {
           // Keep cache-hydrated budgets on screen; leave budgetsConfirmed false so editing stays blocked.
           setBudgetError(
-            "Couldn't load saved budgets. Refresh before editing â€” saving now would overwrite them."
+            "Couldn't load saved budgets. Refresh before editing — saving now would overwrite them."
           );
         }
       });
@@ -770,7 +770,7 @@ export default function BudgetPage() {
                             value={tfFrom}
                             onChange={setTfFrom}
                             options={transferFromOptions}
-                            placeholder="Fromâ€¦"
+                            placeholder="From…"
                             className="flex-1 min-w-0"
                             aria-label="Transfer from"
                           />
@@ -778,7 +778,7 @@ export default function BudgetPage() {
                             value={tfTo}
                             onChange={setTfTo}
                             options={transferToOptions}
-                            placeholder="Toâ€¦"
+                            placeholder="To…"
                             className="flex-1 min-w-0"
                             aria-label="Transfer to"
                           />
@@ -830,8 +830,8 @@ export default function BudgetPage() {
                       <p className="text-gray-400 px-2 py-2">No transfers for this period.</p>
                     ) : (
                       sortedTransfers.map((row, index) => {
-                        const from = row.transferFrom.trim() || "â€”";
-                        const to = row.transferTo.trim() || "â€”";
+                        const from = row.transferFrom.trim() || "—";
+                        const to = row.transferTo.trim() || "—";
                         const legacy = row.description?.trim();
                         return (
                         <div
@@ -841,7 +841,7 @@ export default function BudgetPage() {
                           <span className="min-w-0 flex-1">
                             <span className="text-gray-200 inline-flex items-center gap-1.5">
                               <span>{from}</span>
-                              <span className="text-gray-500">â†’</span>
+                              <span className="text-gray-500">→</span>
                               <span>{to}</span>
                             </span>
                             {legacy && (
@@ -1177,7 +1177,7 @@ export default function BudgetPage() {
                         type="button"
                         onClick={handleSaveBudget}
                         disabled={!budgetsConfirmed}
-                        title={!budgetsConfirmed ? "Budgets are still loading â€” refresh before editing" : undefined}
+                        title={!budgetsConfirmed ? "Budgets are still loading — refresh before editing" : undefined}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dark transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-accent"
                       >
                         <Save className="w-3.5 h-3.5" />
