@@ -12,25 +12,39 @@ node scripts/check-schema.mjs   # Verify the DB matches docs/neon-setup.sql
 ```
 
 No test suite — feature verification is manual via browser. `npm run lint` is
-present but there is no ESLint config checked in, so `next build` is the real
-typecheck gate.
+present but there is **no ESLint config checked in**, so `next lint` just
+prompts for setup; `next build` is the real typecheck gate.
+
+**`AUTH_URL` is pinned to `http://localhost:3000`.** If port 3000 is taken,
+`next dev` silently falls back to 3001 and magic-link callbacks break. Stopping
+the `npm` wrapper often leaves the `next dev` child alive holding the port, so
+check for orphans before assuming a restart worked.
 
 ## Environment Setup
 
 Copy `.env.example` to `.env.local` and populate `DATABASE_URL`, `AUTH_SECRET`,
-`AUTH_URL`, and the Gmail SMTP vars.
+`AUTH_URL`, and the Gmail SMTP vars. `EMAIL_SERVER_PASSWORD` must be a Gmail
+**App Password** (needs 2-Step Verification), not an account password.
 
 **Run `docs/neon-setup.sql` once against a fresh Neon database before first
 sign-in** — sessions live in that database, so nothing works until it exists.
 That file is the single source of truth for the schema; API routes no longer
 create tables at request time.
 
+For a database created from an older copy of that file, apply everything in
+`docs/migrations/` in order. `scripts/check-schema.mjs` names the migration to
+run when it finds a missing column or index.
+
+`NEXT_PUBLIC_SHORTCUT_ICLOUD_URL` is optional and read **client-side**, so it is
+inlined at build time — changing it needs a rebuild, not a restart.
+
 ## Architecture
 
 **Stash** is a multi-user Next.js 14 personal finance dashboard. All data lives
 in **Neon Postgres** — transactions, budgets, accounts, reconciliation state,
 and Auth.js sessions. There are no external data systems. (Transactions used to
-live in Google Sheets; that is fully retired.)
+live in Google Sheets, and there was a SnapTrade brokerage integration; both are
+fully retired.)
 
 ### Non-negotiable invariants
 
@@ -53,12 +67,16 @@ silent and expensive.
    `cleanBankDescription` orphaned ~92 claims.
 4. **`findMatches` requires `processedHashes` from the caller.** It must never
    read them itself — such a read would not be user-scoped.
+5. **Deleting an account is a soft delete.** Reconciliation rows reference
+   accounts by id; hard-deleting would either orphan that history or force a
+   cascade that throws away months of matching. See "Accounts" below.
 
 ### Data Flow
 
 - All pages are client components fetching internal API routes (`/api/*`)
 - `/api/transactions` — expenses, income and transfers (replaced `/api/sheets`)
 - `/api/accounts` — user-defined accounts and their CSV parsing profiles
+- `/api/accounts/[id]/csv-preview` — mapping detection + live parse preview
 - `/api/budget` — monthly budgets as JSONB, one row per user
 - `/api/reconciliation/*` — bank CSV matching state
 - `/api/ingest` — iOS Shortcut writes, **bearer token only**, no session
@@ -69,19 +87,33 @@ silent and expensive.
 Auth.js v5 (`auth.ts`) with the Neon adapter and database sessions; magic-link
 email over Gmail SMTP. 90-day sessions, slid once a day.
 
+**The email carries a typeable code as well as a link.** An installed iOS PWA
+has its own cookie jar: tapping the link opens Safari, so the session lands
+there and the home-screen app stays signed out, with no way to transfer it.
+Entering the code on `/signin/check-email` runs the callback inside the app
+instead. The code **is** the Auth.js verification token
+(`generateVerificationToken`), not a parallel credential, so it inherits the
+same hashed-at-rest storage, 15-minute expiry and single use as the link.
+`lib/signInCode.ts` documents why it's 8 chars from a 32-char alphabet rather
+than 6 digits.
+
+`lib/signInEmail.ts` renders the email **light-first** on purpose: Gmail's dark
+mode force-inverts messages that don't declare color-scheme support, and its
+inversion is tuned for light designs — a dark-built email came out washed out.
+
 `middleware.ts` only checks for a session *cookie* — Next 14.2 middleware is
 Edge-only and database sessions need a DB read, so **middleware is UX, not
 security**. The real check is `requireUser()` inside each Node route handler.
 
 The root layout calls `auth()` and seeds `<SessionProvider>`, so `useSession()`
 is populated on first client render and cache readers can key by user id
-synchronously.
+synchronously without an empty flash.
 
 ### State Management
 
 Five React contexts (in `contexts/`):
 - `ExpensesDataContext` — caches full-year transactions; refetches on `refreshKey`
-- `AccountsContext` — the user's accounts, `labelFor(id)`, CSV profile presence
+- `AccountsContext` — accounts, `labelFor(id)`, `defaultAccount`, CSV profile presence
 - `MonthContext` — selected month (1–12 or `"full"`)
 - `RefreshContext` — `refreshKey` + `triggerRefresh()`
 - `SidebarContext` — sidebar state
@@ -92,20 +124,55 @@ switching costs no network calls.
 **Every browser cache is keyed by user id** via `lib/clientCache.ts`. The PWA
 service worker deliberately has `runtimeCaching: []` — its default config
 cached `/api/*` including `/api/auth/session`, which on a shared device serves
-one user's data into another's session.
+one user's data into another's session. Sign-out purges localStorage and Cache
+Storage before redirecting.
 
-### Accounts and CSV formats
+Three one-time localStorage→Neon migrations were **removed**, not scoped: they
+read unscoped keys and *wrote* the result to the server, so on a shared browser
+they would have pushed one user's budget or reconciliation state into another's
+account.
+
+### Accounts
 
 Accounts are user-defined. `financial_accounts.id` (UUID) is the **immutable
 internal key** written into every `account_name` column and into `match_data`
 JSONB; `name` is display-only, so renaming is always safe. Render via
-`labelFor(id)` — never show a raw id.
+`labelFor(id)` — never show a raw id. `idForTx()` in the reconcile page must
+keep using the raw id, not the label, or renaming detaches dismissal notes and
+bulk selection.
 
-CSV column mappings live per account in `account_csv_profiles`.
-`lib/csvProfileDetection.ts` guesses a mapping but **never auto-commits**: the
-user confirms it in `components/CsvMappingModal.tsx`, which previews rows
-through the real parser server-side (`reconciliationService` imports
-`node:crypto`, so the browser cannot run it).
+- **`is_default`** — where an expense lands when none is given. The New Expense
+  form has no account picker: the server routes accountless expenses through
+  `insertTransaction` → `getDefaultAccountId`. This is also what makes the iOS
+  Shortcut work, since it can't reasonably send a UUID.
+- **`deleted_at`** — deletion is soft. The row stays so past matches remain
+  matched *and* correctly labeled, while the account vanishes from every picker.
+  `AccountsContext.byId` therefore includes deleted accounts (for labels) while
+  `accounts`/`activeAccounts` exclude them. Deleting the default promotes the
+  oldest remaining account.
+- Name uniqueness is a **partial unique index over live rows only** — a plain
+  `UNIQUE (user_id, name)` would mean deleting "Checking" permanently reserved
+  that name. Partial indexes don't appear in
+  `information_schema.table_constraints`, which is why `check-schema.mjs` also
+  inspects `pg_indexes`.
+
+Managed from the **Reconcile** page via `ManageAccountsModal` (rendered in both
+the empty-state and main return branches, so it's reachable before any account
+exists). There is no `/settings` route.
+
+### CSV formats
+
+Column mappings live per account in `account_csv_profiles`.
+`lib/csvProfileDetection.ts` guesses a mapping (header-name matching, with a
+value-shape fallback) but **never auto-commits**: the user confirms it in
+`components/CsvMappingModal.tsx`, which previews rows through the real parser
+server-side (`reconciliationService` imports `node:crypto`, so the browser
+cannot run it). Saving a changed mapping invalidates that account's match cache,
+because the mapping determines each transaction's hash.
+
+`outflow_is_positive` feeds the pre-existing `outgoingIsPositive` option on
+`findMatches` — it only affects how the unmatched bucket is classified, never
+the parsed sign, which would change hashes.
 
 ### Key Files
 
@@ -113,16 +180,23 @@ through the real parser server-side (`reconciliationService` imports
 |------|-------|
 | `lib/db.ts` | The only `neon()` call site in the app |
 | `lib/apiAuth.ts` | `requireUser()` — the single identity seam |
-| `lib/accounts.ts` | Account + CSV profile loading; `toBankProfile()` |
+| `lib/accounts.ts` | Account + CSV profile loading; `toBankProfile()`, `getDefaultAccountId()` |
 | `lib/transactions.ts` | Shared parse/insert for `/api/transactions` and `/api/ingest` |
+| `lib/signInCode.ts`, `lib/signInEmail.ts` | Sign-in code generation and the email template |
 | `app/page.tsx` | Main dashboard: charts, budget bars, account balances |
-| `app/reconcile/page.tsx` | Bank CSV upload and matching UI (~6400 lines) — see its own CLAUDE.md |
-| `app/net-worth/page.tsx` | Assets/liabilities + net worth trends |
+| `app/reconcile/page.tsx` | Bank CSV upload and matching UI (~6600 lines) — see its own CLAUDE.md |
+| `app/new-expense/page.tsx` | Expense form + collapsed `ShortcutSetupCard` (token issue/revoke) |
+| `app/guide/reconcile/page.tsx` | In-app user guide |
 | `services/transactionsApi.ts` | Client transaction fetch/submit + type normalization |
 | `services/reconciliationService.ts` | Match algorithm and hashing — **frozen**, see above |
 | `services/accountBalancesService.ts` | Balances from accounts + transactions + transfers + anchors |
 | `docs/neon-setup.sql` | The schema. Single source of truth |
+| `docs/migrations/` | Ordered ALTERs for databases created from an older schema |
 | `docs/reconciliation-guide.md` | User-facing guide (in-app at `/guide/reconcile`) |
+| `docs/ios-shortcut-setup.md` | One-time authoring of the shareable Shortcut |
+
+`HANDOFF.md` describes the **pre-migration single-user app** and is retained
+only as history — it carries a staleness banner. Do not treat it as current.
 
 ### Budget Logic
 
@@ -134,6 +208,25 @@ through the real parser server-side (`reconciliationService` imports
 Expense **categories** are still hardcoded in `lib/constants.ts` — budget
 storage, the migration helper and `CATEGORY_COLORS` are all keyed to those 15
 strings. User-defined categories would be a coherent follow-up.
+
+### Transactions
+
+`/api/transactions` returns rows already aliased to the camelCase field names
+`services/transactionsApi.ts` normalizes (`rowId`, `expenseType`,
+`transferRowId`, …), so its alias table passes them through untouched. Keeping
+that shape is what let the Sheets→Neon move avoid touching nine consumers.
+
+Three deliberate choices in the GET query:
+- `timestamp` is UTC-ISO with a trailing `Z`, matching what Apps Script emitted;
+  a local-looking string would be parsed as local and read back as UTC.
+- `month` is derived in the user's timezone (`users.timezone`) via `FMMM` → `"3"`,
+  not `"03"`. Deriving in UTC would push evening transactions into the next month.
+- Ordering is `created_at`, not `occurred_at` — Sheets returned append order and
+  some client code assumes newest-last.
+
+`date` used to be undefined on every row and the matcher prefers
+`date ?? timestamp`, so emitting a real local date **changes auto-match
+scoring**. `TRANSACTIONS_EMIT_DATE=false` reverts to the old behavior.
 
 ### Neon DB Access Pattern
 

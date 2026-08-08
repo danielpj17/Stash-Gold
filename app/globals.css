@@ -33,6 +33,30 @@ input[type="range"]::-moz-range-track {
   background-color: #333333;
 }
 
+/* `components/NumberField.tsx` draws its own stepper, so hide the stock spinners.
+   Arrow-key stepping still works — that lives on the input, not these buttons. */
+.stash-number-input::-webkit-outer-spin-button,
+.stash-number-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+.stash-number-input {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Fallback for any plain `input[type="date"]`: the picker glyph ships black and
+   disappears on charcoal. `components/DateField.tsx` is the styled option. */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7) sepia(1) saturate(3) hue-rotate(85deg);
+  cursor: pointer;
+  opacity: 0.75;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
 @layer utilities {
   .scrollbar-thin {
     scrollbar-width: thin;

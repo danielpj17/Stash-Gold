@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import MonthDropdown from "@/components/MonthDropdown";
+import DateField from "@/components/DateField";
+import NumberField from "@/components/NumberField";
 import { useMonth } from "@/contexts/MonthContext";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { useExpensesData } from "@/contexts/ExpensesDataContext";
@@ -732,12 +734,14 @@ export default function NetWorthPage() {
           <div className="rounded-xl bg-[#252525] border border-charcoal-dark p-4">
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm text-gray-400">Goal Tracking</p>
-              <input
-                type="number"
+              <NumberField
+                value={String(goalTarget)}
+                onChange={(next) => setGoalTarget(Math.max(1, Number(next) || 1))}
                 min={1}
-                value={goalTarget}
-                onChange={(e) => setGoalTarget(Math.max(1, Number(e.target.value) || 1))}
-                className="w-28 rounded-md bg-[#1f1f1f] border border-charcoal-dark px-2 py-1 text-sm text-right text-white"
+                size="sm"
+                className="w-32"
+                inputClassName="text-right"
+                aria-label="Net worth goal"
               />
             </div>
             <p className="text-xs text-gray-500 mt-2">Target: {fmtCurrency(goalTarget)}</p>
@@ -807,17 +811,19 @@ export default function NetWorthPage() {
                     placeholder="0.00"
                   />
                 </label>
-                <label className="text-sm text-gray-300">
-                  Acquisition Date
-                  <input
-                    type="date"
+                <div className="text-sm text-gray-300">
+                  <label htmlFor="manual-acquisition-date">Acquisition Date</label>
+                  <DateField
+                    id="manual-acquisition-date"
                     value={manualForm.acquisitionDate}
-                    onChange={(e) =>
-                      setManualForm((prev) => ({ ...prev, acquisitionDate: e.target.value }))
+                    onChange={(acquisitionDate) =>
+                      setManualForm((prev) => ({ ...prev, acquisitionDate }))
                     }
-                    className="mt-1 w-full rounded-md bg-[#1f1f1f] border border-charcoal-dark px-2 py-1 text-white"
+                    size="sm"
+                    className="mt-1"
+                    aria-label="Acquisition date"
                   />
-                </label>
+                </div>
 
                 {isVehicleAsset && (
                   <>

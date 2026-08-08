@@ -6,6 +6,8 @@ import Papa from "papaparse";
 import { Ban, Check, Filter, Link2Off, Loader2, Pencil, PlusCircle, Search, Trash2, Upload, X } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
 import GlassDropdown, { type GlassDropdownOption } from "@/components/GlassDropdown";
+import DateField from "@/components/DateField";
+import NumberField from "@/components/NumberField";
 import RowActionMenu from "@/components/RowActionMenu";
 import {
   deleteTransaction,
@@ -6406,14 +6408,15 @@ export default function ReconcilePage() {
               ) : (
                 <>
                   <div>
-                    <label className="block text-xs text-gray-400 mb-1">Statement Ending Date</label>
-                    <input
-                      type="date"
+                    <label htmlFor="anchor-date" className="block text-xs text-gray-400 mb-1">
+                      Statement Ending Date
+                    </label>
+                    <DateField
+                      id="anchor-date"
                       value={anchorModal.date}
-                      onChange={(e) =>
-                        setAnchorModal((prev) => ({ ...prev, date: e.target.value }))
-                      }
-                      className="w-full px-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                      onChange={(date) => setAnchorModal((prev) => ({ ...prev, date }))}
+                      clearable={false}
+                      aria-label="Statement ending date"
                     />
                   </div>
                   <div>
@@ -6489,25 +6492,25 @@ export default function ReconcilePage() {
               </div>
               <div>
                 <label htmlFor="edit-entry-date" className="block text-xs text-gray-400 mb-1">Date</label>
-                <input
+                <DateField
                   id="edit-entry-date"
-                  type="date"
                   value={editEntryModal.date}
-                  onChange={(e) => setEditEntryModal((prev) => ({ ...prev, date: e.target.value }))}
-                  className="w-full px-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                  onChange={(date) => setEditEntryModal((prev) => ({ ...prev, date }))}
+                  clearable={false}
+                  aria-label="Entry date"
                 />
               </div>
               <div>
                 <label htmlFor="edit-entry-amount" className="block text-xs text-gray-400 mb-1">Amount</label>
-                <input
+                <NumberField
                   id="edit-entry-amount"
-                  type="number"
-                  step="0.01"
-                  min="0"
                   value={editEntryModal.amount}
-                  onChange={(e) => setEditEntryModal((prev) => ({ ...prev, amount: e.target.value }))}
+                  onChange={(amount) => setEditEntryModal((prev) => ({ ...prev, amount }))}
+                  step={0.01}
+                  min={0}
+                  prefix="$"
                   placeholder="0.00"
-                  className="w-full px-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                  aria-label="Entry amount"
                 />
               </div>
               {editEntryModal.entry.source === "Expenses" ? (

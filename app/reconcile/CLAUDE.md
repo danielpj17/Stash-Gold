@@ -1,24 +1,8 @@
 # Reconciliation System — CLAUDE.md
 
-> **Partially out of date after the multi-user migration.** The match algorithm,
-> hashing, merchant memory, activity log and UI flows below are all still
-> accurate. These parts are not:
->
-> - **Storage.** Logged entries come from Neon (`transactions`), not Google
->   Sheets. `sheet_row_id` now holds a `transactions.id`. The `sheet_name`
->   values `'Expenses'` / `'Transfers'` are kept as literals on purpose.
-> - **Schema.** Every table carries `user_id`, prepended to its PK and every
->   UNIQUE constraint. See `docs/neon-setup.sql` — the SQL quoted below is
->   superseded. `reconciliation_csv_rows` also gained a `seq` column.
-> - **Bank profiles.** `BANK_PROFILES` and `PROFILE_BY_ACCOUNT` are gone.
->   Accounts are user-defined and each carries its own CSV mapping in
->   `account_csv_profiles`; the parser receives it as a parameter. The
->   per-bank special cases (Wells Fargo dual-format, Venmo/Capital One header
->   scans) were replaced by `lib/csvProfileDetection.ts` plus the confirmation
->   modal in `components/CsvMappingModal.tsx`.
-> - **`findMatches`** now *requires* `processedHashes` from the caller.
->
-> The hash-stability warnings below apply with full force and are unchanged.
+> Read `/CLAUDE.md` first for the app-wide invariants — `user_id` scoping,
+> `requireUser()`, and the frozen hashing functions. This file covers the
+> reconciliation subsystem specifically.
 
 ## Purpose
 
@@ -162,153 +146,89 @@ type BulkFilter = "all" | "high_confidence" | "suggested" | "transfers";
 
 ## Neon Database Schema
 
-Full schema is in `docs/neon-budget-setup.sql`. Run that file in the Neon SQL editor to create all tables.
+**`docs/neon-setup.sql` is the single source of truth.** It is deliberately not
+duplicated here — a second copy is a copy that drifts, which is exactly what
+happened to the DDL that used to live in this section and inside each API route.
 
-```sql
--- Hash-based deduplication. One row per bank transaction.
-CREATE TABLE processed_transactions (
-  hash TEXT PRIMARY KEY,
-  account_name TEXT,
-  processed_at TIMESTAMP DEFAULT now()
-);
+What matters for reconciliation:
 
--- Links a bank transaction to an expense sheet row.
--- UNIQUE(sheet_name, sheet_row_id) ensures one expense = one bank tx.
-CREATE TABLE reconciliation_claim_links (
-  bank_hash TEXT NOT NULL,
-  account_name TEXT,
-  sheet_name TEXT NOT NULL DEFAULT 'Expenses',
-  sheet_row_id TEXT NOT NULL,
-  amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
-  created_at TIMESTAMP DEFAULT now(),
-  PRIMARY KEY (bank_hash, sheet_name, sheet_row_id),
-  UNIQUE (sheet_name, sheet_row_id)
-);
+- **Every table carries `user_id`**, prepended to its primary key and to every
+  UNIQUE constraint. `reconciliation_claim_links` is
+  `UNIQUE (user_id, sheet_name, sheet_row_id)`;
+  `reconciliation_transfer_claim_links` is `UNIQUE (user_id, bank_hash)`.
+- **`account_name` holds a `financial_accounts.id` (UUID)**, not a display name.
+  The column keeps its historical name because the id is also embedded in
+  `reconciliation_activity_log.payload` and in `match_data` JSONB. Render names
+  with `labelFor(id)`; never show a raw id.
+- **`sheet_name` keeps its `'Expenses'` / `'Transfers'` literals** on purpose:
+  they are compared as strings in the match and claims routes and are baked into
+  every activity-log payload. Renaming them would require a JSONB rewrite.
+- **`sheet_row_id` holds a `transactions.id`.** Logged entries live in Neon now;
+  Google Sheets is retired. They were already opaque UUID strings, which is why
+  that move needed no re-keying of claims.
+- **`reconciliation_csv_rows.seq` is load-bearing.** `disambiguateHashes`
+  appends `-2`/`-3` by array order, and that order comes from reading this
+  table. `created_at` alone is ambiguous because it is *transaction* time —
+  every row in a 15-row chunk shares one value, so their relative order was
+  undefined. Both read sites (`csv-rows`, `dedupe`) order by
+  `(created_at, seq)`.
 
--- Links a bank transaction to a transfer sheet row.
--- UNIQUE(bank_hash) ensures one bank tx = one transfer leg.
--- Same transfer_sheet_row_id can appear twice (one per leg of a 2-leg transfer).
-CREATE TABLE reconciliation_transfer_claim_links (
-  transfer_sheet_row_id TEXT NOT NULL,
-  bank_hash TEXT NOT NULL,
-  bank_account_name TEXT,
-  bank_amount_cents INTEGER NOT NULL,
-  expected_legs INTEGER NOT NULL DEFAULT 2 CHECK (expected_legs IN (1, 2)),
-  created_at TIMESTAMP DEFAULT now(),
-  PRIMARY KEY (transfer_sheet_row_id, bank_hash),
-  UNIQUE (bank_hash)
-);
+Deleting an account does **not** delete any of this. Deletion is soft
+(`financial_accounts.deleted_at`), so rows here keep resolving to a real account
+name and past matches stay matched. See "Accounts" in `/CLAUDE.md`.
 
--- Bank transaction dismissed (no corresponding sheet entry needed).
-CREATE TABLE reconciliation_statement_dismissals (
-  hash TEXT NOT NULL,
-  account_name TEXT NOT NULL,
-  note TEXT NOT NULL,
-  created_at TIMESTAMP DEFAULT now(),
-  PRIMARY KEY (hash, account_name)
-);
-
--- User sheet row dismissed (no corresponding bank transaction needed).
-CREATE TABLE reconciliation_user_sheet_dismissals (
-  sheet_name TEXT NOT NULL,
-  sheet_row_id TEXT NOT NULL,
-  note TEXT NOT NULL,
-  created_at TIMESTAMP DEFAULT now(),
-  PRIMARY KEY (sheet_name, sheet_row_id)
-);
-
--- Cached MatchResult[] per account (avoids re-matching on page reload).
-CREATE TABLE reconciliation_match_cache (
-  account_name TEXT NOT NULL,
-  bank_hash TEXT NOT NULL,
-  match_data JSONB NOT NULL,
-  updated_at TIMESTAMP DEFAULT now(),
-  PRIMARY KEY (account_name, bank_hash)
-);
-
--- Raw CSV rows per account. dedupe_key is the transaction identity:
--- "id:<hash>" for parseable rows (occurrence-disambiguated, so genuine in-file
--- duplicates get distinct keys) or "raw:<cells>" for header/unparseable rows.
--- Written by POST /csv-rows merge mode (replace) and POST /dedupe.
--- (Legacy rows from the old append path used full-row content keys.)
-CREATE TABLE reconciliation_csv_rows (
-  account_name TEXT NOT NULL,
-  dedupe_key   TEXT NOT NULL,
-  cells        JSONB NOT NULL,
-  created_at   TIMESTAMP DEFAULT now(),
-  PRIMARY KEY (account_name, dedupe_key)
-);
-
--- Upload history per account. bank_hashes stores every tx hash from that upload
--- so individual files can be selectively cleared (DELETE /api/reconciliation/uploaded-files).
-CREATE TABLE reconciliation_uploaded_files (
-  account_name TEXT NOT NULL,
-  file_name    TEXT NOT NULL,
-  created_at   TIMESTAMP DEFAULT now(),
-  bank_hashes  JSONB,
-  PRIMARY KEY (account_name, file_name)
-);
-
--- Statement ending balance anchors for account balance computation.
-CREATE TABLE account_anchors (
-  account_name TEXT PRIMARY KEY,
-  confirmed_balance NUMERIC,
-  as_of_date DATE
-);
-
--- Merchant memory: tracks recurring patterns to auto-claim after 2+ confirmations.
-CREATE TABLE reconciliation_merchant_memory (
-  fingerprint TEXT NOT NULL,
-  bank_account_name TEXT NOT NULL,
-  sheet_category TEXT,
-  sheet_account TEXT,
-  confirmed_count INTEGER NOT NULL DEFAULT 1,
-  last_confirmed_at TIMESTAMP DEFAULT now(),
-  PRIMARY KEY (fingerprint, bank_account_name)
-);
-
--- Persistent audit log of every reconciliation action. Never auto-purged.
-CREATE TABLE reconciliation_activity_log (
-  id UUID PRIMARY KEY,
-  occurred_at TIMESTAMP NOT NULL DEFAULT now(),
-  action_type TEXT NOT NULL,
-  -- action types: claim_create, claim_delete, transfer_claim_create,
-  --   transfer_claim_delete, dismiss_create, dismiss_delete,
-  --   memory_create, memory_increment, memory_delete, processed_create
-  actor TEXT NOT NULL,           -- 'user' | 'auto_match' | 'memory_match'
-  csv_upload_id UUID,            -- groups all actions from one CSV upload
-  bulk_action_id UUID,           -- groups all actions from one bulk approve
-  parent_action_id UUID,         -- compound actions (e.g., quick_log chains)
-  payload JSONB NOT NULL,
-  reverted_at TIMESTAMP,
-  reverted_by_action_id UUID
-);
-CREATE INDEX IF NOT EXISTS idx_activity_log_occurred
-  ON reconciliation_activity_log(occurred_at DESC);
-CREATE INDEX IF NOT EXISTS idx_activity_log_csv
-  ON reconciliation_activity_log(csv_upload_id);
-```
+For a database created from an older schema, apply `docs/migrations/` in order.
+`node scripts/check-schema.mjs` verifies tables, `user_id` columns, the
+constraints the `ON CONFLICT` clauses name, and the partial indexes.
 
 ---
 
 ## Bank Profiles & CSV Parsing
 
-### Supported Banks
+### CSV formats are per account, not per bank
 
-| Account Name | Bank Profile | Date Col | Amount Col | Notes |
-|---|---|---|---|---|
-| WF Checking | Wells Fargo | 0 | 1 | Embeds purchase date in description |
-| WF Savings | Wells Fargo | 0 | 1 | Same profile as WF Checking |
-| Venmo - Daniel | Venmo | auto-detect | auto-detect | Header row scanned dynamically |
-| Venmo - Katie | Venmo | auto-detect | auto-detect | Same profile |
-| Capital One | Capital One | auto-detect | debit/credit cols | Two separate debit/credit columns |
-| America First | America First | null | null | Not yet configured — returns empty |
-| Discover | Discover | null | null | Not yet configured — returns empty |
-| Fidelity | Fidelity | — | — | No BANK_PROFILES entry — returns empty |
-| Schwab | Charles Schwab | — | — | No BANK_PROFILES entry — returns empty |
-| Ally | Ally | — | — | No BANK_PROFILES entry — returns empty |
+`BANK_PROFILES` and `PROFILE_BY_ACCOUNT` are **gone**. Accounts are user-defined,
+so there is no fixed list of supported banks — each account carries its own
+column mapping in `account_csv_profiles`, and the parser receives it as a
+parameter.
 
-**WF Checking, WF Savings, Venmo - Daniel, Venmo - Katie, and Capital One have working CSV parsers.** Other accounts can be added to `BANK_PROFILES` in `services/reconciliationService.ts`.
+Flow for an account's first upload:
+
+1. `onDrop` sees the account has no `csvProfile` and opens
+   `components/CsvMappingModal.tsx` instead of uploading anything.
+2. `POST /api/accounts/[id]/csv-preview` runs `lib/csvProfileDetection.ts`
+   (header-name matching, with a value-shape fallback: date-parse rate ≥80%,
+   currency-parse rate, longest alphabetic column) and returns a suggested
+   mapping **plus a live preview parsed by the real parser**.
+3. The user confirms or corrects it. Detection **never auto-commits** — a wrong
+   mapping produces plausible-but-wrong hashes, and claims key off those.
+4. `PATCH /api/accounts/[id]` saves it and clears that account's match cache,
+   because the mapping determines each transaction's identity.
+
+The preview runs server-side because `reconciliationService` imports
+`node:crypto` and cannot run in the browser. Previewing through a
+reimplementation would defeat the purpose of previewing at all.
+
+Two profile flags replace what used to be hardcoded per bank:
+
+- **`outflow_is_positive`** — credit cards and debit/credit-column exports parse
+  a purchase as a *positive* amount. This feeds the pre-existing
+  `outgoingIsPositive` option on `findMatches`, which only affects how the
+  unmatched bucket is classified. The parsed sign is never changed; that would
+  change hashes.
+- **`derive_date_from_description`** — extract `PURCHASE AUTHORIZED ON MM/DD`
+  from the description instead of using the posted date. Auto-detected when
+  >30% of sampled descriptions match that pattern.
+
+Header rows need no special handling: they produce no date/amount/description,
+so `mapBankRowToTransaction` returns null and they drop out. That is more robust
+than slicing at a fixed header offset, because a merged CSV can contain header
+rows from several uploads interleaved with data.
+
+> **Removed along with the hardcoded profiles:** the Wells Fargo per-row
+> dual-format detection, and the Venmo / Capital One header scans. Generic
+> detection plus the null-return behavior above covers them. If a Wells Fargo
+> statement ever parses oddly, that is the first place to look.
 
 ### Hash Generation (`generateTransactionHash`)
 
@@ -349,9 +269,9 @@ CSV merge/dedup is keyed by **transaction identity** (date+amount+description, i
 
 Because `services/reconciliationService.ts` imports `node:crypto` it is **not browser-safe** (`page.tsx` imports only types from it), so the merge runs **server-side**:
 
-- `PROFILE_BY_ACCOUNT` (exported from the service; also imported by `match/route.ts`) maps a UI account → bank profile, e.g. `"WF Checking" → "Wells Fargo"`.
-- `computeCsvIdentityKeys(accountName, rows)` → one key per row: `id:<hash>` for rows that parse to a transaction (the hash is already occurrence-disambiguated, so genuine in-file duplicates get distinct keys), or an occurrence-indexed `raw:<cells>` key for header/unparseable rows (preserves header rows for Venmo/Capital One profile resolution).
-- `mergeCsvRowsByIdentity(accountName, existing, incoming)` → identity-merge with **max-count-per-identity** semantics: a re-imported transaction collapses onto its existing copy; a genuine second identical line is kept.
+- The account's `BankProfile` is loaded from `account_csv_profiles` via `getBankProfile(sql, userId, accountId)` in `lib/accounts.ts` and passed in. Both routes must use the same profile or they will compute different keys for the same row.
+- `computeCsvIdentityKeys(accountName, rows, profile)` → one key per row: `id:<hash>` for rows that parse to a transaction (the hash is already occurrence-disambiguated, so genuine in-file duplicates get distinct keys), or an occurrence-indexed `raw:<cells>` key for header/unparseable rows (so header rows survive in storage rather than being silently dropped).
+- `mergeCsvRowsByIdentity(accountName, existing, incoming, profile)` → identity-merge with **max-count-per-identity** semantics: a re-imported transaction collapses onto its existing copy; a genuine second identical line is kept.
 
 **Caveat:** This prevents *new* duplicates at import time but does not retroactively collapse duplicates already stored from before the fix (once two same-identity rows exist, the disambiguator keeps both). Legacy duplicates are handled at the display layer (see `statementReviewRowsByAccount`) and by `POST /dedupe`.
 
@@ -543,10 +463,12 @@ bulkError: string               // error message after partial failure
 
 ### `POST /api/reconciliation/match`
 
-- **In:** `{ accountName, rows: string[][], sheetExpenses, sheetTransfers, processedHashes? }`
+- **In:** `{ accountName, rows: string[][], sheetExpenses, sheetTransfers, processedHashes }` — `accountName` is a `financial_accounts.id`
 - **Out:** `{ bankTransactions: BankTransaction[], matches: MatchResult[] }`
 - Fetches merchant memory for account, fetches existing claim links, restores claimed bank hashes as `exact_match`, runs `findMatches()` on the remainder
-- Imports `PROFILE_BY_ACCOUNT` from `services/reconciliationService.ts` (shared with the CSV identity helpers)
+- Loads the account's `BankProfile` via `getAccount` / `toBankProfile`; returns **409 with `needsCsvProfile: true`** if the account has no confirmed CSV mapping yet, which is what triggers the mapping modal
+- Passes `processedHashes ?? []` — never `undefined`, since `findMatches` must not read them itself
+- `outgoingIsPositive` comes from the profile's `outflow_is_positive`, not from inspecting the column layout
 
 ### `GET /api/reconciliation/claims`
 
@@ -943,7 +865,15 @@ This was used to recover WF Checking (92 claims + 101 processed, 0 ambiguous map
 
   Known incident: commit `d1077b9` changed `cleanBankDescription` (long digit sequences went from *removed* → tagged `#NNNN`). This only affected Wells Fargo descriptions (the long auth codes) and orphaned ~92 WF Checking claims + ~101 processed records, recovered by the re-key below.
 
-- **One expense row per claim.** `UNIQUE(sheet_name, sheet_row_id)` on `reconciliation_claim_links`. Attempting to link the same sheet row to two bank hashes returns 409.
+- **One expense row per claim.** `UNIQUE(user_id, sheet_name, sheet_row_id)` on `reconciliation_claim_links`. Attempting to link the same logged row to two bank hashes returns 409.
+
+- **`findMatches` requires `processedHashes` from the caller.** It used to fall back to reading `processed_transactions` itself; that read was not user-scoped, so it could have marked one user's bank rows processed using another's hashes. The fallback is deleted and the option is required — never reintroduce a database read inside `reconciliationService`.
+
+- **`idForTx()` must key on the raw account id, never `labelFor()`.** It is the universal client-side row key: React keys, modal targets, dismissal notes, bulk selection. Keying on the display name would silently detach all of that the moment someone renames an account.
+
+- **Deleting an account never un-matches anything.** `DELETE /api/accounts/[id]` sets `deleted_at` and leaves every reconciliation row intact. `AccountsContext.byId` therefore includes deleted accounts so `labelFor` still resolves them, while `accounts`/`activeAccounts` exclude them from pickers. A hard delete would have to cascade through nine tables and discard months of matching.
+
+- **Changing an account's CSV mapping invalidates its match cache.** The mapping determines each row's hash, so cached `MatchResult`s become meaningless. `PATCH /api/accounts/[id]` clears `reconciliation_match_cache` for that account whenever `csvProfile` is supplied.
 
 - **One bank hash per transfer leg.** `UNIQUE(bank_hash)` on `reconciliation_transfer_claim_links`. The same `transfer_sheet_row_id` appears twice (two legs).
 

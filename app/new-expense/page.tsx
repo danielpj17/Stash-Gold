@@ -3,6 +3,7 @@
 import { useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import GlassDropdown from "@/components/GlassDropdown";
+import NumberField from "@/components/NumberField";
 import ShortcutSetupCard from "@/components/ShortcutSetupCard";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { submitExpense } from "@/services/transactionsApi";
@@ -79,16 +80,17 @@ export default function NewExpensePage() {
               <label htmlFor="amount" className="block text-sm font-medium text-gray-300 mb-1">
                 Amount
               </label>
-              <input
+              <NumberField
                 id="amount"
-                type="number"
-                step="0.01"
-                min="0"
-                required
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={setAmount}
+                step={0.01}
+                min={0}
+                required
+                prefix="$"
                 placeholder="0.00"
-                className="w-full px-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                size="lg"
+                aria-label="Amount"
               />
             </div>
 

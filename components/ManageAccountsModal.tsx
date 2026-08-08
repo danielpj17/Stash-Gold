@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import { Loader2, Plus, Trash2, Star, Archive, ArchiveRestore } from "lucide-react";
 import GlassDropdown from "@/components/GlassDropdown";
+import NumberField from "@/components/NumberField";
 import { useAccounts } from "@/contexts/AccountsContext";
 import { ACCOUNT_KINDS, type AccountKind, type FinancialAccount } from "@/lib/accounts";
 
@@ -167,13 +168,14 @@ export default function ManageAccountsModal({ onClose }: { onClose: () => void }
             <label htmlFor="ma-open" className="block text-xs text-gray-400 mb-1">
               Starting balance
             </label>
-            <input
+            <NumberField
               id="ma-open"
-              type="number"
-              step="0.01"
               value={newOpening}
-              onChange={(e) => setNewOpening(e.target.value)}
-              className="w-full rounded-md bg-[#1f1f1f] border border-charcoal-dark px-3 py-2 text-white text-right focus:outline-none focus:border-[#50C878]"
+              onChange={setNewOpening}
+              step={0.01}
+              size="lg"
+              inputClassName="text-right"
+              aria-label="Starting balance"
             />
           </div>
           <button
@@ -230,7 +232,9 @@ export default function ManageAccountsModal({ onClose }: { onClose: () => void }
                   }}
                   aria-label={`Starting balance for ${account.name}`}
                   title="Starting balance"
-                  className="w-[7rem] shrink-0 rounded-md bg-[#1f1f1f] border border-charcoal-dark px-3 py-1.5 text-white text-right focus:outline-none focus:border-[#50C878]"
+                  // Uncontrolled (commits on blur), so it keeps the plain input;
+                  // the class only drops the stock spinners for consistency.
+                  className="stash-number-input w-[7rem] shrink-0 rounded-md bg-[#1f1f1f] border border-charcoal-dark px-3 py-1.5 text-white text-right focus:outline-none focus:border-[#50C878]"
                 />
 
                 <span
