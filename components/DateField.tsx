@@ -108,7 +108,19 @@ export default function DateField({
 }: DateFieldProps) {
   const [open, setOpen] = useState(false);
   const [pickingMonth, setPickingMonth] = useState(false);
-  const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({});
+  /**
+   * Seeded as fixed-and-invisible rather than `{}`. The panel portals to the end
+   * of `<body>`, so an unpositioned first paint puts it in document flow at the
+   * bottom of the page — and focusing it there scrolls the whole page down.
+   */
+  const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({
+    position: "fixed",
+    top: 0,
+    left: 0,
+    opacity: 0,
+    pointerEvents: "none",
+    zIndex: 9999,
+  });
   const [focusedDate, setFocusedDate] = useState<Date>(() => parseISO(value) ?? new Date());
   const [viewMonth, setViewMonth] = useState<Date>(() => {
     const selected = parseISO(value) ?? new Date();
@@ -186,7 +198,8 @@ export default function DateField({
   }, [open]);
 
   useEffect(() => {
-    if (open) panelRef.current?.focus();
+    // preventScroll: focusing must never move the page behind the panel.
+    if (open) panelRef.current?.focus({ preventScroll: true });
   }, [open]);
 
   const commit = useCallback(

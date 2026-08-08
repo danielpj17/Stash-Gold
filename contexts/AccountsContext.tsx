@@ -25,9 +25,13 @@ type AccountsContextType = {
    * that past reconciliation history references.
    */
   byId: Map<string, FinancialAccount>;
-  /** Display name for an account id. Falls back to the id so archived or
-   *  deleted accounts still render something recognisable rather than blank. */
-  labelFor: (accountId: string) => string;
+  /**
+   * Display name for an account id. Never returns a raw UUID: an id with no
+   * account behind it means nothing to the user, so it renders as
+   * `UNKNOWN_ACCOUNT_LABEL`. Non-UUID values pass through unchanged — transfer
+   * legs also carry external labels ("Paycheck", "Cash") that are already names.
+   */
+  labelFor: (accountId: string | null | undefined) => string;
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -36,6 +40,12 @@ type AccountsContextType = {
 };
 
 const AccountsContext = createContext<AccountsContextType | null>(null);
+
+/** Shown instead of an account id that no longer resolves to an account. */
+export const UNKNOWN_ACCOUNT_LABEL = "Unknown account";
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function AccountsProvider({ children }: { children: ReactNode }) {
   const { status } = useSession();
@@ -78,7 +88,12 @@ export function AccountsProvider({ children }: { children: ReactNode }) {
       activeAccounts: live.filter((a) => a.isActive),
       defaultAccount: live.find((a) => a.isDefault) ?? live[0] ?? null,
       byId,
-      labelFor: (accountId: string) => byId.get(accountId)?.name ?? accountId,
+      labelFor: (accountId: string | null | undefined) => {
+        const id = (accountId ?? "").trim();
+        const known = byId.get(id)?.name;
+        if (known) return known;
+        return UUID_PATTERN.test(id) ? UNKNOWN_ACCOUNT_LABEL : id;
+      },
       loading,
       error,
       refresh,

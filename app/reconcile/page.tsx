@@ -100,11 +100,14 @@ type UserInputtedEntry = {
   source: "Expenses" | "Transfers";
   dateValue: string;
   title: string;
+  /** Display line under the title: amount • category • date. Self-contained. */
   subtitle: string;
   amount: number;
   isCompleted: boolean;
   /** Sheet "account" column for expense rows; used by home account filter. */
   expenseAccount?: string;
+  /** `labelFor(expenseAccount)` — the account is searchable but not displayed. */
+  accountLabel?: string;
   /** Raw category/description, unlike `title`/`subtitle` which are display strings. */
   expenseType?: string;
   description?: string;
@@ -494,7 +497,12 @@ function filterMatchForBulk(
   return true;
 }
 
-function summarizeActivityPayload(actionType: string, payload: unknown): string {
+/** `labelFor` is threaded in: payload `accountName` fields hold account ids. */
+function summarizeActivityPayload(
+  actionType: string,
+  payload: unknown,
+  labelFor: (accountId: string | null | undefined) => string,
+): string {
   const p = (payload ?? {}) as Record<string, any>;
   switch (actionType) {
     case "claim_create":
@@ -503,16 +511,16 @@ function summarizeActivityPayload(actionType: string, payload: unknown): string 
       const linkSummary = links
         .map((l: any) => `${l.sheetName ?? "?"}:${l.sheetRowId ?? "?"} ($${((l.amountCents ?? 0) / 100).toFixed(2)})`)
         .join(", ");
-      return `${p.accountName ?? "—"} • $${(p.bankAmount ?? 0).toFixed?.(2) ?? p.bankAmount} • ${p.bankDate ?? ""}\n${p.bankDescription ?? ""}\n→ ${linkSummary}`;
+      return `${labelFor(p.accountName) || "—"} • $${(p.bankAmount ?? 0).toFixed?.(2) ?? p.bankAmount} • ${p.bankDate ?? ""}\n${p.bankDescription ?? ""}\n→ ${linkSummary}`;
     }
     case "claim_delete":
       return `Removed claims for hash ${String(p.bankHash ?? "").slice(0, 12)}…`;
     case "transfer_claim_create":
-      return `Transfer leg: row ${p.transferRowId ?? "?"} • $${((p.bankAmountCents ?? 0) / 100).toFixed(2)} • ${p.bankAccountName ?? "—"}`;
+      return `Transfer leg: row ${p.transferRowId ?? "?"} • $${((p.bankAmountCents ?? 0) / 100).toFixed(2)} • ${labelFor(p.bankAccountName) || "—"}`;
     case "transfer_claim_delete":
       return `Removed transfer claim for hash ${String(p.bankHash ?? "").slice(0, 12)}…`;
     case "dismiss_create":
-      return `Dismissed ${p.accountName ?? "—"}: ${p.note ?? ""}`;
+      return `Dismissed ${labelFor(p.accountName) || "—"}: ${p.note ?? ""}`;
     case "dismiss_delete":
       return `Removed dismissal for hash ${String(p.hash ?? "").slice(0, 12)}…`;
     case "user_dismiss_create":
@@ -1526,10 +1534,11 @@ export default function ReconcilePage() {
         source: "Expenses",
         dateValue,
         title: row.description || row.expenseType || "Expense row",
-        subtitle: `${row.account ?? "No account"} • ${fmtDate(dateValue)}`,
+        subtitle: `${fmtMoney(Number(row.amount ?? 0))} • ${row.expenseType?.trim() || "Uncategorized"} • ${fmtDate(dateValue)}`,
         amount: Number(row.amount ?? 0),
         isCompleted: claimed || tiedByExactMatch || autoCompleted || userDismissed,
         expenseAccount: row.account?.trim() || undefined,
+        accountLabel: row.account?.trim() ? labelFor(row.account) : undefined,
         expenseType: row.expenseType || undefined,
         description: row.description || undefined,
       };
@@ -1540,7 +1549,7 @@ export default function ReconcilePage() {
       const status = rowId ? transferClaimStatusByRowId[rowId] : undefined;
       const claimed = rowId ? claimedRowKeys.has(claimKey("Transfers", rowId)) : false;
       const dateValue = sheetTransferDateRaw(row);
-      const title = `${row.transferFrom || "—"} → ${row.transferTo || "—"}`;
+      const title = `${labelFor(row.transferFrom) || "—"} → ${labelFor(row.transferTo) || "—"}`;
       const autoCompleted = autoCompletedTransferSignatures.has(
         buildTransferSignature(
           Number(row.amount ?? 0),
@@ -1556,7 +1565,7 @@ export default function ReconcilePage() {
         source: "Transfers",
         dateValue,
         title,
-        subtitle: `Transfer • ${fmtDate(dateValue)}`,
+        subtitle: `${fmtMoney(Number(row.amount ?? 0))} • Transfer • ${fmtDate(dateValue)}`,
         amount: Number(row.amount ?? 0),
         isCompleted: claimed || Boolean(status?.isComplete) || autoCompleted || userDismissed,
         transferFrom: row.transferFrom,
@@ -1570,6 +1579,7 @@ export default function ReconcilePage() {
     autoCompletedTransferSignatures,
     claimedRowKeys,
     expenseRowIdsLinkedByExactMatch,
+    labelFor,
     sheetExpenses,
     sheetTransfers,
     transferClaimStatusByRowId,
@@ -1616,11 +1626,11 @@ export default function ReconcilePage() {
           entry.title,
           entry.subtitle,
           entry.source,
-          entry.expenseAccount,
-          entry.transferFrom,
-          entry.transferTo,
+          entry.accountLabel,
+          labelFor(entry.transferFrom),
+          labelFor(entry.transferTo),
           tx?.description,
-          tx?.accountName,
+          labelFor(tx?.accountName),
           tx?.date,
         ]
           .map((v) => normalizeText(v))
@@ -1641,7 +1651,7 @@ export default function ReconcilePage() {
       });
     }
     return rows;
-  }, [homeAccountFilter, homeRowsWithSuggestedBank, homeSearchQuery]);
+  }, [homeAccountFilter, homeRowsWithSuggestedBank, homeSearchQuery, labelFor]);
 
   const allHomeMatchedMatches = useMemo(() => {
     const list: MatchResult[] = [];
@@ -1673,13 +1683,13 @@ export default function ReconcilePage() {
         const tr = match.matchedSheetTransfer;
         const hay = [
           tx.description,
-          tx.accountName,
+          labelFor(tx.accountName),
           tx.date,
           exp?.description,
           exp?.expenseType,
-          exp?.account,
-          tr?.transferFrom,
-          tr?.transferTo,
+          labelFor(exp?.account),
+          labelFor(tr?.transferFrom),
+          labelFor(tr?.transferTo),
         ]
           .map((v) => normalizeText(v))
           .join(" ");
@@ -1700,7 +1710,7 @@ export default function ReconcilePage() {
       });
     }
     return rows;
-  }, [allHomeUserLinkedMatchedMatches, homeAccountFilter, homeSearchQuery]);
+  }, [allHomeUserLinkedMatchedMatches, homeAccountFilter, homeSearchQuery, labelFor]);
 
   const homeFilteredStatementClosedRows = useMemo(() => {
     let rows = allHomeStatementClosedOnlyMatches;
@@ -1712,7 +1722,7 @@ export default function ReconcilePage() {
         const note = dismissalNotesById[tid];
         const hay = [
           tx.description,
-          tx.accountName,
+          labelFor(tx.accountName),
           tx.date,
           note,
           match.matchType,
@@ -1732,6 +1742,7 @@ export default function ReconcilePage() {
     dismissalNotesById,
     homeAccountFilter,
     homeSearchQuery,
+    labelFor,
   ]);
 
   const homeFilteredUserDismissedRows = useMemo(() => {
@@ -1743,9 +1754,9 @@ export default function ReconcilePage() {
           entry.title,
           entry.subtitle,
           entry.source,
-          entry.expenseAccount,
-          entry.transferFrom,
-          entry.transferTo,
+          entry.accountLabel,
+          labelFor(entry.transferFrom),
+          labelFor(entry.transferTo),
           userDismissalNotesByEntryId[entry.id],
         ]
           .map((v) => normalizeText(v))
@@ -1768,6 +1779,7 @@ export default function ReconcilePage() {
   }, [
     homeAccountFilter,
     homeSearchQuery,
+    labelFor,
     userDismissalNotesByEntryId,
     userDismissedRowKeys,
     userInputtedEntries,
@@ -1789,14 +1801,14 @@ export default function ReconcilePage() {
     if (q) {
       list = list.filter((m) => {
         const tx = m.bankTransaction;
-        return [tx.description, tx.accountName, tx.date, String(tx.amount)]
+        return [tx.description, labelFor(tx.accountName), tx.date, String(tx.amount)]
           .map((v) => normalizeText(v))
           .join(" ")
           .includes(q);
       });
     }
     return list;
-  }, [allUnprocessedStatementMatchesForClaim, userStatementClaimModal]);
+  }, [allUnprocessedStatementMatchesForClaim, labelFor, userStatementClaimModal]);
 
   const openQuickAdd = useCallback((match: MatchResult) => {
     const tx = match.bankTransaction;
@@ -1868,8 +1880,8 @@ export default function ReconcilePage() {
         })
         .map((row) => {
           const rowId = (row.transferRowId ?? "").trim();
-          const from = row.transferFrom?.trim() || "—";
-          const to = row.transferTo?.trim() || row.description?.trim() || "—";
+          const from = labelFor(row.transferFrom) || "—";
+          const to = labelFor(row.transferTo) || row.description?.trim() || "—";
           return {
             key: claimKey("Transfers", rowId),
             sheetName: "Transfers" as const,
@@ -2469,7 +2481,7 @@ export default function ReconcilePage() {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.error || `Failed to match ${accountName} (${res.status})`);
+        throw new Error(err.error || `Failed to match ${labelFor(accountName)} (${res.status})`);
       }
       const data = (await res.json()) as MatchResponse;
       nextMatches[accountName] = data.matches;
@@ -2530,7 +2542,7 @@ export default function ReconcilePage() {
       try {
         await saveMatchCacheToNeon(accountName, matches, true);
       } catch (e) {
-        rematchErrors.push(`${accountName}: ${e instanceof Error ? e.message : String(e)}`);
+        rematchErrors.push(`${labelFor(accountName)}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     if (rematchErrors.length > 0) {
@@ -2540,7 +2552,7 @@ export default function ReconcilePage() {
     if (autoApprovalErrors.length > 0) {
       setActionError(autoApprovalErrors[0]);
     }
-  }, [persistAutoClaim]);
+  }, [labelFor, persistAutoClaim]);
 
   const handleApprove = useCallback(
     async (match: MatchResult, userEntry?: UserInputtedEntry) => {
@@ -3026,7 +3038,7 @@ export default function ReconcilePage() {
     async (accountName: string) => {
       if (typeof window !== "undefined") {
         const ok = window.confirm(
-          `Remove already-reconciled duplicate statement rows for "${accountName}"?\n\nThis deletes redundant copies of transactions that are already matched or processed — the leftovers from re-importing overlapping statements. Your matches, claims, and genuinely-unmatched transactions are not affected.`,
+          `Remove already-reconciled duplicate statement rows for "${labelFor(accountName)}"?\n\nThis deletes redundant copies of transactions that are already matched or processed — the leftovers from re-importing overlapping statements. Your matches, claims, and genuinely-unmatched transactions are not affected.`,
         );
         if (!ok) return;
       }
@@ -3068,8 +3080,8 @@ export default function ReconcilePage() {
           const count = data.removedCount ?? 0;
           window.alert(
             count > 0
-              ? `Removed ${count} duplicate row${count === 1 ? "" : "s"} from ${accountName}.`
-              : `No already-reconciled duplicate rows were found for ${accountName}.`,
+              ? `Removed ${count} duplicate row${count === 1 ? "" : "s"} from ${labelFor(accountName)}.`
+              : `No already-reconciled duplicate rows were found for ${labelFor(accountName)}.`,
           );
         }
       } catch (err) {
@@ -3078,7 +3090,7 @@ export default function ReconcilePage() {
         setRemovingDuplicates(false);
       }
     },
-    [],
+    [labelFor],
   );
 
   const handleRematchFromSheet = useCallback(async () => {
@@ -3658,12 +3670,12 @@ export default function ReconcilePage() {
         row.sheetName,
         row.expenseType,
         row.description,
-        row.account,
+        labelFor(row.account),
         row.rowId,
         row.timestamp,
       ].some((value) => normalizeText(value).includes(q)),
     );
-  }, [sortedSplitCandidates, splitSearchQuery]);
+  }, [labelFor, sortedSplitCandidates, splitSearchQuery]);
 
   const selectedClaimRows = useMemo(
     () => splitModal.candidates.filter((row) => splitModal.selectedKeys.includes(row.key)),
@@ -4599,14 +4611,14 @@ export default function ReconcilePage() {
                                 <>
                                   <p className="text-yellow-300 text-sm truncate">{entry.title}</p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    {entry.subtitle} • {fmtMoney(entry.amount)}
+                                    {entry.subtitle}
                                   </p>
                                 </>
                               ) : (
                                 <>
                                   <p className="text-green-300 text-sm truncate">{entry.title}</p>
                                   <p className="text-xs text-gray-400 mt-0.5">
-                                    {entry.subtitle} • {fmtMoney(entry.amount)}
+                                    {entry.subtitle}
                                   </p>
                                 </>
                               )}
@@ -4754,15 +4766,15 @@ export default function ReconcilePage() {
                                     )}{" "}
                                     • {fmtMoney(match.matchedSheetExpense.amount)}
                                     {match.matchedSheetExpense.account
-                                      ? ` • ${match.matchedSheetExpense.account}`
+                                      ? ` • ${labelFor(match.matchedSheetExpense.account)}`
                                       : ""}
                                   </p>
                                 </>
                               ) : match.matchedSheetTransfer ? (
                                 <>
                                   <p className="text-green-300 text-sm truncate">
-                                    {(match.matchedSheetTransfer.transferFrom ?? "—")} →{" "}
-                                    {(match.matchedSheetTransfer.transferTo ?? "—")}
+                                    {labelFor(match.matchedSheetTransfer.transferFrom) || "—"} →{" "}
+                                    {labelFor(match.matchedSheetTransfer.transferTo) || "—"}
                                   </p>
                                   <p className="text-xs text-gray-400 mt-0.5">
                                     Transfer •{" "}
@@ -4911,14 +4923,14 @@ export default function ReconcilePage() {
                               <>
                                 <p className="text-yellow-300 text-sm truncate">{entry.title}</p>
                                 <p className="text-xs text-gray-400 mt-0.5">
-                                  {entry.subtitle} • {fmtMoney(entry.amount)}
+                                  {entry.subtitle}
                                 </p>
                               </>
                             ) : (
                               <>
                                 <p className="text-green-300 text-sm truncate">{entry.title}</p>
                                 <p className="text-xs text-gray-400 mt-0.5">
-                                  {entry.subtitle} • {fmtMoney(entry.amount)}
+                                  {entry.subtitle}
                                 </p>
                               </>
                             )}
@@ -5179,7 +5191,7 @@ export default function ReconcilePage() {
                                     {fmtDate(match.matchedSheetExpense.timestamp ?? match.matchedSheetExpense.date)} •{" "}
                                     {fmtMoney(match.matchedSheetExpense.amount)}
                                     {match.matchedSheetExpense.account
-                                      ? ` • ${match.matchedSheetExpense.account}`
+                                      ? ` • ${labelFor(match.matchedSheetExpense.account)}`
                                       : ""}
                                   </p>
                                   {match.matchType === "suggested_match" && (
@@ -5198,8 +5210,8 @@ export default function ReconcilePage() {
                                       match.matchType === "transfer" ? "text-green-300" : match.matchType === "suggested_match" ? "text-blue-300" : "text-yellow-300"
                                     }`}
                                   >
-                                    {(match.matchedSheetTransfer.transferFrom ?? "—")} →{" "}
-                                    {(match.matchedSheetTransfer.transferTo ?? "—")}
+                                    {labelFor(match.matchedSheetTransfer.transferFrom) || "—"} →{" "}
+                                    {labelFor(match.matchedSheetTransfer.transferTo) || "—"}
                                   </p>
                                   <p className="text-xs text-gray-400 mt-0.5">
                                     Transfer •{" "}
@@ -5335,8 +5347,8 @@ export default function ReconcilePage() {
                               ) : match.matchedSheetTransfer ? (
                                 <>
                                   <p className="text-green-300 text-sm truncate">
-                                    {(match.matchedSheetTransfer.transferFrom ?? "—")} →{" "}
-                                    {(match.matchedSheetTransfer.transferTo ?? "—")}
+                                    {labelFor(match.matchedSheetTransfer.transferFrom) || "—"} →{" "}
+                                    {labelFor(match.matchedSheetTransfer.transferTo) || "—"}
                                   </p>
                                   <p className="text-xs text-gray-400 mt-0.5">
                                     Transfer •{" "}
@@ -5664,7 +5676,7 @@ export default function ReconcilePage() {
                             </div>
                             <p className="text-xs text-gray-400 mt-0.5">{occurredLabel}</p>
                             <pre className="text-[11px] text-gray-300 mt-1 whitespace-pre-wrap break-words font-mono">
-                              {summarizeActivityPayload(entry.actionType, entry.payload)}
+                              {summarizeActivityPayload(entry.actionType, entry.payload, labelFor)}
                             </pre>
                           </div>
                           <button
@@ -5894,7 +5906,7 @@ export default function ReconcilePage() {
                 </p>
                 <p className="text-gray-100 truncate">{userDismissModal.entry.title}</p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  {userDismissModal.entry.subtitle} • {fmtMoney(userDismissModal.entry.amount)}
+                  {userDismissModal.entry.subtitle}
                 </p>
               </div>
               <div>
@@ -6108,7 +6120,7 @@ export default function ReconcilePage() {
                             <p className="text-xs text-gray-400 mt-0.5">
                               {fmtMoney(row.amount)}
                               {row.timestamp ? ` • ${fmtDate(row.timestamp)}` : ""}
-                              {row.account ? ` • ${row.account}` : ""}
+                              {row.account ? ` • ${labelFor(row.account)}` : ""}
                             </p>
                             <p className="text-[11px] text-gray-500 mt-0.5">
                               {row.sheetName === "Transfers" ? "Transfer Row ID" : "Row ID"}: {row.rowId}
@@ -6174,8 +6186,7 @@ export default function ReconcilePage() {
                 <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">User-inputted</p>
                 <p className="text-gray-100 truncate">{userStatementClaimModal.entry.title}</p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  {userStatementClaimModal.entry.source} • {userStatementClaimModal.entry.subtitle} •{" "}
-                  {fmtMoney(userStatementClaimModal.entry.amount)}
+                  {userStatementClaimModal.entry.source} • {userStatementClaimModal.entry.subtitle}
                 </p>
               </div>
               <p className="text-xs text-gray-400">
@@ -6487,7 +6498,7 @@ export default function ReconcilePage() {
                   {editEntryModal.entry.title}
                 </p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  {editEntryModal.entry.subtitle} • {fmtMoney(editEntryModal.entry.amount)}
+                  {editEntryModal.entry.subtitle}
                 </p>
               </div>
               <div>
@@ -6607,7 +6618,7 @@ export default function ReconcilePage() {
                   {deleteEntryModal.entry.title}
                 </p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  {deleteEntryModal.entry.subtitle} • {fmtMoney(deleteEntryModal.entry.amount)}
+                  {deleteEntryModal.entry.subtitle}
                 </p>
               </div>
               <p className="text-sm text-gray-300">

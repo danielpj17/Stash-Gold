@@ -830,8 +830,10 @@ export default function BudgetPage() {
                       <p className="text-gray-400 px-2 py-2">No transfers for this period.</p>
                     ) : (
                       sortedTransfers.map((row, index) => {
-                        const from = row.transferFrom.trim() || "—";
-                        const to = row.transferTo.trim() || "—";
+                        // Both legs hold an account id (or an external label
+                        // like "Paycheck"); labelFor resolves either.
+                        const from = labelFor(row.transferFrom) || "—";
+                        const to = labelFor(row.transferTo) || "—";
                         const legacy = row.description?.trim();
                         return (
                         <div
