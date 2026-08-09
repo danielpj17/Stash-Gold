@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useSession } from "next-auth/react";
+import { ArrowLeft } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
 import HouseholdPanel from "@/components/HouseholdPanel";
 import SignOutButton from "@/components/SignOutButton";
@@ -29,7 +31,23 @@ export default function SettingsPage() {
     <DashboardLayout>
       {/* Centred to match New Expense — same narrow-column shape, same reason. */}
       <div className="space-y-6 max-w-2xl mx-auto">
-        <h1 className="text-xl font-semibold text-white">Settings</h1>
+        {/*
+          A link to New Expense rather than history.back(): Settings is also
+          reachable from the sidebar's email line, and from there "back" would
+          be wherever you happened to be. This always lands where the gear was.
+          Styled to match the "← All" control on Reconcile.
+        */}
+        <div className="flex items-center gap-3">
+          <Link
+            href="/new-expense"
+            title="Back to New Expense"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-sm hover:text-white hover:bg-[#2d2d2d] transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" aria-hidden />
+            Back
+          </Link>
+          <h1 className="text-xl font-semibold text-white">Settings</h1>
+        </div>
 
         <section className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
           <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark">
