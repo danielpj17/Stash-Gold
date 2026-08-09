@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import nodemailer from "nodemailer";
 import { isErrorResponse, requireUser } from "@/lib/apiAuth";
+import { absoluteBaseUrl } from "@/lib/baseUrl";
 import {
   INVITE_TTL_DAYS,
   generateInviteToken,
@@ -154,10 +155,12 @@ export async function POST(request: NextRequest) {
     `;
 
     const me = members.find((m) => m.isYou);
-    const base = (process.env.AUTH_URL ?? "").replace(/\/+$/, "");
+    // From the request, NOT from AUTH_URL — that is pinned to localhost:3000,
+    // so using it mailed the recipient a link to their own machine. See
+    // lib/baseUrl.ts.
     const { subject, text, html } = renderInviteEmail({
       inviterLabel: me?.name?.trim() || me?.email || "Someone",
-      url: `${base}/invite/${raw}`,
+      url: `${absoluteBaseUrl(request)}/invite/${raw}`,
       days: INVITE_TTL_DAYS,
     });
 
