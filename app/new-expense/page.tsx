@@ -52,7 +52,14 @@ export default function NewExpensePage() {
 
   return (
     <DashboardLayout>
-      <div className="space-y-6 max-w-2xl">
+      {/*
+        Centred rather than left-aligned. The form is deliberately narrow, so
+        on a wide screen pinning it left left a large dead area to its right
+        that read as "something failed to load". `mx-auto` centres it within
+        the content region (already inset by the sidebar), which is why this
+        looks balanced rather than pushed off-centre.
+      */}
+      <div className="space-y-6 max-w-2xl mx-auto">
         {/*
           The gear is this page's only route to Settings, and in the installed
           PWA it is the app's ONLY route there — the sidebar is hidden and the

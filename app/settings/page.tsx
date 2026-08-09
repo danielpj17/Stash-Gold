@@ -27,7 +27,8 @@ export default function SettingsPage() {
 
   return (
     <DashboardLayout>
-      <div className="space-y-6 max-w-2xl">
+      {/* Centred to match New Expense — same narrow-column shape, same reason. */}
+      <div className="space-y-6 max-w-2xl mx-auto">
         <h1 className="text-xl font-semibold text-white">Settings</h1>
 
         <section className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
