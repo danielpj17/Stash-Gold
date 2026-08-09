@@ -100,7 +100,14 @@ type UserInputtedEntry = {
   source: "Expenses" | "Transfers";
   dateValue: string;
   title: string;
-  /** Display line under the title: amount • category • date. Self-contained. */
+  /**
+   * Display line under the title: amount • category • date, and — only when
+   * this Stash is shared — who entered it. Self-contained.
+   *
+   * This is the one place in the app a person's name is shown. It is also part
+   * of the search haystack in homeFilteredIncompleteRows / homeFilteredMatchedRows,
+   * so putting the name here makes rows searchable by person for free.
+   */
   subtitle: string;
   amount: number;
   isCompleted: boolean;
@@ -1590,6 +1597,15 @@ export default function ReconcilePage() {
   }, [allMatches, processedHashes, transferClaimStatusByRowId]);
 
   const userInputtedEntries = useMemo(() => {
+    /**
+     * " • Sarah", or nothing at all.
+     *
+     * The server only sends `enteredByName` when this Stash is shared AND that
+     * person set a name, so there is no household check to do here — an absent
+     * value means the subtitle stays exactly as it was before sharing existed.
+     */
+    const enteredBySuffix = (name?: string) => (name?.trim() ? ` • ${name.trim()}` : "");
+
     const expenseEntries: UserInputtedEntry[] = sheetExpenses.map((row, index) => {
       const rowId = (row.rowId ?? "").trim();
       const key = rowId ? claimKey("Expenses", rowId) : `Expenses:missing:${index}`;
@@ -1603,7 +1619,9 @@ export default function ReconcilePage() {
         source: "Expenses",
         dateValue,
         title: row.description || row.expenseType || "Expense row",
-        subtitle: `${fmtMoney(Number(row.amount ?? 0))} • ${row.expenseType?.trim() || "Uncategorized"} • ${fmtDate(dateValue)}`,
+        subtitle:
+          `${fmtMoney(Number(row.amount ?? 0))} • ${row.expenseType?.trim() || "Uncategorized"}` +
+          ` • ${fmtDate(dateValue)}${enteredBySuffix(row.enteredByName)}`,
         amount: Number(row.amount ?? 0),
         isCompleted: claimed || tiedByExactMatch || autoCompleted || userDismissed,
         expenseAccount: row.account?.trim() || undefined,
@@ -1634,7 +1652,9 @@ export default function ReconcilePage() {
         source: "Transfers",
         dateValue,
         title,
-        subtitle: `${fmtMoney(Number(row.amount ?? 0))} • Transfer • ${fmtDate(dateValue)}`,
+        subtitle:
+          `${fmtMoney(Number(row.amount ?? 0))} • Transfer` +
+          ` • ${fmtDate(dateValue)}${enteredBySuffix(row.enteredByName)}`,
         amount: Number(row.amount ?? 0),
         isCompleted: claimed || Boolean(status?.isComplete) || autoCompleted || userDismissed,
         transferFrom: row.transferFrom,

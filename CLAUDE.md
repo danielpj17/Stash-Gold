@@ -54,10 +54,20 @@ silent and expensive.
 1. **Every table holding user data carries `user_id`, prepended to its primary
    key and to every UNIQUE constraint.** Every query filters on it — including
    inside `NOT EXISTS` subqueries, and especially every `DELETE`.
+   (`household_invites` is the one exception: it describes a relationship
+   between two users rather than data inside a scope, so it keys on
+   `owner_user_id`.)
 2. **`user_id` is never read from a request body or query string.** It comes
    from `requireUser()` only. The reconcile page splits one logical save across
    many independent HTTP requests, so identity is re-derived per request.
-3. **Reconciliation hashing is frozen.** `generateTransactionHash`,
+3. **`requireUser()` returns two ids and they are not interchangeable.**
+   `userId` is the *data scope*; `actorId` is the *person*. In a shared
+   household they differ. Every query over user data filters on `userId` —
+   putting `actorId` in a `WHERE` would partition the household and hide one
+   spouse's rows from the other. `actorId` is for attribution
+   (`transactions.entered_by`), for `/api/tokens`, and for `/api/household`.
+   Nothing else. See "Household sharing" below.
+4. **Reconciliation hashing is frozen.** `generateTransactionHash`,
    `cleanBankDescription`, `parseBankAmount`, `normalizeDateOnly`,
    `disambiguateHashes`, `findMatches` and its scoring helpers must not change.
    Claims, processed markers, dismissals and the match cache are all keyed to
@@ -65,9 +75,9 @@ silent and expensive.
    (`reconciliation_uploaded_files.bank_hashes`, `activity_log.payload`).
    `app/reconcile/CLAUDE.md` documents an incident where a one-line change to
    `cleanBankDescription` orphaned ~92 claims.
-4. **`findMatches` requires `processedHashes` from the caller.** It must never
+5. **`findMatches` requires `processedHashes` from the caller.** It must never
    read them itself — such a read would not be user-scoped.
-5. **Deleting an account is a soft delete.** Reconciliation rows reference
+6. **Deleting an account is a soft delete.** Reconciliation rows reference
    accounts by id; hard-deleting would either orphan that history or force a
    cascade that throws away months of matching. See "Accounts" below.
 
@@ -80,7 +90,10 @@ silent and expensive.
 - `/api/budget` — monthly budgets as JSONB, one row per user
 - `/api/reconciliation/*` — bank CSV matching state
 - `/api/ingest` — iOS Shortcut writes, **bearer token only**, no session
-- `/api/tokens` — ingest token management, **session only**, never bearer
+- `/api/tokens` — ingest token management, **session only**, never bearer.
+  Scopes on `actorId`, not `userId` — see "Household sharing"
+- `/api/household` — who shares this Stash; invite, rename yourself, remove.
+  Plus `/accept` and `/leave`. All scope on `actorId`
 
 ### Auth
 
@@ -108,6 +121,53 @@ security**. The real check is `requireUser()` inside each Node route handler.
 The root layout calls `auth()` and seeds `<SessionProvider>`, so `useSession()`
 is populated on first client render and cache readers can key by user id
 synchronously without an empty flash.
+
+### Household sharing
+
+Two people (realistically a couple) can share one Stash, each with their own
+email, sign-in and iOS Shortcut token.
+
+There is **no household table and no household id**. `user_id` keeps its
+meaning as "the data scope", and that scope is simply the owner's user id.
+`users.data_owner_id` points a member at the owner; `requireUser()` resolves it
+into `ApiUser.userId` and nothing else in the app is aware. That is why adding
+this touched no reconciliation code and no `WHERE` clause.
+
+- **It costs nothing per request.** The Auth.js adapter does `SELECT *` and
+  database sessions re-read `users` every request, so `data_owner_id` arrives on
+  the session for free *and* can't go stale — an accepted invite is live on the
+  next request, with no sign-out.
+- **Exactly one level deep.** `/api/household/accept` refuses to attach to a
+  user who is themselves a member, so no query walks a chain.
+- **The Shortcut needed no changes.** `user_tokens.user_id` is the *actor*, and
+  `identityFromBearer` joins through to `data_owner_id` for the scope. Each
+  person's own token therefore attributes correctly by itself.
+- **`/api/tokens` is the one route that scopes on `actorId`.** Tokens belong to
+  a person, not a household. Scoping it on `userId` would let each spouse revoke
+  the other's Shortcut *and* would destroy attribution. There is a large comment
+  saying so; don't "fix" it.
+- **Invites are email-bound.** The token alone is never sufficient — acceptance
+  also requires being signed in as the invited address, so a forwarded email
+  can't be redeemed by whoever receives it.
+- **v1 refuses to merge.** If the invitee already has data of their own,
+  acceptance fails loudly rather than orphaning it (joining would repoint every
+  read at the owner's scope).
+- **Removing someone deletes nothing.** `data_owner_id` goes back to NULL; the
+  user row survives, so `entered_by` keeps resolving.
+- **Deleting an owner would cascade the whole household.** There is no
+  delete-account UI, so this is currently only a hazard to be aware of.
+
+Attribution is `transactions.entered_by` (WHO logged it) versus `user_id`
+(WHOSE data it is). It is **display-only** and must never appear in a `WHERE`.
+Names surface in exactly one place: the reconcile page's `subtitle`, after the
+date. The server suppresses `enteredByName` unless the scope is actually shared
+*and* that person set a name, so a solo Stash is byte-identical to before and
+there is no fallback to a guessed name.
+
+UI lives in `HouseholdPanel` (chrome-free body), mounted twice: a collapsed
+`HouseholdCard` under New Expense, and `HouseholdModal` off the sidebar's email
+line. New Expense is not a preference — `Sidebar` is `standalone:hidden` and
+`BottomNav` is full, so it is the only surface reachable from the installed PWA.
 
 ### State Management
 
@@ -179,7 +239,9 @@ the parsed sign, which would change hashes.
 | File | Notes |
 |------|-------|
 | `lib/db.ts` | The only `neon()` call site in the app |
-| `lib/apiAuth.ts` | `requireUser()` — the single identity seam |
+| `lib/apiAuth.ts` | `requireUser()` — the single identity seam; splits `userId` (scope) from `actorId` (person) |
+| `lib/household.ts` | Household membership, invite tokens, the `hasOwnData` join guard |
+| `types/next-auth.d.ts` | Session/AdapterUser augmentation for `dataOwnerId` |
 | `lib/accounts.ts` | Account + CSV profile loading; `toBankProfile()`, `getDefaultAccountId()` |
 | `lib/transactions.ts` | Shared parse/insert for `/api/transactions` and `/api/ingest` |
 | `lib/signInCode.ts`, `lib/signInEmail.ts` | Sign-in code generation and the email template |

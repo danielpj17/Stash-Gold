@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 import {
   EXPENSE_SELECT_FIELDS,
+  TRANSACTION_JOINS,
   TRANSFER_SELECT_FIELDS,
   insertTransaction,
   parseTransactionInput,
@@ -30,9 +31,11 @@ export async function GET(request: NextRequest) {
     const rows =
       kind === "transfers"
         ? ((await sql(
+            // Scoped to the household, not the acting user: in a shared Stash
+            // both people get one combined list, which is the whole point.
             `SELECT ${TRANSFER_SELECT_FIELDS}
              FROM transactions t
-             JOIN users u ON u.id = t.user_id
+             ${TRANSACTION_JOINS}
              WHERE t.user_id = $1 AND t.kind = 'transfer'
              ORDER BY t.created_at ASC, t.id ASC`,
             [userId],
@@ -43,7 +46,7 @@ export async function GET(request: NextRequest) {
             // back-dated entries must not jump the queue.
             `SELECT ${EXPENSE_SELECT_FIELDS}
              FROM transactions t
-             JOIN users u ON u.id = t.user_id
+             ${TRANSACTION_JOINS}
              WHERE t.user_id = $1 AND t.kind IN ('expense', 'income')
              ORDER BY t.created_at ASC, t.id ASC`,
             [userId],
@@ -61,7 +64,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const ctx = await requireUser();
   if (isErrorResponse(ctx)) return ctx;
-  const { sql, userId } = ctx;
+  const { sql, userId, actorId } = ctx;
 
   let body: unknown;
   try {
@@ -78,7 +81,7 @@ export async function POST(request: NextRequest) {
   try {
     // Returning the created row (with its id) is what lets the reconcile page
     // drop its old poll-and-diff loop for discovering the new row.
-    const row = await insertTransaction(sql, userId, parsed);
+    const row = await insertTransaction(sql, userId, parsed, actorId);
     return NextResponse.json(row, { status: 201 });
   } catch (err) {
     return NextResponse.json(

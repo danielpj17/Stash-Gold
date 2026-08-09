@@ -1,6 +1,11 @@
 # Plan — Household sharing (two people, one Stash)
 
-> Status: **proposed, not implemented.** Written 2026-08-08.
+> Status: **implemented 2026-08-08**, except where noted. Kept as the rationale
+> record — `/CLAUDE.md` has the short version of how it works now.
+>
+> Not done, deliberately: merging an invitee's existing data (v1 refuses), and a
+> guard against deleting an owner who still has a member (there is no
+> delete-account UI to guard).
 
 ## Goal
 
@@ -252,26 +257,23 @@ the date on user-inputted entries. **Both names show, always** — every row is
 labeled once a second person exists, so the two of you see identical screens and
 a blank never has to mean "me".
 
-### Names must never be blank
+### An unset name shows nothing
 
-"Both names always" plus "each person sets their own name" creates a window:
+"Both names always" plus "each person sets their own name" leaves a gap:
 `users.name` is NULL for everyone today, and a member can skip the prompt on the
-accept page. So the read side never trusts `users.name` alone:
+accept page. The rule is to **stay silent rather than guess**:
 
-```sql
-LEFT JOIN users eb ON eb.id = t.entered_by
-...
-COALESCE(NULLIF(eb.name, ''), split_part(eb.email, '@', 1)) AS "enteredByName"
-```
+- Household of one → no name on any row, ever. A solo user cannot tell this
+  feature exists.
+- Household of two, name set → name renders after the date.
+- Household of two, name unset → that row's subtitle is unchanged.
 
-The email local-part is an ugly fallback (`danieljohnson6`), which is exactly
-what makes it self-correcting — it is unmistakably a prompt to go set a real
-name, and it is one field in the Household card away. It is never blank, and it
-never invents a name.
+No fallback to the email local-part, no initials, no "Unknown". A missing name
+degrades to exactly the current behavior, which is the safe direction: the
+subtitle is a display string, and a wrong-looking name is worse than no name.
 
-The Household card shows a **"Your name"** field whenever `users.name` is NULL,
-for owner and member alike. Both people set their own; nobody names anybody
-else.
+The Household card offers a **"Your name"** field, for owner and member alike.
+Both people set their own; nobody names anybody else.
 
 That resolves to a two-line change, because the reconcile page already builds a
 self-contained display string. In

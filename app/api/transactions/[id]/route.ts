@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 import {
   EXPENSE_SELECT_FIELDS,
+  TRANSACTION_JOINS,
   TRANSFER_SELECT_FIELDS,
   stripDateIfDisabled,
   type TransactionRow,
@@ -98,11 +99,13 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
       `;
     }
 
+    // `entered_by` is deliberately not touched by an edit: it records who first
+    // logged the row, not who last changed it.
     const fields = existing[0].kind === "transfer" ? TRANSFER_SELECT_FIELDS : EXPENSE_SELECT_FIELDS;
     const rows = (await sql(
       `SELECT ${fields}
        FROM transactions t
-       JOIN users u ON u.id = t.user_id
+       ${TRANSACTION_JOINS}
        WHERE t.user_id = $1 AND t.id = $2`,
       [userId, id],
     )) as TransactionRow[];

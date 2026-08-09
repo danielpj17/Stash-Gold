@@ -59,6 +59,13 @@ const USER_SCOPED = [
 const AUTH_TABLES = ["users", "accounts", "sessions", "verification_token"];
 
 /**
+ * Tables that hold data but are NOT user-scoped in the house-rule sense.
+ * `household_invites` describes a relationship between two users, so it is
+ * keyed by owner_user_id and deliberately has no user_id column.
+ */
+const OTHER_TABLES = ["household_invites"];
+
+/**
  * Unique/primary constraints the routes name explicitly in ON CONFLICT.
  * A mismatch here surfaces at runtime as a 502, so check it up front.
  */
@@ -84,6 +91,18 @@ const EXPECTED_CONSTRAINTS = [
 const EXPECTED_INDEXES = [
   ["financial_accounts", "idx_financial_accounts_name"],
   ["financial_accounts", "idx_financial_accounts_one_default"],
+  ["household_invites", "idx_household_invites_pending"],
+];
+
+/**
+ * Columns added after the initial schema, and the migration that adds them.
+ * A database created from an older neon-setup.sql needs these applied.
+ */
+const EXPECTED_COLUMNS = [
+  ["financial_accounts", "is_default", "001-default-account-and-soft-delete.sql"],
+  ["financial_accounts", "deleted_at", "001-default-account-and-soft-delete.sql"],
+  ["users", "data_owner_id", "002-household-sharing.sql"],
+  ["transactions", "entered_by", "002-household-sharing.sql"],
 ];
 
 async function main() {
@@ -106,7 +125,7 @@ async function main() {
   `;
   const tables = new Set(tableRows.map((r) => r.table_name));
 
-  for (const t of [...AUTH_TABLES, ...USER_SCOPED]) {
+  for (const t of [...AUTH_TABLES, ...USER_SCOPED, ...OTHER_TABLES]) {
     if (!tables.has(t)) problems.push(`missing table: ${t}`);
   }
 
@@ -167,17 +186,16 @@ async function main() {
   }
 
   // Columns added after the initial schema — a database created from an older
-  // neon-setup.sql needs docs/migrations applied.
-  const accountCols = await sql`
-    SELECT column_name FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'financial_accounts'
+  // neon-setup.sql needs docs/migrations applied. The message names the exact
+  // migration so the fix doesn't require reading this script.
+  const allColumns = await sql`
+    SELECT table_name, column_name FROM information_schema.columns
+    WHERE table_schema = 'public'
   `;
-  const haveAccountCols = new Set(accountCols.map((r) => r.column_name));
-  for (const col of ["is_default", "deleted_at"]) {
-    if (tables.has("financial_accounts") && !haveAccountCols.has(col)) {
-      problems.push(
-        `financial_accounts is missing "${col}" — run docs/migrations/001-default-account-and-soft-delete.sql`,
-      );
+  const haveColumn = new Set(allColumns.map((r) => `${r.table_name}::${r.column_name}`));
+  for (const [table, column, migration] of EXPECTED_COLUMNS) {
+    if (tables.has(table) && !haveColumn.has(`${table}::${column}`)) {
+      problems.push(`${table} is missing "${column}" — run docs/migrations/${migration}`);
     }
   }
 
@@ -198,7 +216,8 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`Schema check passed — ${USER_SCOPED.length + AUTH_TABLES.length} tables verified.`);
+  const verified = USER_SCOPED.length + AUTH_TABLES.length + OTHER_TABLES.length;
+  console.log(`Schema check passed — ${verified} tables verified.`);
 }
 
 main().catch((err) => {

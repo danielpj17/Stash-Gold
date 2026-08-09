@@ -129,6 +129,43 @@ export function parseTransactionInput(raw: unknown): TransactionInput | { error:
   };
 }
 
+/**
+ * Joins every SELECT below needs.
+ *
+ * `u` is the SCOPE owner — its timezone derives each row's local date and
+ * month, so a shared household gets one consistent month boundary rather than
+ * two competing ones.
+ *
+ * `eb` is whoever entered the row. LEFT, because `entered_by` is nullable
+ * (a since-removed member, or a row from before attribution existed) and an
+ * inner join would silently drop those transactions from every list in the app.
+ */
+export const TRANSACTION_JOINS = `
+  JOIN users u ON u.id = t.user_id
+  LEFT JOIN users eb ON eb.id = t.entered_by
+`;
+
+/**
+ * `enteredByName` is display-only, and NULL in the two cases where there is
+ * nothing worth saying:
+ *
+ *   1. Nobody shares this scope. A solo Stash must look exactly as it did
+ *      before this feature existed, so the EXISTS gate suppresses the field
+ *      entirely rather than relying on `users.name` happening to be unset —
+ *      which would leak a name back onto every row if a household is ever
+ *      un-shared.
+ *   2. That person never set a name. No fallback to the email local-part:
+ *      a guessed name is worse than no name.
+ *
+ * The subquery is correlated on the scope, so in the worst case it runs per
+ * row — but it is an index-only probe of `idx_users_data_owner`, a partial
+ * index holding one row per shared household.
+ */
+const ENTERED_BY_FIELD = `
+  CASE WHEN EXISTS (SELECT 1 FROM users m WHERE m.data_owner_id = u.id)
+       THEN NULLIF(eb.name, '')
+  END                                                              AS "enteredByName"`;
+
 /** Columns aliased to the exact camelCase field names the client expects. */
 export const EXPENSE_SELECT_FIELDS = `
   t.id                                                             AS "rowId",
@@ -139,7 +176,8 @@ export const EXPENSE_SELECT_FIELDS = `
   t.amount                                                         AS "amount",
   t.description                                                    AS "description",
   to_char(t.occurred_at AT TIME ZONE u.timezone, 'FMMM')           AS "month",
-  t.account                                                        AS "account"
+  t.account                                                        AS "account",
+${ENTERED_BY_FIELD}
 `;
 
 export const TRANSFER_SELECT_FIELDS = `
@@ -151,7 +189,8 @@ export const TRANSFER_SELECT_FIELDS = `
   t.transfer_to                                                    AS "transferTo",
   t.amount                                                         AS "amount",
   t.description                                                    AS "description",
-  to_char(t.occurred_at AT TIME ZONE u.timezone, 'FMMM')           AS "month"
+  to_char(t.occurred_at AT TIME ZONE u.timezone, 'FMMM')           AS "month",
+${ENTERED_BY_FIELD}
 `;
 
 /**
@@ -171,10 +210,17 @@ export function stripDateIfDisabled(row: TransactionRow): TransactionRow {
   return rest;
 }
 
+/**
+ * @param userId  The data scope this row belongs to (the household owner).
+ * @param actorId Who is logging it. Same as `userId` for a solo user; the
+ *                signed-in spouse, or the owner of the ingest token, otherwise.
+ *                Recorded for display and never used to filter.
+ */
 export async function insertTransaction(
   sql: Sql,
   userId: string,
   input: TransactionInput,
+  actorId: string,
 ): Promise<TransactionRow> {
   const id = randomUUID();
 
@@ -186,11 +232,12 @@ export async function insertTransaction(
 
   await sql`
     INSERT INTO transactions (
-      id, user_id, kind, occurred_at, amount,
+      id, user_id, entered_by, kind, occurred_at, amount,
       category, description, account, transfer_from, transfer_to
     )
     VALUES (
-      ${id}, ${userId}::uuid, ${input.kind}, ${input.occurredAt}::timestamptz, ${input.amount},
+      ${id}, ${userId}::uuid, ${actorId}::uuid,
+      ${input.kind}, ${input.occurredAt}::timestamptz, ${input.amount},
       ${input.category}, ${input.description}, ${account},
       ${input.transferFrom}, ${input.transferTo}
     )
@@ -200,7 +247,7 @@ export async function insertTransaction(
   const rows = (await sql(
     `SELECT ${fields}
      FROM transactions t
-     JOIN users u ON u.id = t.user_id
+     ${TRANSACTION_JOINS}
      WHERE t.user_id = $1 AND t.id = $2`,
     [userId, id],
   )) as TransactionRow[];

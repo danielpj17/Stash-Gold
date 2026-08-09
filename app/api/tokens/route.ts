@@ -29,11 +29,22 @@ function mapRow(row: TokenRow) {
  *
  * `requireUser()` without `allowBearer` means a leaked ingest token cannot be
  * used to mint further tokens or enumerate existing ones.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * THIS ROUTE SCOPES ON `actorId`, NOT `userId`. It is the only one that does,
+ * and that is deliberate — do not "fix" it to match the others.
+ *
+ * A token belongs to a PERSON, not to a household. In a shared Stash, scoping
+ * these queries on the household would mean each spouse sees and can revoke
+ * the other's Shortcut token, and — worse — `identityFromBearer` would have no
+ * way to tell who sent an ingest request, so every Shortcut-logged transaction
+ * in the household would be attributed to the owner.
+ * ─────────────────────────────────────────────────────────────────────────
  */
 export async function GET() {
   const ctx = await requireUser();
   if (isErrorResponse(ctx)) return ctx;
-  const { sql, userId } = ctx;
+  const { sql, actorId } = ctx;
 
   try {
     // token_hash is never selected — there is nothing useful to do with it and
@@ -41,7 +52,7 @@ export async function GET() {
     const rows = (await sql`
       SELECT id, name, prefix, created_at, last_used_at, revoked_at
       FROM user_tokens
-      WHERE user_id = ${userId}
+      WHERE user_id = ${actorId}
       ORDER BY created_at DESC
     `) as TokenRow[];
     return NextResponse.json({ tokens: rows.map(mapRow) });
@@ -53,10 +64,11 @@ export async function GET() {
   }
 }
 
+/** Mints a token for the ACTING user — see the note on GET. */
 export async function POST(request: NextRequest) {
   const ctx = await requireUser();
   if (isErrorResponse(ctx)) return ctx;
-  const { sql, userId } = ctx;
+  const { sql, actorId } = ctx;
 
   let body: { name?: unknown } = {};
   try {
@@ -70,7 +82,7 @@ export async function POST(request: NextRequest) {
     const { raw, hash, prefix } = generateIngestToken();
     const rows = (await sql`
       INSERT INTO user_tokens (user_id, name, token_hash, prefix)
-      VALUES (${userId}::uuid, ${name}, ${hash}, ${prefix})
+      VALUES (${actorId}::uuid, ${name}, ${hash}, ${prefix})
       RETURNING id, name, prefix, created_at, last_used_at, revoked_at
     `) as TokenRow[];
 
@@ -84,10 +96,11 @@ export async function POST(request: NextRequest) {
   }
 }
 
+/** Revokes only your OWN token — a spouse can't revoke yours. See GET. */
 export async function DELETE(request: NextRequest) {
   const ctx = await requireUser();
   if (isErrorResponse(ctx)) return ctx;
-  const { sql, userId } = ctx;
+  const { sql, actorId } = ctx;
 
   let body: { id?: unknown };
   try {
@@ -103,7 +116,7 @@ export async function DELETE(request: NextRequest) {
     const rows = (await sql`
       UPDATE user_tokens
          SET revoked_at = now()
-       WHERE user_id = ${userId} AND id = ${id}::uuid AND revoked_at IS NULL
+       WHERE user_id = ${actorId} AND id = ${id}::uuid AND revoked_at IS NULL
       RETURNING id
     `) as Array<{ id: string }>;
     if (rows.length === 0) {

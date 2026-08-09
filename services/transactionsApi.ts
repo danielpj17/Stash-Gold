@@ -23,6 +23,12 @@ export type SheetRow = {
   month: string;
   account?: string;
   rowId?: string;
+  /**
+   * Who logged this, in a shared household. Undefined when the Stash isn't
+   * shared, or when that person never set a name — the reconcile page shows
+   * nothing at all rather than guessing one. Display only.
+   */
+  enteredByName?: string;
 };
 
 function getRawValue(raw: Record<string, unknown>, keys: string[]): unknown {
@@ -38,6 +44,13 @@ function getRawValue(raw: Record<string, unknown>, keys: string[]): unknown {
     if (value !== undefined) return value;
   }
   return undefined;
+}
+
+/** Reads a nullable text column into an optional trimmed string. */
+function readEnteredByName(raw: Record<string, unknown>): string | undefined {
+  const value = getRawValue(raw, ["enteredByName", "entered by name", "entered_by_name"]);
+  const name = typeof value === "string" ? value.trim() : "";
+  return name || undefined;
 }
 
 /** Normalize row keys from sheet (may be "Expense Type") to camelCase */
@@ -56,6 +69,7 @@ function normalizeRow(raw: Record<string, unknown>): SheetRow {
     month: String(getRawValue(raw, ["Month", "month"]) ?? ""),
     account: account.trim() || undefined,
     rowId: rowId || undefined,
+    enteredByName: readEnteredByName(raw),
   };
 }
 
@@ -228,6 +242,8 @@ export type TransferRow = {
   /** Legacy rows only (old sheet had a description column instead of Transfer To). */
   description?: string;
   month: string;
+  /** See SheetRow.enteredByName. */
+  enteredByName?: string;
 };
 
 function normalizeTransferRow(raw: Record<string, unknown>): TransferRow {
@@ -262,6 +278,7 @@ function normalizeTransferRow(raw: Record<string, unknown>): TransferRow {
       return s || undefined;
     })(),
     month: String(getRawValue(raw, ["Month", "month"]) ?? ""),
+    enteredByName: readEnteredByName(raw),
   };
 }
 

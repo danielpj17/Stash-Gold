@@ -78,8 +78,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth(() => {
       // With the database strategy Auth.js hands us the full adapter user
       // (it does SELECT *), so any extra column on `users` is available here
       // for free — no additional query.
+      //
+      // `data_owner_id` is what makes household sharing cost nothing per
+      // request: requireUser() reads it straight off the session instead of
+      // looking up membership. Because database sessions re-read `users` every
+      // request, it also can't go stale — an accepted invite is live on the
+      // next request, with no sign-out.
       session({ session, user }) {
-        if (session.user) session.user.id = user.id;
+        if (session.user) {
+          session.user.id = user.id;
+          session.user.dataOwnerId = user.data_owner_id ?? null;
+        }
         return session;
       },
     },

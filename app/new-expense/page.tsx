@@ -5,6 +5,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import GlassDropdown from "@/components/GlassDropdown";
 import NumberField from "@/components/NumberField";
 import ShortcutSetupCard from "@/components/ShortcutSetupCard";
+import HouseholdCard from "@/components/HouseholdCard";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { submitExpense } from "@/services/transactionsApi";
 import { EXPENSE_TYPE_OPTIONS } from "@/lib/constants";
@@ -141,6 +142,7 @@ export default function NewExpensePage() {
         </div>
 
         <ShortcutSetupCard />
+        <HouseholdCard />
       </div>
     </DashboardLayout>
   );

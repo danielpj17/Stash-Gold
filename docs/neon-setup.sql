@@ -37,10 +37,23 @@ CREATE TABLE users (
   "emailVerified" TIMESTAMPTZ,
   image           TEXT,
   -- Used to derive the local calendar date/month for a transaction's
-  -- occurred_at. See the GET /api/transactions query.
+  -- occurred_at. See the GET /api/transactions query. In a shared household
+  -- this resolves to the OWNER's timezone, so both people get one consistent
+  -- month boundary rather than two.
   timezone        TEXT NOT NULL DEFAULT 'America/Denver',
+  -- Household sharing. NULL = you own your own data (the common case). Set =
+  -- your data scope is that user's scope, so every `user_id` filter in the app
+  -- resolves to them and you see the same budget, accounts and reconciliation
+  -- state. Resolved in requireUser() and NOWHERE else.
+  --
+  -- Exactly one level deep: the accept route refuses to point at a user who is
+  -- themselves a member, so no query ever has to walk a chain.
+  --
+  -- Not ON DELETE CASCADE on purpose — see migration 002.
+  data_owner_id   UUID REFERENCES users(id) ON DELETE SET NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX idx_users_data_owner ON users(data_owner_id) WHERE data_owner_id IS NOT NULL;
 
 -- OAuth / provider links. NOTE: this is an Auth.js table. A user's *bank*
 -- accounts live in `financial_accounts` below.
@@ -96,6 +109,44 @@ CREATE TABLE user_tokens (
   revoked_at   TIMESTAMPTZ
 );
 CREATE INDEX idx_user_tokens_user ON user_tokens(user_id);
+
+-- NOTE: `user_id` here is the ACTOR, not the household scope — tokens belong to
+-- a person, not to a household. /api/tokens is the one route that scopes on the
+-- acting user rather than the data owner, and requireUser's bearer path relies
+-- on this to work out who sent an ingest request. If tokens were
+-- household-scoped, two spouses could revoke each other's Shortcut and every
+-- ingested transaction would be attributed to the owner.
+
+
+-- ---------------------------------------------------------------------
+-- Household sharing — pending invitations.
+--
+-- Scoped by `owner_user_id` rather than `user_id`: this table describes a
+-- relationship between two users, not data living inside one user's scope, so
+-- the house rule above does not apply to it.
+--
+-- Only the SHA-256 hash of the token is stored (same reasoning as user_tokens).
+-- The token alone is NOT sufficient to join: acceptance also requires being
+-- signed in as the invited address, so a forwarded email can't be redeemed by
+-- whoever received it.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE household_invites (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email         TEXT NOT NULL,            -- stored lowercased
+  token_hash    TEXT NOT NULL UNIQUE,     -- sha256 hex of the raw token
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at    TIMESTAMPTZ NOT NULL,
+  accepted_at   TIMESTAMPTZ,
+  revoked_at    TIMESTAMPTZ
+);
+CREATE INDEX idx_household_invites_owner ON household_invites(owner_user_id);
+-- One LIVE invite per address per owner. Partial, so revoking or accepting an
+-- invite doesn't permanently reserve that address.
+CREATE UNIQUE INDEX idx_household_invites_pending
+  ON household_invites (owner_user_id, email)
+  WHERE accepted_at IS NULL AND revoked_at IS NULL;
 
 
 -- ---------------------------------------------------------------------
@@ -199,9 +250,17 @@ CREATE INDEX idx_account_csv_profiles_user ON account_csv_profiles(user_id);
 -- cannot resolve to an account, which is exactly the pre-existing behavior.
 -- ---------------------------------------------------------------------
 
+-- `entered_by` is WHO logged the row; `user_id` is WHOSE data it is. In a solo
+-- account they are the same person. In a shared household they differ, and the
+-- reconcile page renders the name next to the date.
+--
+-- Display only. It must NEVER appear in a WHERE clause over transactions —
+-- filtering on it would hide one spouse's entries from the other, which is the
+-- exact opposite of what sharing is for.
 CREATE TABLE transactions (
   id            TEXT PRIMARY KEY,
   user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  entered_by    UUID REFERENCES users(id) ON DELETE SET NULL,
   kind          TEXT NOT NULL CHECK (kind IN ('expense','income','transfer')),
   occurred_at   TIMESTAMPTZ NOT NULL,
   amount        NUMERIC(14,2) NOT NULL CHECK (amount > 0),

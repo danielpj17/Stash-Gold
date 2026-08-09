@@ -5,7 +5,12 @@ import { insertTransaction, parseTransactionInput } from "@/lib/transactions";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Cheap abuse guard without Redis: count this user's very recent inserts. */
+/**
+ * Cheap abuse guard without Redis: count recent inserts in this data scope.
+ * Household-wide rather than per-person, because it protects the database
+ * rather than arbitrating between two spouses — and `user_id` is the indexed
+ * column. 30/min is far above two people's real usage either way.
+ */
 const MAX_PER_MINUTE = 30;
 
 /**
@@ -23,7 +28,7 @@ const MAX_PER_MINUTE = 30;
 export async function POST(request: NextRequest) {
   const ctx = await requireUser(request, { allowBearer: true });
   if (isErrorResponse(ctx)) return ctx;
-  const { sql, userId, via } = ctx;
+  const { sql, userId, actorId, via } = ctx;
 
   if (via !== "token") {
     return NextResponse.json(
@@ -57,7 +62,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const row = await insertTransaction(sql, userId, parsed);
+    // actorId is the token's owner, so in a shared household each spouse's
+    // Shortcut attributes to them without the Shortcut sending anything extra.
+    const row = await insertTransaction(sql, userId, parsed, actorId);
     return NextResponse.json(
       {
         id: row.rowId ?? row.transferRowId ?? null,
