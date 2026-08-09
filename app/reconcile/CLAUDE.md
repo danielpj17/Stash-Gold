@@ -21,7 +21,7 @@ Reconciliation produces a claim: a persistent link between a bank transaction ha
 | File | Role |
 |------|------|
 | `app/reconcile/page.tsx` | Main UI (~5100+ lines) — all state, handlers, view logic |
-| `components/RowActionMenu.tsx` | Per-row ⋯ overflow menu (portal + glass panel, styled to match `GlassDropdown`) |
+| `components/RowActionMenu.tsx` | ⋮ overflow menu — per review row **and** the page header (portal + glass panel, styled to match `GlassDropdown`) |
 | `app/api/transactions/[id]/route.ts` | PATCH (date/amount/category/description) + DELETE for a logged entry |
 | `services/reconciliationService.ts` | Match algorithm, bank CSV parsing, hash generation, merchant memory match step |
 | `lib/activityLog.ts` | Server-side activity log helpers (Node.js only — API routes) |
@@ -383,7 +383,7 @@ Every successful claim handler (`handleApprove`, `handleSplitSubmit`, `handleTra
 
 ### Memory Management
 
-The "Memory" button in the page header opens a modal showing all memory entries per account. Users can delete individual entries to stop auto-claiming a pattern.
+**⋮ → Memory** in the page header opens a modal showing all memory entries per account. Users can delete individual entries to stop auto-claiming a pattern.
 
 ### API: `/api/reconciliation/memory`
 
@@ -575,9 +575,28 @@ bulkError: string               // error message after partial failure
 ### Rendering Structure
 
 ```
+<page header>                                                 // shared by both view modes
 {viewMode === "accountDetail" && <upload zone + file list>}   // always top when in account detail
 {viewMode === "home" ? <home view> : <account detail sections>}
 ```
+
+The **page header** is `Reconcile` + a `How this works` link on the left, and on
+the right: a `← All` button (account detail only), the account `GlassDropdown`,
+and a `RowActionMenu` ⋮ holding Accounts, Memory, Activity, Ending balance and
+Clear all data. Those five were flat buttons; at six-plus controls the row
+wrapped onto three lines and buried the dropdown, which is the one thing used
+every session.
+
+The ⋮ labels are **deliberately shorter than the modals they open** ("Ending
+balance", "Clear all data") — `RowActionMenu`'s `PANEL_WIDTH` is a fixed 232px
+and items `truncate`. The full wording lives in each action's `title`. Widening
+the shared component would have changed every per-row ⋯ menu too.
+
+`goToAllAccounts()` is the single "back to All" transition — `setViewMode("home")`
+plus `history.replaceState` to drop `?account=`. Both the `← All` button and the
+dropdown's `ALL_ACCOUNTS_OPTION` branch call it. Dropping the query param is not
+optional: the mount effect that reads `?account=` would otherwise send a reload
+straight back into account detail.
 
 The **Files** panel (top of account detail) lists uploaded files (✕ to clear each) plus two maintenance buttons in its header:
 - **Re-match from sheet** (`handleRematchFromSheet`) — runs `rematchAllStoredAccounts()` to re-link bank lines against the *current* sheet. Use after adding sheet expenses post-upload, or after a hash-change re-key. Exact matches move to Matched; the rest become suggested matches to bulk-approve.
@@ -589,6 +608,29 @@ Account detail sections (rendered in the ternary else branch):
 3. **Closed on statement (no sheet link)** — `processed` rows with no active claim; unmark button per row
 
 After a CSV upload, `matchedSectionRef` is scrolled into view automatically so matched rows are immediately visible even when the review section is empty.
+
+### Paged history lists
+
+Sections 2 and 3, and their home-view counterparts (`User-inputted: Matched`,
+`Statement: closed without sheet row`), render only the newest
+`MATCHED_PAGE_SIZE` (15) rows, with a `SeeMoreButton` footer adding 15 more per
+press. All four lists were already newest-first via `sortByNewestDate` on
+`bankTransaction.date`, so this is a render cap only — no sorting changed.
+
+- Four independent counters: `homeMatchedVisible`, `homeClosedVisible`,
+  `accountMatchedVisible`, `accountClosedVisible`. They reset to 15 when the set
+  changes — on `[homeSearchQuery, homeAccountFilter]` and on `[activeTab]` —
+  because a carried-over expansion applied to a different list shows an
+  arbitrary number of rows.
+- The section count badge reads `15 of 42` while paged (`pagedCountLabel`) and a
+  plain total once fully shown. Empty-state branches still test totals, not the
+  visible slice.
+- **The review queues are deliberately not paged.** Bulk approve's "select all
+  visible" reads the full `activeReviewRows`; capping it would silently narrow
+  what a bulk approve acts on.
+- This is separate from **Load older matched rows**, which widens the *server*
+  window (`matchCacheSinceDate`, `MATCH_CACHE_LOAD_MORE_DAYS`). See more reveals
+  rows already fetched; Load older fetches rows that were never sent.
 
 ### State Groups
 
@@ -633,6 +675,14 @@ bulkError: string
 ```typescript
 matchedSectionRef: RefObject<HTMLElement>   // ref to "Matched to sheet" section
 shouldScrollToMatched: boolean              // triggers scroll after upload
+```
+
+**History paging** (see "Paged history lists")
+```typescript
+homeMatchedVisible: number        // "User-inputted: Matched"
+homeClosedVisible: number         // "Statement: closed without sheet row"
+accountMatchedVisible: number     // "{Account}: Matched to sheet"
+accountClosedVisible: number      // "{Account}: Closed on statement"
 ```
 
 **Maintenance buttons**
@@ -760,6 +810,10 @@ Both review lists — home "User-inputted: Needs review" and the account-detail
 (approve, quick add, edit, dismiss, delete) into `RowActionMenu`. The menu's
 `busy` prop drives the row spinner that used to live on the check button.
 
+The page header uses the same component for its page-level actions, so the two
+read as one control family. It passes no `busy` — every header action just opens
+a modal.
+
 ### `recordMerchantMemory(match, userEntry?)`
 
 - Computes fingerprint from bank transaction description + amount
@@ -817,7 +871,7 @@ Both review lists — home "User-inputted: Needs review" and the account-detail
 
 ### Activity Log & Undo
 
-1. Click "Activity" button to open the activity log modal
+1. Open **⋮ → Activity** in the page header to open the activity log modal
 2. Log loads last 30 days of actions on first open
 3. Each action has an "Undo" button (greyed if already reverted)
 4. Undoing a `claim_create` removes the claim link and unmarks processed

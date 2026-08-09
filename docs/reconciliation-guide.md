@@ -18,7 +18,7 @@ reconciling is what turns "roughly right" numbers into numbers you trust.
 
 ### 1. Add your accounts
 
-**Reconcile → Accounts.** Add each account you want to track — checking, savings,
+**Reconcile → ⋮ (top right) → Accounts.** Add each account you want to track — checking, savings,
 credit card, a cash-app balance, whatever you actually use. Name them however
 you like; the names are just labels and you can change them later without
 breaking anything.
@@ -180,7 +180,7 @@ Claim the same merchant twice — Netflix, your gym, a subscription — and Stas
 remembers the pattern. From the third month on it auto-claims that charge and it
 never reaches your review queue.
 
-The **Memory** button lists everything it has learned. Delete an entry to stop
+**⋮ → Memory** lists everything it has learned. Delete an entry to stop
 it auto-claiming (useful if a subscription's price changed or you cancelled it).
 
 Memory is per account: a pattern learned on your checking account won't fire on
@@ -198,9 +198,9 @@ Use one when:
 - You're starting mid-year and don't want to import a decade of history.
 - Your computed balance has drifted from reality and you want to reset it.
 
-Set it from the account view on the Reconcile page, using the ending balance
-printed on a statement. From that date forward, Stash resumes counting your
-logged transactions.
+Set it from the account view on the Reconcile page — **⋮ → Ending balance** —
+using the ending balance printed on a statement. From that date forward, Stash
+resumes counting your logged transactions.
 
 ---
 
@@ -218,7 +218,7 @@ copies. Genuine duplicate purchases (two identical coffees) are kept.
 file brought in: its matches, claims, dismissals. Use it if you uploaded the
 wrong file or the wrong account.
 
-**Activity** — a log of every reconciliation action, each with an **Undo**.
+**⋮ → Activity** — a log of every reconciliation action, each with an **Undo**.
 If you bulk-approved something you shouldn't have, this is the way back.
 
 ---
@@ -241,7 +241,7 @@ already claimed by another bank row. Check the Matched section, disconnect the
 wrong link, then re-match.
 
 **Everything from one account shows as income.** The sign convention is
-inverted. Reconcile → Accounts → re-open that account's CSV format and toggle
+inverted. Reconcile → ⋮ → Accounts → re-open that account's CSV format and toggle
 "purchases show as positive".
 
 **Almost no rows were read from my file.** The column mapping is wrong. Re-open

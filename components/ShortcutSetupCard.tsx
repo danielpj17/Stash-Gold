@@ -84,11 +84,6 @@ export default function ShortcutSetupCard() {
   const [creating, setCreating] = useState(false);
   /** Held in memory only — the server never returns a raw token again. */
   const [freshToken, setFreshToken] = useState<string | null>(null);
-  const [origin, setOrigin] = useState("");
-
-  useEffect(() => {
-    setOrigin(window.location.origin);
-  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -153,8 +148,32 @@ export default function ShortcutSetupCard() {
     [load],
   );
 
-  const ingestUrl = `${origin || "https://your-app.vercel.app"}/api/ingest`;
-  const exampleBody = '{"expenseType":"Groceries","amount":42.50,"description":"Smiths"}';
+  /** Revokes every token except the one on screen. See `otherActive` below. */
+  const handleRevokeOthers = useCallback(
+    async (targets: TokenSummary[]) => {
+      const plural = targets.length === 1 ? "token" : "tokens";
+      if (!window.confirm(`Revoke ${targets.length} older ${plural}? Any Shortcut using them stops working.`)) {
+        return;
+      }
+      try {
+        for (const target of targets) {
+          const res = await fetch("/api/tokens", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: target.id }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data?.error ?? `Failed to revoke (${res.status})`);
+          }
+        }
+        await load();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to revoke tokens");
+      }
+    },
+    [load],
+  );
 
   /**
    * A pre-built Shortcut shared as an iCloud link. It prompts for the token on
@@ -164,11 +183,26 @@ export default function ShortcutSetupCard() {
    * iOS requires shortcuts to be signed (macOS-only `shortcuts sign`) and Apple
    * has no API for minting iCloud links, so this URL can't be generated per
    * user at runtime. It's authored once by hand and set as an env var. When
-   * it's unset the manual instructions below are the fallback.
+   * it's unset there is nothing to install, so the panel says so.
    */
   const shortcutUrl = (process.env.NEXT_PUBLIC_SHORTCUT_ICLOUD_URL ?? "").trim();
   const tokenList = tokens ?? [];
   const activeToken = tokenList.find((t) => !t.revokedAt) ?? null;
+  /**
+   * Only the token in play is shown. Older ones are still on the server (the
+   * DELETE route revokes rather than deletes, so the audit trail survives), but
+   * a growing list of dead prefixes is noise on a page whose whole job is "one
+   * token per phone". `tokens` is ordered newest-first by the API, so falling
+   * back to `[0]` surfaces the most recent revoked token when nothing is live —
+   * enough to explain why the Shortcut stopped working.
+   */
+  const currentToken = activeToken ?? tokenList[0] ?? null;
+  /**
+   * Hiding the history must not hide a *live* credential — an older token that
+   * still works but has no row on screen could never be revoked from the UI.
+   * These get one summary line instead of their own entries.
+   */
+  const otherActive = tokenList.filter((t) => !t.revokedAt && t.id !== currentToken?.id);
 
   return (
     <section className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
@@ -233,37 +267,48 @@ export default function ShortcutSetupCard() {
 
           {loading && tokens === null ? (
             <p className="text-sm text-gray-400">Loading tokens…</p>
-          ) : tokenList.length === 0 ? (
+          ) : !currentToken ? (
             <p className="text-sm text-gray-400">
-              No tokens yet. Create one, then paste it into your Shortcut using the setup below.
+              No token yet. Create one, then paste it into your Shortcut when it asks.
             </p>
           ) : (
-            <ul className="divide-y divide-charcoal-dark rounded-lg border border-charcoal-dark overflow-hidden">
-              {tokenList.map((token) => (
-                <li
-                  key={token.id}
-                  className={`px-3 py-2.5 flex items-center gap-3 flex-wrap ${token.revokedAt ? "opacity-50" : ""}`}
+            <div
+              className={`px-3 py-2.5 rounded-lg border border-charcoal-dark flex items-center gap-3 flex-wrap ${
+                currentToken.revokedAt ? "opacity-50" : ""
+              }`}
+            >
+              <code className="text-xs text-gray-300">{currentToken.prefix}…</code>
+              <span className="text-sm text-gray-300">{currentToken.name}</span>
+              <span className="text-xs text-gray-500">
+                created {fmtDate(currentToken.createdAt)} · last used {fmtDate(currentToken.lastUsedAt)}
+              </span>
+              {currentToken.revokedAt ? (
+                <span className="ml-auto text-xs text-red-400">revoked</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handleRevoke(currentToken)}
+                  className="ml-auto flex items-center gap-1 text-xs text-gray-400 hover:text-red-400 transition"
                 >
-                  <code className="text-xs text-gray-300">{token.prefix}…</code>
-                  <span className="text-sm text-gray-300">{token.name}</span>
-                  <span className="text-xs text-gray-500">
-                    created {fmtDate(token.createdAt)} · last used {fmtDate(token.lastUsedAt)}
-                  </span>
-                  {token.revokedAt ? (
-                    <span className="ml-auto text-xs text-red-400">revoked</span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => void handleRevoke(token)}
-                      className="ml-auto flex items-center gap-1 text-xs text-gray-400 hover:text-red-400 transition"
-                    >
-                      <Ban className="w-3.5 h-3.5" />
-                      Revoke
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
+                  <Ban className="w-3.5 h-3.5" />
+                  Revoke
+                </button>
+              )}
+            </div>
+          )}
+
+          {otherActive.length > 0 && (
+            <p className="text-xs text-gray-500">
+              {otherActive.length} older {otherActive.length === 1 ? "token is" : "tokens are"} still
+              active.{" "}
+              <button
+                type="button"
+                onClick={() => void handleRevokeOthers(otherActive)}
+                className="underline text-gray-400 hover:text-red-400 transition"
+              >
+                Revoke {otherActive.length === 1 ? "it" : "them"}
+              </button>
+            </p>
           )}
 
           {shortcutUrl && (
@@ -302,7 +347,18 @@ export default function ShortcutSetupCard() {
                     </span>
                     <span>
                       Open this link on your iPhone and tap <strong>Add Shortcut</strong>. It
-                      will ask for your token — paste it in. That&apos;s the whole setup.
+                      will ask for your token — paste it in.
+                    </span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="shrink-0 w-5 h-5 rounded-full bg-[#50C878] text-charcoal text-xs font-bold flex items-center justify-center">
+                      3
+                    </span>
+                    <span>
+                      Put it somewhere you can reach in one tap: press and hold it in the Shortcuts
+                      app and choose <strong>Share → Add to Home Screen</strong>, or add the{" "}
+                      <strong>Shortcuts</strong> control under{" "}
+                      <strong>Settings → Control Center</strong>.
                     </span>
                   </li>
                 </ol>
@@ -325,72 +381,15 @@ export default function ShortcutSetupCard() {
             </div>
           )}
 
-          <div className="rounded-lg border border-charcoal-dark overflow-hidden">
-            <div className="px-3 py-2 bg-[#2C2C2C]">
-              <h3 className="text-sm text-white font-medium">
-                {shortcutUrl ? "Or build it by hand" : "Shortcut setup"}
-              </h3>
-            </div>
-            <div className="p-3 space-y-3 text-sm text-gray-300">
-              <p>
-                On your iPhone: Shortcuts → new shortcut → add a{" "}
-                <strong>Get Contents of URL</strong> action, then set:
-              </p>
-              <dl className="space-y-2 text-xs">
-                <div className="flex items-center gap-2">
-                  <dt className="w-20 shrink-0 text-gray-500">URL</dt>
-                  <dd className="flex-1 min-w-0 flex items-center gap-2">
-                    <code className="flex-1 min-w-0 break-all rounded bg-[#1f1f1f] px-2 py-1.5 text-gray-200">
-                      {ingestUrl}
-                    </code>
-                    <CopyButton text={ingestUrl} label="Copy ingest URL" />
-                  </dd>
-                </div>
-                <div className="flex items-center gap-2">
-                  <dt className="w-20 shrink-0 text-gray-500">Method</dt>
-                  <dd>
-                    <code className="rounded bg-[#1f1f1f] px-2 py-1.5 text-gray-200">POST</code>
-                  </dd>
-                </div>
-                <div className="flex items-start gap-2">
-                  <dt className="w-20 shrink-0 text-gray-500 pt-1.5">Headers</dt>
-                  <dd className="flex-1 min-w-0">
-                    <code className="block rounded bg-[#1f1f1f] px-2 py-1.5 text-gray-200 break-all">
-                      Authorization: Bearer &lt;your token&gt;
-                      <br />
-                      Content-Type: application/json
-                    </code>
-                  </dd>
-                </div>
-                <div className="flex items-start gap-2">
-                  <dt className="w-20 shrink-0 text-gray-500 pt-1.5">Body</dt>
-                  <dd className="flex-1 min-w-0 flex items-center gap-2">
-                    <code className="flex-1 min-w-0 break-all rounded bg-[#1f1f1f] px-2 py-1.5 text-gray-200">
-                      {exampleBody}
-                    </code>
-                    <CopyButton text={exampleBody} label="Copy example body" />
-                  </dd>
-                </div>
-              </dl>
-              <p className="text-xs text-gray-500">
-                Use <strong>Ask Each Time</strong> for the amount and description so the Shortcut
-                prompts you when it runs. Add <code>&quot;account&quot;</code> with an account id
-                to make it affect a specific balance, or{" "}
-                <code>&quot;date&quot;: &quot;2026-03-14&quot;</code> to back-date it. If you
-                ever lose your phone, revoke the token above — no redeploy needed.
-              </p>
-
-              {!shortcutUrl && (
-                <p className="text-xs text-gray-500 border-t border-charcoal-dark pt-3">
-                  <strong className="text-gray-400">Running this app?</strong> Build the Shortcut
-                  once with an Import Question for the token, share it as an iCloud link, and set{" "}
-                  <code className="text-gray-400">NEXT_PUBLIC_SHORTCUT_ICLOUD_URL</code> to that
-                  link. An &quot;Add to iPhone&quot; button then replaces these instructions for
-                  everyone. See <code className="text-gray-400">docs/ios-shortcut-setup.md</code>.
-                </p>
-              )}
-            </div>
-          </div>
+          {!shortcutUrl && (
+            <p className="text-xs text-gray-500 rounded-lg border border-charcoal-dark p-3">
+              <strong className="text-gray-400">Running this app?</strong> Build the Shortcut once
+              with an Import Question for the token, share it as an iCloud link, and set{" "}
+              <code className="text-gray-400">NEXT_PUBLIC_SHORTCUT_ICLOUD_URL</code> to that link.
+              An &quot;Add to iPhone&quot; button then appears here for everyone. See{" "}
+              <code className="text-gray-400">docs/ios-shortcut-setup.md</code>.
+            </p>
+          )}
         </div>
       )}
     </section>

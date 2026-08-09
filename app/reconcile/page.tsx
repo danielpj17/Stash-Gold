@@ -3,7 +3,7 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import Papa from "papaparse";
-import { Ban, Check, Filter, Link2Off, Loader2, Pencil, PlusCircle, Search, Trash2, Upload, X } from "lucide-react";
+import { ArrowLeft, Ban, Brain, Check, DollarSign, Filter, History, Link2Off, Loader2, Pencil, PlusCircle, Search, Trash2, Upload, Wallet, X } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
 import GlassDropdown, { type GlassDropdownOption } from "@/components/GlassDropdown";
 import DateField from "@/components/DateField";
@@ -462,6 +462,43 @@ const MATCH_CACHE_DEFAULT_DAYS = 30;
 const MATCH_CACHE_LOAD_MORE_DAYS = 30;
 
 /**
+ * Matched / closed-on-statement lists are history: already-reconciled rows the
+ * user scrolls past to reach anything else. They render newest-first in pages of
+ * this size. Distinct from `MATCH_CACHE_LOAD_MORE_DAYS`, which widens the
+ * *server* window — this only caps what is drawn from rows already loaded.
+ */
+const MATCHED_PAGE_SIZE = 15;
+
+/** Footer for a paged history list. Renders nothing once everything is shown. */
+function SeeMoreButton({
+  total,
+  visible,
+  onMore,
+}: {
+  total: number;
+  visible: number;
+  onMore: () => void;
+}) {
+  if (total <= visible) return null;
+  return (
+    <div className="flex justify-center pt-1">
+      <button
+        type="button"
+        onClick={onMore}
+        className="px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-xs hover:text-white hover:bg-[#2d2d2d] transition-colors"
+      >
+        See more ({total - visible} more)
+      </button>
+    </div>
+  );
+}
+
+/** `12 of 40` while a list is paged, plain `40` once it is fully shown. */
+function pagedCountLabel(total: number, visible: number): string {
+  return total > visible ? `${Math.min(visible, total)} of ${total}` : String(total);
+}
+
+/**
  * True for rows that structurally can't match an expense — money-in
  * (income/deposit) and account-to-account transfers. Used to keep the
  * "needs an expense" queue clean without deleting these rows.
@@ -648,6 +685,17 @@ export default function ReconcilePage() {
       setViewMode("accountDetail");
     }
   }, [accountIds]);
+
+  /**
+   * Return to the all-accounts view. Dropping `?account=` matters — the
+   * query-param effect above would otherwise put a reload straight back into
+   * account detail.
+   */
+  const goToAllAccounts = useCallback(() => {
+    setViewMode("home");
+    history.replaceState(null, "", window.location.pathname);
+  }, []);
+
   const [dismissalNotesById, setDismissalNotesById] = useState<Record<string, string>>({});
   const [userDismissedRowKeys, setUserDismissedRowKeys] = useState<Set<string>>(new Set());
   const [userDismissalNotesByEntryId, setUserDismissalNotesByEntryId] = useState<Record<string, string>>(
@@ -761,6 +809,27 @@ export default function ReconcilePage() {
     formatSinceDate(MATCH_CACHE_DEFAULT_DAYS),
   );
   const [loadingOlderMatches, setLoadingOlderMatches] = useState(false);
+
+  // How many rows each history list is currently drawing. Only the matched /
+  // closed-on-statement lists are paged; the review queues are working lists and
+  // bulk approve's "select all visible" has to see every one of them.
+  const [homeMatchedVisible, setHomeMatchedVisible] = useState(MATCHED_PAGE_SIZE);
+  const [homeClosedVisible, setHomeClosedVisible] = useState(MATCHED_PAGE_SIZE);
+  const [accountMatchedVisible, setAccountMatchedVisible] = useState(MATCHED_PAGE_SIZE);
+  const [accountClosedVisible, setAccountClosedVisible] = useState(MATCHED_PAGE_SIZE);
+
+  // An expansion belongs to the list it was made against. Searching, filtering
+  // or switching accounts rebuilds the list, so carrying the count over would
+  // show an arbitrary number of rows against a different set.
+  useEffect(() => {
+    setHomeMatchedVisible(MATCHED_PAGE_SIZE);
+    setHomeClosedVisible(MATCHED_PAGE_SIZE);
+  }, [homeSearchQuery, homeAccountFilter]);
+
+  useEffect(() => {
+    setAccountMatchedVisible(MATCHED_PAGE_SIZE);
+    setAccountClosedVisible(MATCHED_PAGE_SIZE);
+  }, [activeTab]);
 
   // Bulk Approve state — Phase 6. Multi-select for the standing review queue.
   type BulkFilter = "all" | "needs_expense" | "high_confidence" | "transfers" | "suggested" | "income";
@@ -4380,56 +4449,33 @@ export default function ReconcilePage() {
     <DashboardLayout>
       <div className="space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h1 className="text-2xl font-semibold text-white">Reconcile</h1>
-          <div className="flex items-center gap-2 flex-wrap justify-end">
-            <button
-              type="button"
-              onClick={() => setManageAccountsOpen(true)}
-              className="px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-sm hover:text-white hover:bg-[#2d2d2d] transition-colors"
-            >
-              Accounts
-            </button>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-2xl font-semibold text-white">Reconcile</h1>
             <Link
               href="/guide/reconcile"
               className="px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-sm hover:text-white hover:bg-[#2d2d2d] transition-colors"
             >
               How this works
             </Link>
-            <button
-              type="button"
-              onClick={openResetReconcileModal}
-              className="px-3 py-1.5 rounded-lg border border-red-500/40 text-red-300 text-sm hover:text-red-200 hover:bg-red-500/10 transition-colors"
-            >
-              Clear reconciliation data
-            </button>
-            <button
-              type="button"
-              onClick={openMemoryModal}
-              className="px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-sm hover:text-white hover:bg-[#2d2d2d] transition-colors"
-            >
-              Memory
-            </button>
-            <button
-              type="button"
-              onClick={openActivityModal}
-              className="px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-sm hover:text-white hover:bg-[#2d2d2d] transition-colors"
-            >
-              Activity
-            </button>
-            <button
-              type="button"
-              onClick={openAnchorModal}
-              className="px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-sm hover:text-white hover:bg-[#2d2d2d] transition-colors"
-            >
-              Set Statement Ending Balance
-            </button>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {viewMode === "accountDetail" && (
+              <button
+                type="button"
+                onClick={goToAllAccounts}
+                title="Back to all accounts"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#252525] border border-charcoal-dark text-gray-200 text-sm hover:text-white hover:bg-[#2d2d2d] transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" aria-hidden />
+                All
+              </button>
+            )}
             <label className="text-sm text-gray-300">Account</label>
             <GlassDropdown
               value={viewMode === "home" ? ALL_ACCOUNTS_OPTION : selectedAccount}
               onChange={(nextValue) => {
                 if (nextValue === ALL_ACCOUNTS_OPTION) {
-                  setViewMode("home");
-                  history.replaceState(null, "", window.location.pathname);
+                  goToAllAccounts();
                   return;
                 }
                 const account = nextValue as AccountOption;
@@ -4441,6 +4487,49 @@ export default function ReconcilePage() {
               options={accountDropdownOptions}
               className="min-w-[10rem]"
               aria-label="Account"
+            />
+            {/* Labels are shortened to fit RowActionMenu's fixed 232px panel
+                (items `truncate`); the full wording lives in each `title`. */}
+            <RowActionMenu
+              aria-label="Reconcile options"
+              actions={[
+                {
+                  key: "accounts",
+                  label: "Accounts",
+                  icon: <Wallet className="w-4 h-4" />,
+                  title: "Add, rename, or remove accounts",
+                  onSelect: () => setManageAccountsOpen(true),
+                },
+                {
+                  key: "memory",
+                  label: "Memory",
+                  icon: <Brain className="w-4 h-4" />,
+                  title: "Merchant patterns learned for auto-claiming",
+                  onSelect: () => void openMemoryModal(),
+                },
+                {
+                  key: "activity",
+                  label: "Activity",
+                  icon: <History className="w-4 h-4" />,
+                  title: "Log of every reconciliation action, with undo",
+                  onSelect: () => void openActivityModal(),
+                },
+                {
+                  key: "anchor",
+                  label: "Ending balance",
+                  icon: <DollarSign className="w-4 h-4" />,
+                  title: "Set statement ending balance for the selected account",
+                  onSelect: () => void openAnchorModal(),
+                },
+                {
+                  key: "reset",
+                  label: "Clear all data",
+                  icon: <Trash2 className="w-4 h-4" />,
+                  tone: "danger",
+                  title: "Clear all reconciliation data",
+                  onSelect: openResetReconcileModal,
+                },
+              ]}
             />
           </div>
         </div>
@@ -4720,7 +4809,9 @@ export default function ReconcilePage() {
             <section className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden min-w-0">
               <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3">
                 <h2 className="text-white font-semibold">User-inputted: Matched</h2>
-                <span className="text-xs text-gray-300">{homeFilteredMatchedRows.length}</span>
+                <span className="text-xs text-gray-300">
+                  {pagedCountLabel(homeFilteredMatchedRows.length, homeMatchedVisible)}
+                </span>
               </div>
               <div className="p-3 text-sm">
                 <p className="text-xs text-gray-500 mb-3">
@@ -4736,7 +4827,7 @@ export default function ReconcilePage() {
                   <p className="text-gray-400">No rows match your search or account filter.</p>
                 ) : (
                   <div className="space-y-2">
-                    {homeFilteredMatchedRows.map((match, index) => {
+                    {homeFilteredMatchedRows.slice(0, homeMatchedVisible).map((match, index) => {
                       const tx = match.bankTransaction;
                       const rowId = idForTx(tx);
                       const dismissalNote = dismissalNotesById[rowId];
@@ -4817,6 +4908,11 @@ export default function ReconcilePage() {
                         </div>
                       );
                     })}
+                    <SeeMoreButton
+                      total={homeFilteredMatchedRows.length}
+                      visible={homeMatchedVisible}
+                      onMore={() => setHomeMatchedVisible((v) => v + MATCHED_PAGE_SIZE)}
+                    />
                   </div>
                 )}
               </div>
@@ -4826,7 +4922,9 @@ export default function ReconcilePage() {
               <section className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden min-w-0">
                 <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3">
                   <h2 className="text-white font-semibold">Statement: closed without sheet row</h2>
-                  <span className="text-xs text-gray-300">{homeFilteredStatementClosedRows.length}</span>
+                  <span className="text-xs text-gray-300">
+                    {pagedCountLabel(homeFilteredStatementClosedRows.length, homeClosedVisible)}
+                  </span>
                 </div>
                 <div className="p-3 text-sm">
                   <p className="text-xs text-gray-500 mb-3">
@@ -4838,7 +4936,7 @@ export default function ReconcilePage() {
                     <p className="text-gray-400">No rows match your search or account filter.</p>
                   ) : (
                     <div className="space-y-2">
-                      {homeFilteredStatementClosedRows.map((match, index) => {
+                      {homeFilteredStatementClosedRows.slice(0, homeClosedVisible).map((match, index) => {
                         const tx = match.bankTransaction;
                         const rowId = idForTx(tx);
                         const dismissalNote = dismissalNotesById[rowId];
@@ -4891,6 +4989,11 @@ export default function ReconcilePage() {
                           </div>
                         );
                       })}
+                      <SeeMoreButton
+                        total={homeFilteredStatementClosedRows.length}
+                        visible={homeClosedVisible}
+                        onMore={() => setHomeClosedVisible((v) => v + MATCHED_PAGE_SIZE)}
+                      />
                     </div>
                   )}
                 </div>
@@ -5004,16 +5107,6 @@ export default function ReconcilePage() {
               <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3">
                 <h2 className="text-white font-semibold">{labelFor(activeTab)}: Unmatched / Suggested</h2>
                 <span className="text-xs text-gray-300">{activeReviewRows.length}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setViewMode("home");
-                    history.replaceState(null, "", window.location.pathname);
-                  }}
-                  className="px-2.5 py-1 rounded-md text-xs text-gray-300 hover:text-white hover:bg-[#2c2c2c] transition-colors"
-                >
-                  Back to home
-                </button>
               </div>
               <div className="p-3 text-sm">
                 {activeReviewRows.length > 0 && (
@@ -5292,7 +5385,9 @@ export default function ReconcilePage() {
             <section ref={matchedSectionRef} className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
               <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3">
                 <h2 className="text-white font-semibold">{labelFor(activeTab)}: Matched to sheet</h2>
-                <span className="text-xs text-gray-300">{activeUserLinkedMatchedRows.length}</span>
+                <span className="text-xs text-gray-300">
+                  {pagedCountLabel(activeUserLinkedMatchedRows.length, accountMatchedVisible)}
+                </span>
               </div>
               <div className="p-3 text-sm">
                 <p className="text-xs text-gray-500 mb-3">
@@ -5304,7 +5399,7 @@ export default function ReconcilePage() {
                   <p className="text-gray-400">No rows linked to an expense or transfer for this account yet.</p>
                 ) : (
                   <div className="space-y-2">
-                    {activeUserLinkedMatchedRows.map((match, index) => {
+                    {activeUserLinkedMatchedRows.slice(0, accountMatchedVisible).map((match, index) => {
                       const tx = match.bankTransaction;
                       const rowId = idForTx(tx);
                       const dismissalNote = dismissalNotesById[rowId];
@@ -5382,6 +5477,11 @@ export default function ReconcilePage() {
                         </div>
                       );
                     })}
+                    <SeeMoreButton
+                      total={activeUserLinkedMatchedRows.length}
+                      visible={accountMatchedVisible}
+                      onMore={() => setAccountMatchedVisible((v) => v + MATCHED_PAGE_SIZE)}
+                    />
                   </div>
                 )}
               </div>
@@ -5391,7 +5491,9 @@ export default function ReconcilePage() {
               <section className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
                 <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3">
                   <h2 className="text-white font-semibold">{labelFor(activeTab)}: Closed on statement (no sheet link)</h2>
-                  <span className="text-xs text-gray-300">{activeStatementClosedOnlyRows.length}</span>
+                  <span className="text-xs text-gray-300">
+                    {pagedCountLabel(activeStatementClosedOnlyRows.length, accountClosedVisible)}
+                  </span>
                 </div>
                 <div className="p-3 text-sm">
                   <p className="text-xs text-gray-500 mb-3">
@@ -5399,7 +5501,7 @@ export default function ReconcilePage() {
                     <span className="text-gray-400">Unmark</span> to clear processed and reopen for matching.
                   </p>
                   <div className="space-y-2">
-                    {activeStatementClosedOnlyRows.map((match, index) => {
+                    {activeStatementClosedOnlyRows.slice(0, accountClosedVisible).map((match, index) => {
                       const tx = match.bankTransaction;
                       const rowId = idForTx(tx);
                       const dismissalNote = dismissalNotesById[rowId];
@@ -5452,6 +5554,11 @@ export default function ReconcilePage() {
                         </div>
                       );
                     })}
+                    <SeeMoreButton
+                      total={activeStatementClosedOnlyRows.length}
+                      visible={accountClosedVisible}
+                      onMore={() => setAccountClosedVisible((v) => v + MATCHED_PAGE_SIZE)}
+                    />
                   </div>
                 </div>
               </section>

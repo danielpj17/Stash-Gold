@@ -39,7 +39,8 @@ export default function ReconcileGuidePage() {
             <Link href="/reconcile" className="text-[#50C878] hover:brightness-110">
               Reconcile
             </Link>{" "}
-            → <strong className="text-white">Accounts</strong>. Add each account you actually use — checking, savings, credit card, cash app. Name
+            → the <strong className="text-white">⋮</strong> menu (top right) →{" "}
+            <strong className="text-white">Accounts</strong>. Add each account you actually use — checking, savings, credit card, cash app. Name
             them however you like; names are labels and can change later without breaking
             anything.
           </p>
@@ -213,7 +214,8 @@ export default function ReconcileGuidePage() {
             From the third month it auto-claims that charge and it never reaches your queue.
           </p>
           <p>
-            The <strong className="text-white">Memory</strong> button lists everything learned;
+            <strong className="text-white">⋮</strong> →{" "}
+            <strong className="text-white">Memory</strong> lists everything learned;
             delete an entry to stop it auto-claiming. Memory is per account, so a pattern learned
             on checking won&apos;t fire on your credit card.
           </p>
@@ -227,7 +229,9 @@ export default function ReconcileGuidePage() {
           <p>
             Use one when you&apos;re starting mid-year and don&apos;t want to import years of
             history, or when the computed balance has drifted and you want to reset it. Set it from
-            the account view using the ending balance printed on a statement.
+            the account view via <strong className="text-white">⋮</strong> →{" "}
+            <strong className="text-white">Ending balance</strong>, using the ending balance printed
+            on a statement.
           </p>
         </Section>
 
@@ -248,6 +252,7 @@ export default function ReconcileGuidePage() {
             account.
           </p>
           <p>
+            <strong className="text-white">⋮</strong> →{" "}
             <strong className="text-white">Activity</strong> — a log of every action, each with an
             Undo. If you bulk-approved something you shouldn&apos;t have, this is the way back.
           </p>
