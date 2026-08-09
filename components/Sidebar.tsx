@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -13,7 +12,6 @@ import {
   BarChart2,
 } from "lucide-react";
 import { useSidebar } from "@/contexts/SidebarContext";
-import HouseholdModal from "./HouseholdModal";
 import SignOutButton from "./SignOutButton";
 import StashLogo from "./StashLogo";
 
@@ -30,7 +28,6 @@ export default function Sidebar() {
   const { collapsed, toggleCollapsed, mobileOpen, closeMobile } = useSidebar();
   const { data: session } = useSession();
   const email = session?.user?.email ?? "";
-  const [householdOpen, setHouseholdOpen] = useState(false);
 
   return (
     <>
@@ -122,20 +119,20 @@ export default function Sidebar() {
       {/* Account */}
       <div className="p-3 border-t border-charcoal-dark shrink-0 space-y-1">
         {/*
-          The address doubles as the way into sharing. A dedicated nav item
-          would advertise a feature most people never want, and there is no
-          /settings route to hide it in — so it lives where you already look to
-          check which account you're in.
+          The address doubles as the desktop way into Settings — no nav item,
+          since it's a page you visit twice a year. Sign-out stays here as well
+          as on that page: this is the habit on desktop, and the sidebar doesn't
+          exist in the installed PWA.
         */}
         {!collapsed && email && (
-          <button
-            type="button"
-            onClick={() => setHouseholdOpen(true)}
-            title={`${email} — sharing settings`}
-            className="w-full text-left text-xs text-gray-400 px-3 pb-1 truncate hover:text-gray-200 transition-colors"
+          <Link
+            href="/settings"
+            onClick={closeMobile}
+            title={`${email} — settings`}
+            className="block text-xs text-gray-400 px-3 pb-1 truncate hover:text-gray-200 transition-colors"
           >
             {email}
-          </button>
+          </Link>
         )}
         <SignOutButton collapsed={collapsed} />
         {!collapsed && (
@@ -143,8 +140,6 @@ export default function Sidebar() {
         )}
       </div>
     </aside>
-
-    {householdOpen && <HouseholdModal onClose={() => setHouseholdOpen(false)} />}
     </>
   );
 }

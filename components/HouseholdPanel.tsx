@@ -18,22 +18,18 @@ export type HouseholdState = {
 };
 
 /** Best label for a person: their name, else their address, else something. */
-export function labelForMember(member: HouseholdMember): string {
+function labelForMember(member: HouseholdMember): string {
   return member.name?.trim() || member.email || "Someone";
 }
 
 /**
  * The body of the sharing UI, with no chrome of its own.
  *
- * Rendered in two places — the collapsed card on New Expense (the only surface
- * reachable from the installed PWA, where the sidebar is hidden) and a modal
- * opened from the sidebar on the web. Keeping it chrome-free is what lets one
- * component serve both without a wrapper prop.
- *
- * `onChange` lets the host react to a state change; it is optional because the
- * card doesn't need it.
+ * Lives inside the "Sharing" section of /settings, which supplies the heading
+ * and the card. Keeping the chrome out here is what let this survive being
+ * moved off New Expense without touching any of the logic below.
  */
-export default function HouseholdPanel({ onChange }: { onChange?: (s: HouseholdState) => void }) {
+export default function HouseholdPanel() {
   const [state, setState] = useState<HouseholdState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -43,15 +39,13 @@ export default function HouseholdPanel({ onChange }: { onChange?: (s: HouseholdS
   const [nameDraft, setNameDraft] = useState("");
   const [nameSaved, setNameSaved] = useState(false);
 
-  const apply = useCallback(
-    (next: HouseholdState) => {
-      setState(next);
-      onChange?.(next);
-      const me = next.members.find((m) => m.isYou);
-      setNameDraft(me?.name ?? "");
-    },
-    [onChange],
-  );
+  const apply = useCallback((next: HouseholdState) => {
+    setState(next);
+    // Re-seed the name field from the server's copy, so a failed save doesn't
+    // leave the input showing something that was never persisted.
+    const me = next.members.find((m) => m.isYou);
+    setNameDraft(me?.name ?? "");
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);

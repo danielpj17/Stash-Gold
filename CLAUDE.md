@@ -164,10 +164,28 @@ date. The server suppresses `enteredByName` unless the scope is actually shared
 *and* that person set a name, so a solo Stash is byte-identical to before and
 there is no fallback to a guessed name.
 
-UI lives in `HouseholdPanel` (chrome-free body), mounted twice: a collapsed
-`HouseholdCard` under New Expense, and `HouseholdModal` off the sidebar's email
-line. New Expense is not a preference — `Sidebar` is `standalone:hidden` and
-`BottomNav` is full, so it is the only surface reachable from the installed PWA.
+UI lives in `HouseholdPanel` (chrome-free body), rendered in the **Sharing**
+section of `/settings`. See "Settings" below for how that page is reached.
+
+### Settings
+
+`/settings` holds **sharing** and **sign-out**, and nothing else. (Accounts live
+under Reconcile; an older, broader `/settings` was deleted before the multi-user
+migration — this is not a revival of it.)
+
+How it is reached is load-bearing, not cosmetic:
+
+- **A gear at the top right of New Expense.** `Sidebar` is `standalone:hidden`
+  and `BottomNav` has five fixed icons with no overflow, so in the installed PWA
+  a page-level control is the *only* thing that can reach this page. New Expense
+  is the landing surface on a phone. Don't remove that gear without giving the
+  PWA another route in.
+- **The sidebar's email line on the web**, which links here. No nav item — this
+  is a page you visit twice a year.
+
+Sign-out appears both here and in the sidebar deliberately: the sidebar is the
+desktop habit and doesn't exist in the PWA. Both render `SignOutButton`, so the
+client-cache purge can't be implemented in one and forgotten in the other.
 
 ### State Management
 
@@ -218,7 +236,7 @@ bulk selection.
 
 Managed from the **Reconcile** page via `ManageAccountsModal` (rendered in both
 the empty-state and main return branches, so it's reachable before any account
-exists). There is no `/settings` route.
+exists) — *not* from `/settings`, which only covers sharing and sign-out.
 
 ### CSV formats
 
@@ -247,7 +265,8 @@ the parsed sign, which would change hashes.
 | `lib/signInCode.ts`, `lib/signInEmail.ts` | Sign-in code generation and the email template |
 | `app/page.tsx` | Main dashboard: charts, budget bars, account balances |
 | `app/reconcile/page.tsx` | Bank CSV upload and matching UI (~6600 lines) — see its own CLAUDE.md |
-| `app/new-expense/page.tsx` | Expense form + collapsed `ShortcutSetupCard` (token issue/revoke) |
+| `app/new-expense/page.tsx` | Expense form + collapsed `ShortcutSetupCard` (token issue/revoke) + the gear into `/settings` |
+| `app/settings/page.tsx` | Sharing + sign-out. The PWA's only route here is that gear |
 | `app/guide/reconcile/page.tsx` | In-app user guide |
 | `services/transactionsApi.ts` | Client transaction fetch/submit + type normalization |
 | `services/reconciliationService.ts` | Match algorithm and hashing — **frozen**, see above |

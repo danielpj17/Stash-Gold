@@ -5,11 +5,10 @@ import DashboardLayout from "@/components/DashboardLayout";
 import GlassDropdown from "@/components/GlassDropdown";
 import NumberField from "@/components/NumberField";
 import ShortcutSetupCard from "@/components/ShortcutSetupCard";
-import HouseholdCard from "@/components/HouseholdCard";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { submitExpense } from "@/services/transactionsApi";
 import { EXPENSE_TYPE_OPTIONS } from "@/lib/constants";
-import { Loader2 } from "lucide-react";
+import { Loader2, Settings } from "lucide-react";
 import Link from "next/link";
 
 // No account picker: the server routes an accountless expense to the user's
@@ -54,7 +53,22 @@ export default function NewExpensePage() {
   return (
     <DashboardLayout>
       <div className="space-y-6 max-w-2xl">
-        <h1 className="text-xl font-semibold text-white">New Expense</h1>
+        {/*
+          The gear is this page's only route to Settings, and in the installed
+          PWA it is the app's ONLY route there — the sidebar is hidden and the
+          bottom nav is full. Keep it reachable here.
+        */}
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-semibold text-white flex-1">New Expense</h1>
+          <Link
+            href="/settings"
+            aria-label="Settings"
+            title="Settings"
+            className="shrink-0 p-2 -m-2 rounded-lg text-gray-400 hover:text-[#50C878] hover:bg-[#2c2c2c] transition-colors"
+          >
+            <Settings className="w-5 h-5" />
+          </Link>
+        </div>
 
         <div className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
           <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark">
@@ -142,7 +156,6 @@ export default function NewExpensePage() {
         </div>
 
         <ShortcutSetupCard />
-        <HouseholdCard />
       </div>
     </DashboardLayout>
   );

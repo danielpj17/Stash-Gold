@@ -304,6 +304,13 @@ alias mechanism. Nothing else consumes it.
 
 ## UI placement
 
+> **Superseded.** Shipped as described below, then moved: the panel now lives in
+> a **Sharing** section on `/settings`, reached by a gear at the top right of New
+> Expense (and from the sidebar's email line on the web). `HouseholdCard` and
+> `HouseholdModal` were deleted; `HouseholdPanel` moved untouched, which is what
+> keeping it chrome-free bought. The PWA reasoning below is unchanged and is
+> exactly why the gear had to go on New Expense.
+
 **Two entry points, one component** (`components/HouseholdCard.tsx`):
 
 **In the installed PWA** — a collapsed card on
