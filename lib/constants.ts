@@ -15,6 +15,7 @@ export const EXPENSE_CATEGORIES = [
   "Gifts",
   "Personal Care",
   "Subscriptions",
+  "Travel",
 ] as const;
 
 /** Old sheet/category names → current EXPENSE_CATEGORIES keys (budget migration). */
@@ -46,6 +47,7 @@ export const PIE_COLORS = [
   "#E91E63", // pink (Gifts)
   "#00ACC1", // cyan (Personal Care)
   "#A1887F", // warm gray-brown (Subscriptions)
+  "#6C7BE0", // indigo (Travel)
 ];
 
 /** Fixed color per category — same in pie chart and table, consistent month to month */
