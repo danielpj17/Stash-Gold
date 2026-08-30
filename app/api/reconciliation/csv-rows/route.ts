@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 import { getBankProfile } from "@/lib/accounts";
 import type { Sql } from "@/lib/db";
-import { mergeCsvRowsByIdentity } from "@/services/reconciliationService";
+import { computeCsvIdentityKeys, mergeCsvRowsByIdentity } from "@/services/reconciliationService";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -115,6 +115,13 @@ export async function POST(request: NextRequest) {
       const existing = await readStoredRowsForAccount(sql, userId, accountName);
       const merged = mergeCsvRowsByIdentity(accountName, existing, incoming, profile);
 
+      // Identity keys for THIS upload's rows only, so the caller can record which
+      // bank hashes the file it just uploaded actually contains. Deriving them
+      // from the merged set instead would credit every previously stored
+      // statement to this one file, and clearing the file would then take those
+      // other statements' rows and claims down with it.
+      const incomingKeys = computeCsvIdentityKeys(accountName, incoming, profile);
+
       // Replace stored rows for the account. The DELETE rides with the first
       // insert chunk so an empty/failed write never wipes existing data silently.
       const inserts = merged.rows.map((cells, i) =>
@@ -131,7 +138,7 @@ export async function POST(request: NextRequest) {
           DELETE FROM reconciliation_csv_rows
           WHERE user_id = ${userId} AND account_name = ${accountName}
         `;
-        return NextResponse.json({ success: true, rows: [], count: 0 });
+        return NextResponse.json({ success: true, rows: [], count: 0, incomingKeys });
       }
 
       for (let i = 0; i < inserts.length; i += CSV_SAVE_CHUNK_SIZE) {
@@ -150,7 +157,12 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      return NextResponse.json({ success: true, rows: merged.rows, count: merged.rows.length });
+      return NextResponse.json({
+        success: true,
+        rows: merged.rows,
+        count: merged.rows.length,
+        incomingKeys,
+      });
     }
 
     // --- Legacy append mode: occurrence-indexed full-row keys (kept for the

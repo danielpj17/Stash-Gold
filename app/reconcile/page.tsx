@@ -3074,7 +3074,7 @@ export default function ReconcilePage() {
 
   const handleClearFile = useCallback(
     async (accountName: string, fileName: string) => {
-      if (!window.confirm(`Clear all reconciliation data for "${fileName}"? This removes all claim links and processed markers for transactions from this file so you can re-upload and re-reconcile them.`)) return;
+      if (!window.confirm(`Remove "${fileName}"? This deletes its statement rows along with their claim links and processed markers, so the transactions leave this account entirely and you can re-upload a corrected file. Transactions that another uploaded file also covers are kept.`)) return;
       try {
         const res = await fetch("/api/reconciliation/uploaded-files", {
           method: "DELETE",
@@ -3086,8 +3086,21 @@ export default function ReconcilePage() {
           setActionError(err.error || `Failed to clear file (${res.status})`);
           return;
         }
-        const { clearedHashes } = (await res.json()) as { clearedHashes: string[] };
+        const { clearedHashes, rows } = (await res.json()) as {
+          clearedHashes: string[];
+          rows?: string[][];
+        };
         const clearedSet = new Set(clearedHashes ?? []);
+
+        // The server also removed this file's raw CSV rows and returned what is
+        // left, so keep the in-memory copy in step with it — a stale ref would
+        // feed the cleared rows straight back into the next re-match.
+        if (Array.isArray(rows)) {
+          statementCsvRowsByAccountRef.current = {
+            ...statementCsvRowsByAccountRef.current,
+            [accountName]: rows,
+          };
+        }
 
         // Remove cleared hashes from processed state.
         if (clearedSet.size > 0) {
@@ -4157,8 +4170,14 @@ export default function ReconcilePage() {
           const err = await mergeRes.json().catch(() => ({ error: mergeRes.statusText }));
           throw new Error(err.error || `Failed to merge CSV rows (${mergeRes.status})`);
         }
-        const mergeData = (await mergeRes.json()) as { rows?: string[][] };
+        const mergeData = (await mergeRes.json()) as { rows?: string[][]; incomingKeys?: string[] };
         const mergedCsv = Array.isArray(mergeData.rows) ? mergeData.rows : [];
+        // The hashes of the rows in THIS file only. Recording the merged set's
+        // hashes instead would make the file record claim every statement ever
+        // uploaded to the account, so clearing it would wipe all of them.
+        const uploadedFileHashes = (mergeData.incomingKeys ?? [])
+          .filter((key) => key.startsWith("id:"))
+          .map((key) => key.slice(3));
         statementCsvRowsByAccountRef.current = {
           ...statementCsvRowsByAccountRef.current,
           [selectedAccount]: mergedCsv,
@@ -4356,7 +4375,7 @@ export default function ReconcilePage() {
             body: JSON.stringify({
               accountName: selectedAccount,
               fileName: uploadedFileName,
-              bankHashes: data.bankTransactions.map((tx) => tx.hash),
+              bankHashes: uploadedFileHashes,
             }),
           });
           setUploadedFilesByAccount((prev) => {
@@ -4625,7 +4644,7 @@ export default function ReconcilePage() {
                         <span className="flex-1 text-gray-200 truncate">{fileName}</span>
                         <button
                           type="button"
-                          title="Clear all reconciliation data for this file"
+                          title="Remove this file's transactions and reconciliation data"
                           onClick={() => void handleClearFile(selectedAccount, fileName)}
                           className="flex-shrink-0 text-gray-500 hover:text-red-400 transition-colors"
                         >

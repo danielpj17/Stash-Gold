@@ -553,11 +553,14 @@ bulkError: string               // error message after partial failure
 ### `GET|POST|DELETE /api/reconciliation/uploaded-files`
 
 - GET: `{ filesByAccount: Record<string, string[]> }` — file names per account
-- POST: `{ accountName, fileName, bankHashes?: string[] }` — records upload; stores bank tx hashes so the file can be selectively cleared. Upserts on conflict (re-uploading same file name updates the stored hashes).
-- DELETE: `{ accountName, fileName }` — clears all reconciliation state for that file:
-  - Bulk-deletes from `claim_links`, `transfer_claim_links`, `processed_transactions`, `statement_dismissals`, `match_cache` for all stored bank hashes
+- POST: `{ accountName, fileName, bankHashes?: string[] }` — records upload; stores bank tx hashes so the file can be selectively cleared. Upserts on conflict (re-uploading same file name updates the stored hashes). **`bankHashes` must be the hashes of that file's own rows** (`incomingKeys` from the `/csv-rows` merge), not of the merged account set — the merged set would make one file record claim every statement ever uploaded to the account, and clearing it would then delete all of them.
+- DELETE: `{ accountName, fileName }` — removes that file's transactions from the account:
+  - Subtracts any hash still covered by another surviving file record for the account (statements overlap; clearing one month must not take the neighbouring month's rows with it)
+  - **Deletes the file's rows from `reconciliation_csv_rows`.** This is the load-bearing half: the raw rows are what the page re-reads on load and identity-merges the next upload into, so a clear that only removes reconciliation state leaves the statement to reappear in full on the next upload
+  - Row removal drops the *highest-numbered* occurrences of each identity group rather than the exact rows named. Dropping `X` while keeping `X-2` would renumber the survivor to `X` on the next read and orphan every claim keyed to `X-2`
+  - Bulk-deletes from `claim_links`, `transfer_claim_links`, `processed_transactions`, `statement_dismissals`, `match_cache` for the cleared hashes
   - Deletes the file record
-  - Returns `{ clearedHashes: string[] }`
+  - Returns `{ clearedHashes: string[], removedRowCount: number, rows: string[][] }` (`rows` = the account's remaining stored CSV rows)
 
 ### `POST /api/reconciliation/reset`
 
@@ -768,7 +771,7 @@ Used by `rematchAllStoredAccounts()` — survives re-renders without triggering 
 6. `setMatchesByAccount` with new results; `setShouldScrollToMatched(true)` triggers scroll to matched section
 7. POST `/match-cache` to Neon (CSV rows were already persisted by the merge in step 1 — no separate `/csv-rows` save)
 8. `setProcessedHashes`, `setBankHashesWithNeonClaim`, and `setClaimedRowKeys` updated with auto-approved hashes / claimed rows
-9. POST `/uploaded-files` with file name **and `bankHashes`** (all tx hashes from this upload) so the file can later be selectively cleared
+9. POST `/uploaded-files` with file name **and `bankHashes`** — derived from the merge's `incomingKeys` (this file's rows only, `id:` keys with the prefix stripped), so the file can later be selectively cleared without touching other statements
 
 ### `handleRematchFromSheet()`
 
@@ -783,8 +786,9 @@ Used by `rematchAllStoredAccounts()` — survives re-renders without triggering 
 ### `handleClearFile(accountName, fileName)`
 
 - Shows a browser `confirm` dialog; on confirm calls DELETE `/api/reconciliation/uploaded-files`
-- Receives `clearedHashes: string[]` from the API
+- Receives `clearedHashes: string[]` and the account's remaining `rows` from the API
 - Surgically removes cleared hashes from `processedHashes`, `matchesByAccount`, and `bankHashesWithNeonClaim` state (no full rematch needed)
+- Replaces `statementCsvRowsByAccountRef.current[accountName]` with the returned rows — a stale ref would feed the cleared rows back into the next re-match
 - Removes the file from `uploadedFilesByAccount`
 - UI: ✕ button next to each file name in the Files panel
 
@@ -881,9 +885,9 @@ a modal.
 
 1. Click the ✕ next to a file name in the Files panel
 2. Browser confirm dialog
-3. DELETE `/api/reconciliation/uploaded-files` removes all claim links, transfer claims, processed markers, dismissals, and cache entries for that file's bank transactions
-4. File disappears from the Files list; affected transactions drop out of the matched/closed sections
-5. Re-upload the file to re-reconcile from scratch
+3. DELETE `/api/reconciliation/uploaded-files` deletes that file's stored CSV rows plus all claim links, transfer claims, processed markers, dismissals, and cache entries for its bank transactions. Transactions another uploaded file also covers are kept
+4. File disappears from the Files list; its transactions leave the account entirely
+5. Re-upload a corrected file to reconcile it from scratch
 
 ### Re-match an Account Against the Current Sheet
 
