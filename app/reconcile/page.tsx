@@ -1969,15 +1969,17 @@ export default function ReconcilePage() {
         })
         .map((row) => {
           const rowId = (row.transferRowId ?? "").trim();
-          const from = labelFor(row.transferFrom) || "—";
-          const to = labelFor(row.transferTo) || row.description?.trim() || "—";
+          // The leg labels are resolved at render time by describeSplitCandidate,
+          // not baked in here: labelFor depends on the loaded accounts, so a label
+          // captured while they are still in flight freezes as "Unknown account"
+          // for as long as the modal stays open.
           return {
             key: claimKey("Transfers", rowId),
             sheetName: "Transfers" as const,
             rowId,
             amount: Math.abs(Number(row.amount)),
             expenseType: "Transfer",
-            description: `${from} → ${to}`,
+            description: row.description?.trim() ?? "",
             timestamp: row.timestamp,
             date: row.date,
             account: undefined,
@@ -3764,6 +3766,18 @@ export default function ReconcilePage() {
     [splitModal.candidates],
   );
 
+  /** A transfer candidate reads as "From → To", named from the live accounts. */
+  const describeSplitCandidate = useCallback(
+    (row: SplitDraftLine) => {
+      if (row.sheetName !== "Transfers") return row.description;
+      const from = labelFor(row.transferFrom) || "—";
+      // Legacy transfers carried the destination in the description column.
+      const to = labelFor(row.transferTo) || row.description?.trim() || "—";
+      return `${from} → ${to}`;
+    },
+    [labelFor],
+  );
+
   const filteredSplitCandidates = useMemo(() => {
     const q = normalizeText(splitSearchQuery);
     if (!q) return sortedSplitCandidates;
@@ -3771,13 +3785,13 @@ export default function ReconcilePage() {
       [
         row.sheetName,
         row.expenseType,
-        row.description,
+        describeSplitCandidate(row),
         labelFor(row.account),
         row.rowId,
         row.timestamp,
       ].some((value) => normalizeText(value).includes(q)),
     );
-  }, [labelFor, sortedSplitCandidates, splitSearchQuery]);
+  }, [describeSplitCandidate, labelFor, sortedSplitCandidates, splitSearchQuery]);
 
   const selectedClaimRows = useMemo(
     () => splitModal.candidates.filter((row) => splitModal.selectedKeys.includes(row.key)),
@@ -6261,7 +6275,7 @@ export default function ReconcilePage() {
                               {row.sheetName}
                             </p>
                             <p className="text-sm text-gray-200 truncate">
-                              {row.expenseType || "—"} • {row.description || "—"}
+                              {row.expenseType || "—"} • {describeSplitCandidate(row) || "—"}
                             </p>
                             <p className="text-xs text-gray-400 mt-0.5">
                               {fmtMoney(row.amount)}
