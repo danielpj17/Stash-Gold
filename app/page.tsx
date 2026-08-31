@@ -125,15 +125,37 @@ function lerpColor(a: [number, number, number], b: [number, number, number], t: 
   return `rgb(${r}, ${g}, ${bl})`;
 }
 
+/** Bar and Spent figure for a category that has spent past its budget. */
+const OVER_BUDGET_COLOR = "#FF5C5C";
+
+/**
+ * Ramps green -> yellow across the budget. Red is deliberately absent: spending
+ * the whole budget is the plan working, so a category that lands exactly on its
+ * number tops out at yellow. Red is reserved for `isOverBudget`, which is the
+ * only state the ramp cannot reach.
+ */
 function getProgressColor(pct: number): string {
   const green: [number, number, number] = [80, 200, 120]; // #50C878
   const yellow: [number, number, number] = [242, 192, 55]; // #F2C037
-  const red: [number, number, number] = [255, 92, 92]; // #FF5C5C
 
   if (pct <= 50) return lerpColor(green, green, 0); // solid green up to 50%
-  if (pct < 75) return lerpColor(green, yellow, (pct - 50) / 25); // green -> yellow (50%-75%)
-  if (pct < 100) return lerpColor(yellow, red, (pct - 75) / 25); // yellow -> red (75%-100%)
-  return lerpColor(red, red, 0); // full red at/over 100%
+  if (pct < 100) return lerpColor(green, yellow, (pct - 50) / 50); // green -> yellow (50%-100%)
+  return lerpColor(yellow, yellow, 0); // at budget, and the cap for unbudgeted rows
+}
+
+/**
+ * Strictly over, compared in whole cents.
+ *
+ * Landing exactly on the budget is on-plan and must not flag, but `total` is a
+ * float sum of individual expenses, so an exact hit can come out a hair above
+ * its budget (400.00000000000006) and a bare `>` would flag it. Comparing
+ * rounded cents is what makes "hit it exactly" reliably read as fine.
+ *
+ * `budget > 0` keeps a category with no budget set out of the state entirely —
+ * it has nothing to be over.
+ */
+function isOverBudget(total: number, budget: number): boolean {
+  return budget > 0 && Math.round(total * 100) > Math.round(budget * 100);
 }
 
 function formatDateMMDDYY(timestamp?: string): string {
@@ -661,7 +683,8 @@ export default function BudgetPage() {
                         : row.total > 0
                           ? 100
                           : 0;
-                    const barColor = getProgressColor(pct);
+                    const overBudget = isOverBudget(row.total, budget);
+                    const barColor = overBudget ? OVER_BUDGET_COLOR : getProgressColor(pct);
                     const barWidth = Math.min(pct, 100);
 
                     return (
@@ -674,7 +697,10 @@ export default function BudgetPage() {
                         }`}
                       >
                         <span className="w-[88px] min-w-0 text-gray-300 truncate">{row.category}</span>
-                        <span className="w-[68px] shrink-0 text-right text-gray-200 tabular-nums text-xs">
+                        <span
+                          className="w-[68px] shrink-0 text-right text-gray-200 tabular-nums text-xs"
+                          style={{ color: overBudget ? OVER_BUDGET_COLOR : undefined }}
+                        >
                           {fmtDollars(row.total)}
                         </span>
                         <span className="flex-1 min-w-0 mx-1" />
