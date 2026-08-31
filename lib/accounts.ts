@@ -153,9 +153,10 @@ export async function getAccount(
 }
 
 /**
- * The account an expense belongs to when the caller didn't name one — the
- * path the iOS Shortcut takes, since it can't reasonably send a UUID.
- * Falls back to the first live account if no default is marked.
+ * The account an expense belongs to when the caller didn't name one — the New
+ * Expense form, and the iOS Shortcut when the user picks "Default" (or sends an
+ * id `/api/ingest` couldn't resolve). Falls back to the first live account if
+ * no default is marked.
  */
 export async function getDefaultAccountId(sql: Sql, userId: string): Promise<string | null> {
   const rows = (await sql`

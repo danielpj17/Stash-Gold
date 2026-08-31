@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { listAccounts } from "@/lib/accounts";
 import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 import { insertTransaction, parseTransactionInput } from "@/lib/transactions";
 
@@ -60,6 +61,22 @@ export async function POST(request: NextRequest) {
         { error: "Too many transactions in the last minute. Try again shortly." },
         { status: 429 },
       );
+    }
+
+    // An `account` this scope doesn't own is worse than none at all: the row
+    // saves, shows up in lists and counts against budget, but
+    // `computeAccountBalances` skips unrecognised keys (that's how transfers to
+    // "Cash"/"Parents" move only one side), so the balance silently never
+    // moves. The Shortcut's picker can hand us a stale id — an account
+    // soft-deleted between the fetch and the post — so drop anything that
+    // doesn't resolve and let insertTransaction fall back to the default.
+    //
+    // Scoped to this route on purpose: `insertTransaction` is shared with the
+    // web form, where the account comes from a live picker and is already good.
+    if (parsed.kind !== "transfer" && parsed.account) {
+      const live = await listAccounts(sql, userId);
+      const known = live.some((a) => !a.isDeleted && a.isActive && a.id === parsed.account);
+      if (!known) parsed.account = null;
     }
 
     // actorId is the token's owner, so in a shared household each spouse's

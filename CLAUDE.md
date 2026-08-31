@@ -90,6 +90,9 @@ silent and expensive.
 - `/api/budget` — monthly budgets as JSONB, one row per user
 - `/api/reconciliation/*` — bank CSV matching state
 - `/api/ingest` — iOS Shortcut writes, **bearer token only**, no session
+- `/api/ingest/accounts` — the account list for the Shortcut's picker, so it can
+  send a real `financial_accounts.id` instead of baking UUIDs in. Also
+  **bearer-only**; these two are the whole bearer surface. Scopes on `userId`
 - `/api/tokens` — ingest token management, **session only**, never bearer.
   Scopes on `actorId`, not `userId` — see "Household sharing"
 - `/api/household` — who shares this Stash; invite, rename yourself, remove.
@@ -221,8 +224,10 @@ bulk selection.
 
 - **`is_default`** — where an expense lands when none is given. The New Expense
   form has no account picker: the server routes accountless expenses through
-  `insertTransaction` → `getDefaultAccountId`. This is also what makes the iOS
-  Shortcut work, since it can't reasonably send a UUID.
+  `insertTransaction` → `getDefaultAccountId`. The iOS Shortcut now picks an
+  account (via `/api/ingest/accounts`), but still lands here when the user
+  chooses **Default** — and when it sends an id that no longer resolves, which
+  `/api/ingest` drops rather than saving as a dead reference.
 - **`deleted_at`** — deletion is soft. The row stays so past matches remain
   matched *and* correctly labeled, while the account vanishes from every picker.
   `AccountsContext.byId` therefore includes deleted accounts (for labels) while

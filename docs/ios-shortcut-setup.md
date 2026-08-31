@@ -75,6 +75,61 @@ containing that category's exact name.
 
 Rename the menu result to `Category`.
 
+### Add: the account picker
+
+This is the part that makes an expense move the right balance. Stash keys
+balances on `financial_accounts.id` — a UUID — so the Shortcut can't just send
+`"WF Checking"`; a name it doesn't recognise saves the expense but silently
+moves no balance. Rather than baking UUIDs in, the Shortcut asks the server for
+the list at run time, which means **adding or renaming an account in Stash needs
+no edit here**.
+
+Put these actions last, immediately before the POST below. That ordering is
+deliberate: it costs one extra request (~half a second), and if the network is
+down the POST was going to fail anyway — so nothing gets typed twice that
+wouldn't have been.
+
+**1. Text** — the accounts URL, built from the variable you already have:
+
+```
+[API URL]/accounts
+```
+
+Inserting `API URL` here rather than typing the host again is what keeps the
+install-time Import Question covering both requests.
+
+**2. Get Contents of URL**
+
+- **URL:** the Text action above
+- **Method:** `GET`
+- **Headers:** `Authorization` → `Bearer ` + the `API Token` variable
+
+**3. Get Dictionary Value** — `names` from that response. Rename the result to
+`Account Names`.
+
+**4. Add to List** — a Text item `Default`, then `Account Names`. This is the
+escape hatch, and it needs no branch later: an unmatched name yields empty text,
+and the API treats an empty `account` exactly like an absent one — it falls back
+to your default account, i.e. today's behaviour.
+
+**5. Count** → **If** … `is greater than` `0`. Put steps 6–7 inside the If.
+`Choose from List` errors on an empty list, which is what a brand-new user with
+no accounts yet would hit.
+
+**6. Choose from List** — from the combined list, prompt `Which account?`.
+Rename the result to `Chosen Name`.
+
+**7. Get Dictionary Value** — `ids` from the **Get Contents of URL** result,
+then a second **Get Dictionary Value** with **Value for Key** set to the
+`Chosen Name` variable. Rename the result to `Account Id`.
+
+> Why two lookups instead of one list of objects: `Choose from List` renders a
+> list of dictionaries as unreadable raw text, and getting the chosen row's id
+> back out needs two `Repeat with Each` loops. The endpoint returns a flat
+> `names` array plus a name→id `ids` dictionary precisely so this stays four
+> linear actions. Live account names are unique in Stash (a partial unique index
+> enforces it), so keying by name is safe.
+
 ### Add: Get Contents of URL
 
 This is the action that actually posts.
@@ -92,12 +147,17 @@ This is the action that actually posts.
 | `expenseType` | Text | the `Category` variable |
 | `amount` | Number | the `Amount` variable |
 | `description` | Text | the `Description` variable |
+| `account` | Text | the `Account Id` variable from the picker above |
 
-Optional extras the API accepts:
+`account` is optional and safe to send empty: empty, absent, or an id this
+account scope doesn't own all fall back to your default account. An id that no
+longer resolves — one soft-deleted between the fetch and the post — is dropped
+server-side rather than saved as a dead reference.
+
+Other extras the API accepts:
 
 | Key | Value |
 |---|---|
-| `account` | a `financial_accounts.id` — makes the expense move that balance |
 | `date` | `YYYY-MM-DD` — back-dates the entry (defaults to now) |
 
 ### Add: Show Notification
@@ -132,11 +192,15 @@ personal is embedded in the shared shortcut itself.
 Run the Shortcut on your own phone with your own token. Then check:
 
 - The expense appears on the Expenses page.
+- It is labelled with the account you picked, and that account's balance on the
+  dashboard has moved by the amount. Picking **Default** should behave exactly
+  as it did before the picker existed.
 - In the **iOS Shortcut** box on `/new-expense`, that token's **last used**
   date updates to today.
 
-If you get a 401, the token is wrong or revoked. If you get 503, the server
-can't reach the database.
+If you get a 401, the token is wrong or revoked — from either request, since
+`/api/ingest/accounts` uses the same token as the POST. If you get 503, the
+server can't reach the database.
 
 ---
 
