@@ -26,18 +26,24 @@ On your iPhone, open **Shortcuts** → **+**.
 
 ### Add: Text
 
-Add a **Text** action. Paste your ingest URL:
+Add a **Text** action. Paste the ingest URL — for this deployment that is
+exactly:
 
 ```
-https://YOUR-APP.vercel.app/api/ingest
+https://stash-gold.vercel.app/api/ingest
 ```
 
 Rename this action's variable to `API URL` (long-press → Rename). This is what
 you'll attach the Import Question to in step 2 — Import Questions can only
 target a value, so it needs to live in its own action.
 
-> Use your real production URL. The **iOS Shortcut** box on `/new-expense`
-> shows it in the manual setup block.
+> No trailing slash, and note it ends in `/api/ingest`, not `/api/ingest/`.
+> The account picker below builds its own URL from this variable, so this is
+> the only place the host is typed — if the domain ever changes, this action
+> (or its Import Question) is the single thing to update.
+>
+> Running your own copy of Stash? Substitute your production URL; the **iOS
+> Shortcut** box on `/new-expense` shows it in the manual setup block.
 
 ### Add: Text (again)
 
@@ -89,14 +95,21 @@ deliberate: it costs one extra request (~half a second), and if the network is
 down the POST was going to fail anyway — so nothing gets typed twice that
 wouldn't have been.
 
-**1. Text** — the accounts URL, built from the variable you already have:
+**1. Text** — the accounts URL, built from the variable you already have.
+Insert the `API URL` variable, then type `/accounts` after it:
 
 ```
 [API URL]/accounts
 ```
 
-Inserting `API URL` here rather than typing the host again is what keeps the
-install-time Import Question covering both requests.
+That resolves at run time to:
+
+```
+https://stash-gold.vercel.app/api/ingest/accounts
+```
+
+Insert the variable rather than typing that second URL out — it's what keeps
+the install-time Import Question covering both requests.
 
 **2. Get Contents of URL**
 
@@ -189,7 +202,24 @@ personal is embedded in the shared shortcut itself.
 
 ## 3. Test it before sharing
 
-Run the Shortcut on your own phone with your own token. Then check:
+Before touching the phone, confirm the account list your Shortcut will fetch.
+On Windows use `curl.exe` — bare `curl` in PowerShell is an alias for
+`Invoke-WebRequest` and chokes on `-H`:
+
+```bash
+curl.exe -H "Authorization: Bearer stsh_…" https://stash-gold.vercel.app/api/ingest/accounts
+```
+
+You should get your live accounts back, in the order they appear in the app:
+
+```json
+{"names":["WF Checking","WF Savings","…"],"ids":{"WF Checking":"…uuid…","…":"…"}}
+```
+
+A 401 means the token is wrong or revoked. An empty `names` array means that
+token's scope has no live accounts yet.
+
+Then run the Shortcut on your own phone with your own token and check:
 
 - The expense appears on the Expenses page.
 - It is labelled with the account you picked, and that account's balance on the
