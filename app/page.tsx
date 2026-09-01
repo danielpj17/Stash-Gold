@@ -125,22 +125,24 @@ function lerpColor(a: [number, number, number], b: [number, number, number], t: 
   return `rgb(${r}, ${g}, ${bl})`;
 }
 
-/** Bar and Spent figure for a category that has spent past its budget. */
+/** Bar color for a category that has spent past its budget. */
 const OVER_BUDGET_COLOR = "#FF5C5C";
 
 /**
- * Ramps green -> yellow across the budget. Red is deliberately absent: spending
- * the whole budget is the plan working, so a category that lands exactly on its
- * number tops out at yellow. Red is reserved for `isOverBudget`, which is the
- * only state the ramp cannot reach.
+ * Ramps green -> yellow -> orange across the budget. Red is deliberately absent:
+ * spending the whole budget is the plan working, so a category that lands exactly
+ * on its number tops out at orange. Red is reserved for `isOverBudget`, which is
+ * the only state the ramp cannot reach.
  */
 function getProgressColor(pct: number): string {
   const green: [number, number, number] = [80, 200, 120]; // #50C878
   const yellow: [number, number, number] = [242, 192, 55]; // #F2C037
+  const orange: [number, number, number] = [255, 138, 61]; // #FF8A3D
 
   if (pct <= 50) return lerpColor(green, green, 0); // solid green up to 50%
-  if (pct < 100) return lerpColor(green, yellow, (pct - 50) / 50); // green -> yellow (50%-100%)
-  return lerpColor(yellow, yellow, 0); // at budget, and the cap for unbudgeted rows
+  if (pct < 75) return lerpColor(green, yellow, (pct - 50) / 25); // green -> yellow (50%-75%)
+  if (pct < 100) return lerpColor(yellow, orange, (pct - 75) / 25); // yellow -> orange (75%-100%)
+  return lerpColor(orange, orange, 0); // at budget, and the cap for unbudgeted rows
 }
 
 /**
@@ -697,10 +699,7 @@ export default function BudgetPage() {
                         }`}
                       >
                         <span className="w-[88px] min-w-0 text-gray-300 truncate">{row.category}</span>
-                        <span
-                          className="w-[68px] shrink-0 text-right text-gray-200 tabular-nums text-xs"
-                          style={{ color: overBudget ? OVER_BUDGET_COLOR : undefined }}
-                        >
+                        <span className="w-[68px] shrink-0 text-right text-gray-200 tabular-nums text-xs">
                           {fmtDollars(row.total)}
                         </span>
                         <span className="flex-1 min-w-0 mx-1" />
