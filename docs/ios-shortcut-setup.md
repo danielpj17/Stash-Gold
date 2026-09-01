@@ -120,21 +120,25 @@ the install-time Import Question covering both requests.
 **3. Get Dictionary Value** — `names` from that response. Rename the result to
 `Account Names`.
 
-**4. Add to List** — a Text item `Default`, then `Account Names`. This is the
-escape hatch, and it needs no branch later: an unmatched name yields empty text,
-and the API treats an empty `account` exactly like an absent one — it falls back
-to your default account, i.e. today's behaviour.
+**4. Choose from List** — from `Account Names`, prompt `Which account?`. Rename
+the result to `Chosen Name`.
 
-**5. Count** → **If** … `is greater than` `0`. Put steps 6–7 inside the If.
-`Choose from List` errors on an empty list, which is what a brand-new user with
-no accounts yet would hit.
+There is no separate "use my default" item, because the default account is
+already in the list like any other. If you do want one, note that an
+unrecognised name yields empty text and the API treats an empty `account`
+exactly like an absent one — it falls back to the default, i.e. the behaviour
+before this picker existed.
 
-**6. Choose from List** — from the combined list, prompt `Which account?`.
-Rename the result to `Chosen Name`.
+**5. Get Dictionary Value** — `ids`, again from the **Get Contents of URL**
+result. Rename it to `Ids`.
 
-**7. Get Dictionary Value** — `ids` from the **Get Contents of URL** result,
-then a second **Get Dictionary Value** with **Value for Key** set to the
-`Chosen Name` variable. Rename the result to `Account Id`.
+**6. Get Dictionary Value** — this time set **Get** to `Value for Key`, the key
+to the `Chosen Name` variable, and the input to `Ids`. Rename the result to
+`Account Id`.
+
+> If you share the Shortcut with someone whose Stash has no accounts yet, wrap
+> steps 4–6 in a **Count** → **If … is greater than 0**. `Choose from List`
+> errors on an empty list.
 
 > Why two lookups instead of one list of objects: `Choose from List` renders a
 > list of dictionaries as unreadable raw text, and getting the chosen row's id
