@@ -100,17 +100,24 @@ type UserInputtedEntry = {
   source: "Expenses" | "Transfers";
   dateValue: string;
   title: string;
+  /** Tile line 2: amount and date — the two fields you scan a list by. */
+  amountDateLine: string;
   /**
-   * Display line under the title: amount • category • account • date, and —
-   * only when this Stash is shared — who entered it. Self-contained.
+   * Tile line 3: category (or "Transfer"), the account it moves, and — only
+   * when this Stash is shared — who entered it.
    *
-   * The account is what tells you which balance the row moves, which is
-   * otherwise invisible everywhere except the Matched section. Transfers name
-   * both their accounts in `title` instead, so only expenses carry it here.
+   * The account is what tells you which balance the row affects, which is
+   * otherwise invisible outside the Matched section. Transfers name both of
+   * their accounts in `title` instead, so their detail line has no account.
    *
-   * This is the one place in the app a person's name is shown. It is also part
-   * of the search haystack in homeFilteredIncompleteRows / homeFilteredMatchedRows,
-   * so putting the name here makes rows searchable by person for free.
+   * This is the one place in the app a person's name is shown.
+   */
+  detailLine: string;
+  /**
+   * The two lines joined, for the modals (which have room for one line) and
+   * for the search haystack in homeFilteredIncompleteRows /
+   * homeFilteredMatchedRows — which is what makes rows searchable by person,
+   * account and category for free.
    */
   subtitle: string;
   amount: number;
@@ -1606,13 +1613,14 @@ export default function ReconcilePage() {
 
   const userInputtedEntries = useMemo(() => {
     /**
-     * " • Sarah", or nothing at all.
+     * Join the parts that exist, skipping the ones that don't.
      *
-     * The server only sends `enteredByName` when this Stash is shared AND that
-     * person set a name, so there is no household check to do here — an absent
-     * value means the subtitle stays exactly as it was before sharing existed.
+     * `enteredByName` is only sent when this Stash is shared AND that person
+     * set a name, so there is no household check to do here — an absent value
+     * means the line reads exactly as it did before sharing existed.
      */
-    const enteredBySuffix = (name?: string) => (name?.trim() ? ` • ${name.trim()}` : "");
+    const joinParts = (...parts: Array<string | undefined>) =>
+      parts.map((p) => p?.trim()).filter(Boolean).join(" • ");
 
     const expenseEntries: UserInputtedEntry[] = sheetExpenses.map((row, index) => {
       const rowId = (row.rowId ?? "").trim();
@@ -1627,15 +1635,20 @@ export default function ReconcilePage() {
       // deletion became soft, have nothing to name — omit the segment rather
       // than printing a placeholder. `labelFor` never yields a raw UUID.
       const accountLabel = accountId ? labelFor(accountId) : undefined;
+      const amountDateLine = joinParts(fmtMoney(Number(row.amount ?? 0)), fmtDate(dateValue));
+      const detailLine = joinParts(
+        row.expenseType?.trim() || "Uncategorized",
+        accountLabel,
+        row.enteredByName,
+      );
       return {
         id: key,
         source: "Expenses",
         dateValue,
         title: row.description || row.expenseType || "Expense row",
-        subtitle:
-          `${fmtMoney(Number(row.amount ?? 0))} • ${row.expenseType?.trim() || "Uncategorized"}` +
-          `${accountLabel ? ` • ${accountLabel}` : ""}` +
-          ` • ${fmtDate(dateValue)}${enteredBySuffix(row.enteredByName)}`,
+        amountDateLine,
+        detailLine,
+        subtitle: joinParts(amountDateLine, detailLine),
         amount: Number(row.amount ?? 0),
         isCompleted: claimed || tiedByExactMatch || autoCompleted || userDismissed,
         expenseAccount: accountId,
@@ -1661,14 +1674,17 @@ export default function ReconcilePage() {
       );
       const tid = rowId ? `Transfers:${rowId}` : `Transfers:missing:${index}`;
       const userDismissed = userDismissedRowKeys.has(tid);
+      const amountDateLine = joinParts(fmtMoney(Number(row.amount ?? 0)), fmtDate(dateValue));
+      // No account segment: `title` is already "From → To".
+      const detailLine = joinParts("Transfer", row.enteredByName);
       return {
         id: tid,
         source: "Transfers",
         dateValue,
         title,
-        subtitle:
-          `${fmtMoney(Number(row.amount ?? 0))} • Transfer` +
-          ` • ${fmtDate(dateValue)}${enteredBySuffix(row.enteredByName)}`,
+        amountDateLine,
+        detailLine,
+        subtitle: joinParts(amountDateLine, detailLine),
         amount: Number(row.amount ?? 0),
         isCompleted: claimed || Boolean(status?.isComplete) || autoCompleted || userDismissed,
         transferFrom: row.transferFrom,
@@ -4742,6 +4758,17 @@ export default function ReconcilePage() {
                   <p className="text-gray-400">No rows match your search or account filter.</p>
                 ) : (
                   <div className="space-y-2">
+                    {/* Column labels sit here, not on every tile: repeated on each
+                        row they cost a line of height per row and said nothing new.
+                        Hidden below md, where the grid stacks into one column and
+                        the per-tile labels come back to disambiguate. */}
+                    <div className="hidden md:grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] px-3 text-[11px] uppercase tracking-wide text-gray-500">
+                      <span>User-inputted</span>
+                      <span>Bank transaction</span>
+                      {/* Stands in for the Claim + ⋮ cluster so the two labels
+                          line up with the columns they name. */}
+                      <span className="w-[5.25rem]" aria-hidden />
+                    </div>
                     {homeFilteredIncompleteRows.map(({ entry, suggestedBank }, index) => {
                       const match = suggestedBank;
                       const tx = match?.bankTransaction;
@@ -4760,27 +4787,21 @@ export default function ReconcilePage() {
                         >
                           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-start">
                             <div className="min-w-0">
-                              <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                              <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1 md:hidden">
                                 User-inputted
                               </p>
-                              {entry.source === "Expenses" ? (
-                                <>
-                                  <p className="text-yellow-300 text-sm truncate">{entry.title}</p>
-                                  <p className="text-xs text-gray-400 mt-0.5">
-                                    {entry.subtitle}
-                                  </p>
-                                </>
-                              ) : (
-                                <>
-                                  <p className="text-green-300 text-sm truncate">{entry.title}</p>
-                                  <p className="text-xs text-gray-400 mt-0.5">
-                                    {entry.subtitle}
-                                  </p>
-                                </>
-                              )}
+                              <p
+                                className={`text-sm truncate ${
+                                  entry.source === "Expenses" ? "text-yellow-300" : "text-green-300"
+                                }`}
+                              >
+                                {entry.title}
+                              </p>
+                              <p className="text-xs text-gray-400 mt-0.5">{entry.amountDateLine}</p>
+                              <p className="text-xs text-gray-400 mt-0.5">{entry.detailLine}</p>
                             </div>
                             <div className="min-w-0">
-                              <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                              <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1 md:hidden">
                                 Bank Transaction
                               </p>
                               {tx ? (
@@ -5079,6 +5100,11 @@ export default function ReconcilePage() {
                   <p className="text-gray-400">No rows match your search or account filter.</p>
                 ) : (
                   <div className="space-y-2">
+                    {/* Same header treatment as the review list above. */}
+                    <div className="hidden md:grid gap-3 md:grid-cols-2 px-3 text-[11px] uppercase tracking-wide text-gray-500">
+                      <span>User-inputted</span>
+                      <span>Note</span>
+                    </div>
                     {homeFilteredUserDismissedRows.map((entry, index) => (
                       <div
                         key={`${entry.id}-${index}`}
@@ -5086,27 +5112,21 @@ export default function ReconcilePage() {
                       >
                         <div className="grid gap-3 md:grid-cols-2 items-start">
                           <div className="min-w-0">
-                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1 md:hidden">
                               User-inputted
                             </p>
-                            {entry.source === "Expenses" ? (
-                              <>
-                                <p className="text-yellow-300 text-sm truncate">{entry.title}</p>
-                                <p className="text-xs text-gray-400 mt-0.5">
-                                  {entry.subtitle}
-                                </p>
-                              </>
-                            ) : (
-                              <>
-                                <p className="text-green-300 text-sm truncate">{entry.title}</p>
-                                <p className="text-xs text-gray-400 mt-0.5">
-                                  {entry.subtitle}
-                                </p>
-                              </>
-                            )}
+                            <p
+                              className={`text-sm truncate ${
+                                entry.source === "Expenses" ? "text-yellow-300" : "text-green-300"
+                              }`}
+                            >
+                              {entry.title}
+                            </p>
+                            <p className="text-xs text-gray-400 mt-0.5">{entry.amountDateLine}</p>
+                            <p className="text-xs text-gray-400 mt-0.5">{entry.detailLine}</p>
                           </div>
                           <div className="min-w-0">
-                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1 md:hidden">
                               Note
                             </p>
                             <p className="text-amber-200/90 text-sm whitespace-pre-wrap break-words">
