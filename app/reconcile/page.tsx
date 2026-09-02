@@ -26,6 +26,7 @@ import { generateMerchantFingerprint } from "@/lib/merchantFingerprint";
 import {
   computeAccountBalances,
   getAccountAnchors,
+  type AccountAnchor,
 } from "@/services/accountBalancesService";
 import Link from "next/link";
 import { useAccounts } from "@/contexts/AccountsContext";
@@ -139,6 +140,12 @@ type UserInputtedEntry = {
 
 type AnchorModalState = {
   open: boolean;
+  /**
+   * Which account is being confirmed. Held here rather than read from
+   * `selectedAccount`, because the Statement Accounts list opens this for any
+   * account without changing the page's selection.
+   */
+  accountId: string;
   date: string;
   balance: string;
   loading: boolean;
@@ -780,6 +787,7 @@ export default function ReconcilePage() {
   });
   const [anchorModal, setAnchorModal] = useState<AnchorModalState>({
     open: false,
+    accountId: "",
     date: new Date().toISOString().slice(0, 10),
     balance: "",
     loading: false,
@@ -1424,6 +1432,43 @@ export default function ReconcilePage() {
     return merged;
   }, [matchesByAccount]);
 
+
+  /**
+   * Confirmed statement balances, one per account.
+   *
+   * An anchor *replaces* the opening balance and everything dated on or before
+   * it (`shouldApplyByAnchor`), so it is the mechanism for "my balance has
+   * drifted, make it right" — it corrects the running total without editing a
+   * single transaction.
+   */
+  const [accountAnchors, setAccountAnchors] = useState<AccountAnchor[]>([]);
+
+  const refreshAnchors = useCallback(async () => {
+    try {
+      setAccountAnchors(await getAccountAnchors());
+    } catch {
+      // Balances simply fall back to opening balance + full history.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAnchors();
+  }, [refreshAnchors]);
+
+  const anchorByAccount = useMemo(() => {
+    const map = new Map<string, AccountAnchor>();
+    for (const anchor of accountAnchors) map.set(anchor.accountName, anchor);
+    return map;
+  }, [accountAnchors]);
+
+  /**
+   * The same computation the dashboard and net-worth pages run, over state this
+   * page already holds — so the number here can't disagree with those.
+   */
+  const accountBalances = useMemo(
+    () => computeAccountBalances(sheetExpenses, sheetTransfers, accountAnchors, activeAccounts),
+    [accountAnchors, activeAccounts, sheetExpenses, sheetTransfers],
+  );
 
   const statementRowsByAccount = useMemo(() => {
     const byAccount: Record<string, MatchResult[]> = {};
@@ -2103,39 +2148,30 @@ export default function ReconcilePage() {
     });
   }, []);
 
-  const openAnchorModal = useCallback(async () => {
-    setAnchorModal({
-      open: true,
-      date: new Date().toISOString().slice(0, 10),
-      balance: "",
-      loading: true,
-      saving: false,
-      error: "",
-    });
-    try {
-      const [rows, transfers, anchors] = await Promise.all([
-        getExpenses(),
-        getTransfers(),
-        getAccountAnchors(),
-      ]);
-      const balances = computeAccountBalances(rows, transfers, anchors, activeAccounts);
-      const balance = balances[selectedAccount];
-      if (!Number.isFinite(balance)) {
-        throw new Error(`Could not determine current balance for ${labelFor(selectedAccount)}.`);
-      }
-      setAnchorModal((prev) => ({
-        ...prev,
+  /**
+   * Prefilled with what Stash currently thinks the balance is, so the field is
+   * a diff against the bank rather than a blank box — you overtype it only if
+   * the two disagree.
+   *
+   * The date defaults to today rather than the existing anchor's date: you are
+   * confirming what the account holds *now*, and an older date would re-apply
+   * every transaction since then on top of the figure you just typed.
+   */
+  const openAnchorModal = useCallback(
+    (accountId: string) => {
+      const balance = accountBalances[accountId];
+      setAnchorModal({
+        open: true,
+        accountId,
+        date: new Date().toISOString().slice(0, 10),
+        balance: Number.isFinite(balance) ? Number(balance).toFixed(2) : "",
         loading: false,
-        balance: Number(balance).toFixed(2),
-      }));
-    } catch (err) {
-      setAnchorModal((prev) => ({
-        ...prev,
-        loading: false,
-        error: err instanceof Error ? err.message : "Failed to load current balance.",
-      }));
-    }
-  }, [selectedAccount]);
+        saving: false,
+        error: "",
+      });
+    },
+    [accountBalances],
+  );
 
   const closeAnchorModal = useCallback(() => {
     setAnchorModal((prev) => ({
@@ -2164,7 +2200,7 @@ export default function ReconcilePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          accountName: selectedAccount,
+          accountName: anchorModal.accountId,
           confirmedBalance,
           asOfDate: anchorModal.date,
         }),
@@ -2173,6 +2209,7 @@ export default function ReconcilePage() {
         const err = await res.json().catch(() => ({ error: res.statusText }));
         throw new Error(err.error || `Failed to save statement balance (${res.status})`);
       }
+      await refreshAnchors();
       closeAnchorModal();
     } catch (err) {
       setAnchorModal((prev) => ({
@@ -2181,7 +2218,7 @@ export default function ReconcilePage() {
         error: err instanceof Error ? err.message : "Failed to save statement ending balance.",
       }));
     }
-  }, [anchorModal.balance, anchorModal.date, closeAnchorModal, selectedAccount]);
+  }, [anchorModal.accountId, anchorModal.balance, anchorModal.date, closeAnchorModal, refreshAnchors]);
 
   const recordMerchantMemory = useCallback(async (tx: BankTransaction, sheetCategory?: string | null) => {
     try {
@@ -4602,7 +4639,7 @@ export default function ReconcilePage() {
                   label: "Ending balance",
                   icon: <DollarSign className="w-4 h-4" />,
                   title: "Set statement ending balance for the selected account",
-                  onSelect: () => void openAnchorModal(),
+                  onSelect: () => openAnchorModal(selectedAccount),
                 },
                 {
                   key: "reset",
@@ -5157,6 +5194,11 @@ export default function ReconcilePage() {
                 {tabAccounts.map((account) => {
                   const reviewRows = statementReviewRowsByAccount[account] ?? [];
                   const hasParser = accountHasConfiguredParser(account);
+                  // Undefined for an archived account that still has stored
+                  // matches: it is in `tabAccounts` but not in `activeAccounts`,
+                  // so there is no opening balance to run from.
+                  const balance = accountBalances[account];
+                  const anchor = anchorByAccount.get(account);
                   return (
                     <div
                       key={account}
@@ -5179,7 +5221,37 @@ export default function ReconcilePage() {
                           See all transactions
                         </button>
                       </div>
-                      <p className="text-xs text-gray-400 mt-1">
+                      <div className="mt-2 flex items-end justify-between gap-3">
+                        <div className="min-w-0">
+                          {/* Parenthesised negatives and the red, to match the
+                              balances table on the dashboard. */}
+                          <p
+                            className={`text-base font-semibold tabular-nums ${
+                              Number.isFinite(balance) && balance < 0 ? "text-red-400" : "text-gray-100"
+                            }`}
+                          >
+                            {!Number.isFinite(balance)
+                              ? "—"
+                              : balance < 0
+                                ? `(${fmtMoney(Math.abs(balance))})`
+                                : fmtMoney(balance)}
+                          </p>
+                          <p className="text-[11px] text-gray-500 mt-0.5">
+                            {anchor
+                              ? `Confirmed ${fmtDate(anchor.asOfDate)}`
+                              : "From opening balance"}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openAnchorModal(account)}
+                          className="shrink-0 px-2.5 py-1 rounded-md border border-charcoal-dark text-xs text-gray-300 hover:text-white hover:bg-charcoal transition-colors"
+                          title="Correct this balance to what the bank actually says"
+                        >
+                          Set balance
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-2">
                         Unmatched / suggested: {reviewRows.length}
                       </p>
                     </div>
@@ -6609,7 +6681,7 @@ export default function ReconcilePage() {
             </div>
             <div className="p-4 space-y-3">
               <p className="text-sm text-gray-300">
-                Account: <span className="text-white">{labelFor(selectedAccount)}</span>
+                Account: <span className="text-white">{labelFor(anchorModal.accountId)}</span>
               </p>
               {anchorModal.loading ? (
                 <div className="inline-flex items-center gap-2 text-sm text-gray-300">
