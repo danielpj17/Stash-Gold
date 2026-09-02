@@ -101,8 +101,12 @@ type UserInputtedEntry = {
   dateValue: string;
   title: string;
   /**
-   * Display line under the title: amount • category • date, and — only when
-   * this Stash is shared — who entered it. Self-contained.
+   * Display line under the title: amount • category • account • date, and —
+   * only when this Stash is shared — who entered it. Self-contained.
+   *
+   * The account is what tells you which balance the row moves, which is
+   * otherwise invisible everywhere except the Matched section. Transfers name
+   * both their accounts in `title` instead, so only expenses carry it here.
    *
    * This is the one place in the app a person's name is shown. It is also part
    * of the search haystack in homeFilteredIncompleteRows / homeFilteredMatchedRows,
@@ -113,7 +117,11 @@ type UserInputtedEntry = {
   isCompleted: boolean;
   /** Sheet "account" column for expense rows; used by home account filter. */
   expenseAccount?: string;
-  /** `labelFor(expenseAccount)` — the account is searchable but not displayed. */
+  /**
+   * `labelFor(expenseAccount)`. Also embedded in `subtitle`, so this field now
+   * exists for the account filter's sake and to keep the search haystack
+   * explicit rather than depending on the subtitle's formatting.
+   */
   accountLabel?: string;
   /** Raw category/description, unlike `title`/`subtitle` which are display strings. */
   expenseType?: string;
@@ -1614,6 +1622,11 @@ export default function ReconcilePage() {
       const tiedByExactMatch = Boolean(rowId && expenseRowIdsLinkedByExactMatch.has(rowId));
       const autoCompleted = autoCompletedExpenseSignatures.has(buildSheetExpenseSignatureFromRow(row));
       const userDismissed = userDismissedRowKeys.has(key);
+      const accountId = row.account?.trim() || undefined;
+      // Rows predating accounts, and rows whose account was hard-deleted before
+      // deletion became soft, have nothing to name — omit the segment rather
+      // than printing a placeholder. `labelFor` never yields a raw UUID.
+      const accountLabel = accountId ? labelFor(accountId) : undefined;
       return {
         id: key,
         source: "Expenses",
@@ -1621,11 +1634,12 @@ export default function ReconcilePage() {
         title: row.description || row.expenseType || "Expense row",
         subtitle:
           `${fmtMoney(Number(row.amount ?? 0))} • ${row.expenseType?.trim() || "Uncategorized"}` +
+          `${accountLabel ? ` • ${accountLabel}` : ""}` +
           ` • ${fmtDate(dateValue)}${enteredBySuffix(row.enteredByName)}`,
         amount: Number(row.amount ?? 0),
         isCompleted: claimed || tiedByExactMatch || autoCompleted || userDismissed,
-        expenseAccount: row.account?.trim() || undefined,
-        accountLabel: row.account?.trim() ? labelFor(row.account) : undefined,
+        expenseAccount: accountId,
+        accountLabel,
         expenseType: row.expenseType || undefined,
         description: row.description || undefined,
       };
@@ -5490,6 +5504,12 @@ export default function ReconcilePage() {
                                       match.matchedSheetExpense.timestamp ?? match.matchedSheetExpense.date,
                                     )}{" "}
                                     • {fmtMoney(match.matchedSheetExpense.amount)}
+                                    {/* Worth showing even inside an account tab: this is the
+                                        logged row's account, which can disagree with the
+                                        statement it matched. */}
+                                    {match.matchedSheetExpense.account
+                                      ? ` • ${labelFor(match.matchedSheetExpense.account)}`
+                                      : ""}
                                   </p>
                                 </>
                               ) : match.matchedSheetTransfer ? (
