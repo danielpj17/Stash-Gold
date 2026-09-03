@@ -966,6 +966,19 @@ The page header uses the same component for its page-level actions, so the two
 read as one control family. It passes no `busy` — every header action just opens
 a modal.
 
+### `handleQuickAddSubmit()`
+
+Creates a logged expense straight from an unmatched bank line, then claims it.
+
+**The new expense takes `tx.accountName`, never `selectedAccount`.** Quick Add is
+reachable from the All view, where `selectedAccount` is the literal string
+`"All"` — and `insertTransaction` stores the account it is handed without
+checking it against `financial_accounts`, so the expense landed on an account
+that does not exist: it moved no balance and rendered as "All", since `labelFor`
+passes non-UUIDs through untouched rather than showing "Unknown account". Quick
+Add always starts from a bank line, so `tx.accountName` is always present and is
+by definition the account the money moved in.
+
 ### `recordMerchantMemory(match, userEntry?)`
 
 - Computes fingerprint from bank transaction description + amount
@@ -1091,6 +1104,25 @@ This was used to recover WF Checking (92 claims + 101 processed, 0 ambiguous map
 - **One expense row per claim.** `UNIQUE(user_id, sheet_name, sheet_row_id)` on `reconciliation_claim_links`. Attempting to link the same logged row to two bank hashes returns 409.
 
 - **`findMatches` requires `processedHashes` from the caller.** It used to fall back to reading `processed_transactions` itself; that read was not user-scoped, so it could have marked one user's bank rows processed using another's hashes. The fallback is deleted and the option is required — never reintroduce a database read inside `reconciliationService`.
+
+- **`tabAccounts` merges two independently-loaded sources, so it must depend on
+  both.** It is `activeAccounts` (from `AccountsContext`, which waits on the
+  session) plus any account id still holding stored matches. Its memo listed only
+  `matchesByAccount`, so whichever fetch finished *last* decided the list: when
+  `/api/accounts` lost that race the memo kept its empty snapshot and Statement
+  Accounts showed only accounts with cached matches, until something else moved
+  `matchesByAccount`. Symptom: "some of my accounts are missing until I refresh".
+
+  The `if (neonStateLoading || accountsLoading)` gate does **not** protect
+  against this — hooks run before an early return, so the memo still computes
+  and caches during the loading renders.
+
+  **There is no ESLint config checked in**, so `react-hooks/exhaustive-deps`
+  never runs in CI or `next lint`. To sweep for more of these:
+
+  ```bash
+  npx eslint --no-eslintrc     -c <(echo '{"parser":"@typescript-eslint/parser","parserOptions":{"ecmaFeatures":{"jsx":true}},"plugins":["react-hooks"],"rules":{"react-hooks/exhaustive-deps":"warn"}}')     --ext .tsx,.ts app contexts components
+  ```
 
 - **`idForTx()` must key on the raw account id, never `labelFor()`.** It is the universal client-side row key: React keys, modal targets, dismissal notes, bulk selection. Keying on the display name would silently detach all of that the moment someone renames an account.
 

@@ -1277,6 +1277,11 @@ export default function ReconcilePage() {
         );
       }
     },
+    // refreshBankHashesWithNeonClaim is deliberately absent: it is declared
+    // below, so naming it here is a TDZ error (the dep array is evaluated at
+    // render time, unlike the call in the body). It is a []-dep useCallback, so
+    // its identity never changes and there is nothing to go stale.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -1485,7 +1490,12 @@ export default function ReconcilePage() {
       if (!merged.includes(account)) merged.push(account);
     }
     return merged;
-  }, [matchesByAccount]);
+    // activeAccounts is load-bearing here and was missing: without it the memo
+    // only recomputed when matchesByAccount changed, so whichever of the two
+    // fetches finished LAST decided the list. When /api/accounts lost that race
+    // — common, since it waits on the session — this kept the empty snapshot and
+    // the panel showed only accounts that happened to have cached matches.
+  }, [activeAccounts, matchesByAccount]);
 
 
   /**
@@ -3857,7 +3867,15 @@ export default function ReconcilePage() {
         amount: amountNum,
         description,
         date: tx.date,
-        account: selectedAccount || undefined,
+        // The bank line's own account, not `selectedAccount`. Quick Add is
+        // reachable from the All view, where `selectedAccount` is the literal
+        // "All" — and insertTransaction stores whatever it is given without
+        // checking it against financial_accounts, so the expense landed on an
+        // account that does not exist, moved no balance, and rendered as "All"
+        // (labelFor passes non-UUIDs through untouched). Quick Add always starts
+        // from a bank line, so tx.accountName is both always present and
+        // definitionally the account the money moved in.
+        account: tx.accountName || undefined,
       });
       setSheetExpenses((prev) => [...prev, createdRow]);
 
