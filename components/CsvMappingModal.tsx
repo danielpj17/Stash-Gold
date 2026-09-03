@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import type { FinancialAccount, StoredCsvProfile } from "@/lib/accounts";
+import { normalizedFlowDirection } from "@/lib/flowDirection";
 
 type ColumnRole = "ignore" | "date" | "amount" | "description" | "debit" | "credit";
 
@@ -34,8 +35,8 @@ const ROLE_OPTIONS: Array<{ value: ColumnRole; label: string }> = [
   { value: "date", label: "Date" },
   { value: "amount", label: "Amount" },
   { value: "description", label: "Description" },
-  { value: "debit", label: "Debit / money out" },
-  { value: "credit", label: "Credit / money in" },
+  { value: "debit", label: "Money out (debit)" },
+  { value: "credit", label: "Money in (credit)" },
 ];
 
 function roleForColumn(profile: DraftProfile, index: number): ColumnRole {
@@ -104,8 +105,14 @@ export default function CsvMappingModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // Responses can land out of order when two dropdowns change quickly. Only the
+  // newest request may write to state, or a slower earlier one leaves a preview
+  // that does not match the mapping on screen.
+  const previewSeq = useRef(0);
+
   const fetchPreview = useCallback(
     async (draft: DraftProfile | null) => {
+      const seq = ++previewSeq.current;
       try {
         const res = await fetch(`/api/accounts/${account.id}/csv-preview`, {
           method: "POST",
@@ -114,10 +121,12 @@ export default function CsvMappingModal({
         });
         const body = (await res.json()) as PreviewResponse & { error?: string };
         if (!res.ok) throw new Error(body?.error ?? `Preview failed (${res.status})`);
+        if (seq !== previewSeq.current) return body;
         setData(body);
         setError("");
         return body;
       } catch (err) {
+        if (seq !== previewSeq.current) return null;
         setError(err instanceof Error ? err.message : "Couldn't read that file");
         return null;
       }
@@ -157,11 +166,33 @@ export default function CsvMappingModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * Only these six fields reach the parser — `/csv-preview` builds its
+   * `BankProfile` from the five column indexes plus `deriveDateFromDescription`
+   * and reads nothing else. Keying the effect on the whole profile object meant
+   * ticking `outflowIsPositive` fired a round-trip that returned byte-identical
+   * data; that flag changes how an amount is *read*, never how it is parsed, so
+   * it is handled at render time instead.
+   */
+  const parseKey = profile
+    ? [
+        profile.dateIndex,
+        profile.amountIndex,
+        profile.descriptionIndex,
+        profile.debitIndex,
+        profile.creditIndex,
+        profile.deriveDateFromDescription,
+      ].join("|")
+    : "";
+
   // Re-preview whenever the mapping changes so the sample below is always live.
   useEffect(() => {
     if (!profile) return;
     void fetchPreview(profile);
-  }, [profile, fetchPreview]);
+    // profile is intentionally read but not depended on — parseKey is the part
+    // of it the preview actually reflects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parseKey, fetchPreview]);
 
   const isUsable = useMemo(() => {
     if (!profile) return false;
@@ -284,7 +315,8 @@ export default function CsvMappingModal({
                 <span>
                   Purchases show as <strong>positive</strong> numbers
                   <span className="block text-xs text-gray-500">
-                    Usual for credit cards. Checking accounts normally show purchases as negative.
+                    Find a purchase in the rows above. If it reads 12.00, tick this. If it reads
+                    -12.00, leave it off. Credit card files usually write it positive.
                   </span>
                 </span>
               </label>
@@ -324,8 +356,8 @@ export default function CsvMappingModal({
               </div>
               {!isUsable ? (
                 <p className="p-3 text-sm text-yellow-300/90">
-                  Pick a Date column, a Description column, and either an Amount column or both a
-                  Debit and a Credit column.
+                  Pick a Date column, a Description column, and either an Amount column, or both a
+                  Money out and a Money in column.
                 </p>
               ) : (data?.preview.length ?? 0) === 0 ? (
                 <p className="p-3 text-sm text-yellow-300/90">
@@ -341,19 +373,35 @@ export default function CsvMappingModal({
                     </tr>
                   </thead>
                   <tbody>
-                    {(data?.preview ?? []).map((row, i) => (
-                      <tr key={i} className={i % 2 ? "bg-[#2C2C2C]" : ""}>
-                        <td className="px-3 py-1.5 text-gray-300 whitespace-nowrap">{row.date}</td>
-                        <td className="px-3 py-1.5 text-gray-300">{row.description}</td>
-                        <td
-                          className={`px-3 py-1.5 text-right whitespace-nowrap ${
-                            row.amount < 0 ? "text-red-400" : "text-[#50C878]"
-                          }`}
-                        >
-                          {fmtMoney(row.amount)}
-                        </td>
-                      </tr>
-                    ))}
+                    {(data?.preview ?? []).map((row, i) => {
+                      /**
+                       * Red = this cost you money, green = money came in — on
+                       * every account, which is not the same as the sign.
+                       *
+                       * A card purchase parses POSITIVE (its file writes charges
+                       * that way, which is what the checkbox above declares), so
+                       * a bare `amount < 0` painted a burger green as if it were
+                       * income. Reading the direction instead makes the burger
+                       * red on checking and on the card, and makes the checkbox
+                       * visibly do something: it recolours every row on tick,
+                       * with no refetch, because it changes no parsed value.
+                       */
+                      const outward =
+                        normalizedFlowDirection(row.amount, profile.outflowIsPositive) < 0;
+                      return (
+                        <tr key={i} className={i % 2 ? "bg-[#2C2C2C]" : ""}>
+                          <td className="px-3 py-1.5 text-gray-300 whitespace-nowrap">{row.date}</td>
+                          <td className="px-3 py-1.5 text-gray-300">{row.description}</td>
+                          <td
+                            className={`px-3 py-1.5 text-right whitespace-nowrap ${
+                              outward ? "text-red-400" : "text-[#50C878]"
+                            }`}
+                          >
+                            {fmtMoney(row.amount)}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}

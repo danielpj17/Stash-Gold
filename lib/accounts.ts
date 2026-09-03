@@ -175,7 +175,7 @@ export async function getDefaultAccountId(sql: Sql, userId: string): Promise<str
  * Anything comparing amounts ACROSS accounts needs this. A checking export
  * writes an outflow as negative while a credit-card export writes a payment
  * received as negative, so a raw sign only means something within one account.
- * Pair it with `normalizedFlowDirection` from the reconciliation service.
+ * Pair it with `normalizedFlowDirection` from `lib/flowDirection.ts`.
  *
  * Deliberately loads every account in one query rather than per id: the callers
  * compare a new leg against an unknown number of stored ones, and a lookup per

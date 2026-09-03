@@ -213,6 +213,19 @@ The preview runs server-side because `reconciliationService` imports
 `node:crypto` and cannot run in the browser. Previewing through a
 reimplementation would defeat the purpose of previewing at all.
 
+**The preview refetches only when the mapping changes**, keyed on the five column
+indexes plus `deriveDateFromDescription` — the six fields `/csv-preview` actually
+builds its `BankProfile` from. `outflowIsPositive` changes how an amount is
+*read*, never how it is parsed, so it is applied at render time: ticking it
+recolours the preview instantly with no round-trip. Keying the effect on the
+whole profile object meant that tick fired a request returning byte-identical
+data, which is why the checkbox looked inert.
+
+**The preview's amount colour follows `normalizedFlowDirection`, not the sign.**
+Red means the line cost the user money on *any* account. A card purchase parses
+positive, so the old `amount < 0` test painted spending green as though it were
+income.
+
 Two profile flags replace what used to be hardcoded per bank:
 
 - **`outflow_is_positive`** — credit cards and debit/credit-column exports parse
@@ -518,11 +531,16 @@ negative, so on a card a *payment received* lands negative — the same sign as 
 checking outflow. Comparing raw signs therefore rejected the genuine second leg
 of every card payment with "must be opposite sign".
 
-`normalizedFlowDirection(amount, outflowIsPositive)` in
-`services/reconciliationService.ts` folds the account's convention away: `-1` =
-money left this account, `+1` = money entered it. **Anything comparing two legs
-must compare this.** The parsed sign itself is never normalized — that would
-change hashes and orphan every claim keyed to them.
+`normalizedFlowDirection(amount, outflowIsPositive)` folds the account's
+convention away: `-1` = money left this account, `+1` = money entered it.
+**Anything comparing two legs, or deciding whether a line cost the user money,
+must use this.** The parsed sign itself is never normalized — that would change
+hashes and orphan every claim keyed to them.
+
+It lives in **`lib/flowDirection.ts`**, not the service, because
+`CsvMappingModal` is a client component and `reconciliationService` imports
+`node:crypto` — the same split as `lib/merchantFingerprint.ts`. The service
+re-exports it, so the API routes import it from there unchanged.
 
 Conventions come from `getOutflowIsPositiveByAccount(sql, userId)` in
 `lib/accounts.ts`, one query for all accounts because the comparison spans an

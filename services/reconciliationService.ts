@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { generateMerchantFingerprint } from "@/lib/merchantFingerprint";
+import { normalizedFlowDirection } from "@/lib/flowDirection";
 
-export { generateMerchantFingerprint };
+export { generateMerchantFingerprint, normalizedFlowDirection };
 
 /**
  * How to read one bank's CSV. Previously a hardcoded per-bank constant; now
@@ -569,27 +570,6 @@ export function mergeCsvRowsByIdentity(
     rows: Array.from(byKey.values()),
     keys: Array.from(byKey.keys()),
   };
-}
-
-/**
- * Which way money moved, normalized across the two CSV sign conventions.
- * `-1` = money left this account, `+1` = money entered it.
- *
- * **A raw sign means nothing across accounts.** A checking export writes an
- * outflow as negative; a credit-card export with debit/credit columns writes a
- * *payment received* as negative too (the credit column parses negative, and
- * `outflow_is_positive` says a charge is the positive one). So paying a card
- * from checking produces two NEGATIVE legs for what is obviously one transfer
- * out of one account and into another.
- *
- * Anything comparing two legs of a transfer must compare this, never the sign.
- * The parsed sign itself is never normalized — that would change hashes and
- * orphan every claim keyed to them.
- */
-export function normalizedFlowDirection(amount: number, outflowIsPositive: boolean): 1 | -1 {
-  const raw: 1 | -1 = amount < 0 ? -1 : 1;
-  if (!outflowIsPositive) return raw;
-  return raw === 1 ? -1 : 1;
 }
 
 /**
