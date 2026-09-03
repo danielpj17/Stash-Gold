@@ -170,6 +170,37 @@ export async function getDefaultAccountId(sql: Sql, userId: string): Promise<str
 }
 
 /**
+ * `outflow_is_positive` for every account, keyed by account id.
+ *
+ * Anything comparing amounts ACROSS accounts needs this. A checking export
+ * writes an outflow as negative while a credit-card export writes a payment
+ * received as negative, so a raw sign only means something within one account.
+ * Pair it with `normalizedFlowDirection` from the reconciliation service.
+ *
+ * Deliberately loads every account in one query rather than per id: the callers
+ * compare a new leg against an unknown number of stored ones, and a lookup per
+ * leg would be a query per leg.
+ */
+export async function getOutflowIsPositiveByAccount(
+  sql: Sql,
+  userId: string,
+): Promise<Record<string, boolean>> {
+  const rows = (await sql`
+    SELECT a.id, p.outflow_is_positive
+    FROM financial_accounts a
+    LEFT JOIN account_csv_profiles p
+      ON p.user_id = a.user_id AND p.account_id = a.id
+    WHERE a.user_id = ${userId}
+  `) as Array<{ id: string; outflow_is_positive: boolean | null }>;
+
+  const byId: Record<string, boolean> = {};
+  for (const row of rows) {
+    byId[String(row.id)] = row.outflow_is_positive === true;
+  }
+  return byId;
+}
+
+/**
  * Load the parsing profile for one account. Routes that parse CSV call this
  * instead of consulting a hardcoded bank table.
  */

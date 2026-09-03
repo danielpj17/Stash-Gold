@@ -59,6 +59,17 @@ type TransferClaimStatus = {
   isComplete: boolean;
   hasPositive: boolean;
   hasNegative: boolean;
+  /**
+   * The same information as hasPositive/hasNegative, but in FLOW direction
+   * rather than raw parsed sign — see `normalizedFlowDirection`. Only these two
+   * are safe to compare across accounts.
+   *
+   * Optional because a status object built before this existed (a cached
+   * response, an older caller) carries neither; callers fall back to the raw
+   * flags, which are correct whenever both accounts share a convention.
+   */
+  hasOutflow?: boolean;
+  hasInflow?: boolean;
 };
 
 export type MatchType =
@@ -561,6 +572,27 @@ export function mergeCsvRowsByIdentity(
 }
 
 /**
+ * Which way money moved, normalized across the two CSV sign conventions.
+ * `-1` = money left this account, `+1` = money entered it.
+ *
+ * **A raw sign means nothing across accounts.** A checking export writes an
+ * outflow as negative; a credit-card export with debit/credit columns writes a
+ * *payment received* as negative too (the credit column parses negative, and
+ * `outflow_is_positive` says a charge is the positive one). So paying a card
+ * from checking produces two NEGATIVE legs for what is obviously one transfer
+ * out of one account and into another.
+ *
+ * Anything comparing two legs of a transfer must compare this, never the sign.
+ * The parsed sign itself is never normalized — that would change hashes and
+ * orphan every claim keyed to them.
+ */
+export function normalizedFlowDirection(amount: number, outflowIsPositive: boolean): 1 | -1 {
+  const raw: 1 | -1 = amount < 0 ? -1 : 1;
+  if (!outflowIsPositive) return raw;
+  return raw === 1 ? -1 : 1;
+}
+
+/**
  * Key for one bank-line/logged-entry pair, shared by the matcher, the API routes
  * and the client so all three agree on what "this exact pair" means.
  */
@@ -725,10 +757,24 @@ export async function findMatches(
         const claimStatus = transferRowId ? transferClaimStatusByRowId[transferRowId] : undefined;
         if (claimStatus?.isComplete) return null;
 
-        const txSign = cents(tx.amount) >= 0 ? 1 : -1;
+        // The other leg must be the opposite DIRECTION, which is not the same as
+        // the opposite sign once a credit card is involved — see
+        // normalizedFlowDirection. Fall back to raw signs only when the caller
+        // supplied no direction flags (correct whenever both accounts share a
+        // convention, which is what the old comparison silently assumed).
         if (claimStatus && claimStatus.expectedLegs === 2) {
-          const hasSameSignClaim = txSign > 0 ? claimStatus.hasPositive : claimStatus.hasNegative;
-          if (hasSameSignClaim) return null;
+          const hasDirections =
+            claimStatus.hasOutflow !== undefined || claimStatus.hasInflow !== undefined;
+          if (hasDirections) {
+            const txDirection = normalizedFlowDirection(tx.amount, options?.outgoingIsPositive === true);
+            const hasSameDirectionClaim =
+              txDirection > 0 ? claimStatus.hasInflow === true : claimStatus.hasOutflow === true;
+            if (hasSameDirectionClaim) return null;
+          } else {
+            const txSign = cents(tx.amount) >= 0 ? 1 : -1;
+            const hasSameSignClaim = txSign > 0 ? claimStatus.hasPositive : claimStatus.hasNegative;
+            if (hasSameSignClaim) return null;
+          }
         }
 
         const transferDate = sheetTransfer.date ?? sheetTransfer.timestamp ?? "";

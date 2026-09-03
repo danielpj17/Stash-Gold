@@ -497,10 +497,42 @@ bulkError: string               // error message after partial failure
 ### `POST /api/reconciliation/transfer-claims`
 
 - **In:** `{ transferRowId, expectedLegs: 1|2, bankTransaction: { hash, accountName, amount } }`
-- Validates: new leg must have opposite sign if 2-leg transfer; returns 409 if complete
+- Validates: on a 2-leg transfer the new leg must be the opposite **flow
+  direction** (not the opposite sign — see below); returns 409 if complete
 - Inserts the `processed_transactions` row itself, so a leg claim needs no
   separate `/processed` POST
 - Idempotent per `bank_hash` — re-claiming the same leg returns `alreadyClaimed`
+
+#### A raw sign means nothing across accounts
+
+Two legs of a transfer are opposite in **direction**, not necessarily in parsed
+sign. Paying a credit card from checking produces **two negative legs**:
+
+| Leg | Account | `outflow_is_positive` | Parsed | Direction |
+|---|---|---|---|---|
+| 1 | WF Checking | `false` | `-364.23` | OUT |
+| 2 | CapitalOne Credit | `true` | `-364.23` (credit column) | IN |
+
+`mapBankRowToTransaction` writes the debit column positive and the credit column
+negative, so on a card a *payment received* lands negative — the same sign as the
+checking outflow. Comparing raw signs therefore rejected the genuine second leg
+of every card payment with "must be opposite sign".
+
+`normalizedFlowDirection(amount, outflowIsPositive)` in
+`services/reconciliationService.ts` folds the account's convention away: `-1` =
+money left this account, `+1` = money entered it. **Anything comparing two legs
+must compare this.** The parsed sign itself is never normalized — that would
+change hashes and orphan every claim keyed to them.
+
+Conventions come from `getOutflowIsPositiveByAccount(sql, userId)` in
+`lib/accounts.ts`, one query for all accounts because the comparison spans an
+unknown number of stored legs.
+
+The GET's `statusByRowId` therefore publishes `hasOutflow` / `hasInflow`
+alongside the legacy `hasPositive` / `hasNegative`; only the first pair is safe
+across accounts. `findMatches` prefers them and falls back to the raw flags when
+absent (correct whenever both accounts share a convention, which is what the old
+comparison silently assumed).
 
 **Transfer legs live in `reconciliation_transfer_claim_links` only. Never also
 POST a `sheetName: "Transfers"` link to `/claims`.** Four handlers used to do
@@ -1031,6 +1063,13 @@ This was used to recover WF Checking (92 claims + 101 processed, 0 ambiguous map
 - **Changing an account's CSV mapping invalidates its match cache.** The mapping determines each row's hash, so cached `MatchResult`s become meaningless. `PATCH /api/accounts/[id]` clears `reconciliation_match_cache` for that account whenever `csvProfile` is supplied.
 
 - **One bank hash per transfer leg.** `UNIQUE(bank_hash)` on `reconciliation_transfer_claim_links`. The same `transfer_sheet_row_id` appears twice (two legs).
+
+- **Never compare bank amount signs across accounts.** A checking outflow and a
+  credit-card payment both parse negative, so "opposite sign" is not "opposite
+  leg". Use `normalizedFlowDirection` with the account's `outflow_is_positive` —
+  see the transfer-claims route above. This bit the leg-2 validator and the
+  matcher's transfer-candidate filter; assume any new sign comparison spanning
+  two accounts is wrong until it goes through that helper.
 
 - **Transfer claim triggers full rematch.** `handleTransferClaimSubmit()` calls `rematchAllStoredAccounts()` which hits `/match` once per account. Expensive with many stored accounts.
 

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isErrorResponse, requireUser } from "@/lib/apiAuth";
-import { getAccount, toBankProfile } from "@/lib/accounts";
+import { getAccount, getOutflowIsPositiveByAccount, toBankProfile } from "@/lib/accounts";
 import type { Sql } from "@/lib/db";
 import {
   findMatches,
   mapBankRowsToTransactions,
+  normalizedFlowDirection,
   rejectedPairKey,
   type MerchantMemoryEntry,
   type SheetExpenseLike,
@@ -145,6 +146,7 @@ async function getClaimedExpenseRowIds(sql: Sql, userId: string): Promise<Set<st
 
 type TransferClaimRow = {
   transfer_sheet_row_id: string;
+  bank_account_name: string | null;
   bank_amount_cents: number;
   expected_legs: number;
 };
@@ -161,15 +163,22 @@ async function getTransferClaimStatusByRowId(
       isComplete: boolean;
       hasPositive: boolean;
       hasNegative: boolean;
+      hasOutflow: boolean;
+      hasInflow: boolean;
     }
   >
 > {
   try {
     const rows = (await sql`
-      SELECT transfer_sheet_row_id, bank_amount_cents, expected_legs
+      SELECT transfer_sheet_row_id, bank_account_name, bank_amount_cents, expected_legs
       FROM reconciliation_transfer_claim_links
       WHERE user_id = ${userId}
     `) as TransferClaimRow[];
+
+    // findMatches compares the incoming line's flow direction against these, so
+    // each stored leg's own account convention has to be folded away here — a
+    // raw sign is only meaningful within one account. See normalizedFlowDirection.
+    const outflowIsPositiveByAccount = await getOutflowIsPositiveByAccount(sql, userId);
 
     const statusByRowId: Record<
       string,
@@ -179,6 +188,8 @@ async function getTransferClaimStatusByRowId(
         isComplete: boolean;
         hasPositive: boolean;
         hasNegative: boolean;
+        hasOutflow: boolean;
+        hasInflow: boolean;
       }
     > = {};
 
@@ -193,6 +204,8 @@ async function getTransferClaimStatusByRowId(
           isComplete: false,
           hasPositive: false,
           hasNegative: false,
+          hasOutflow: false,
+          hasInflow: false,
         };
       }
       statusByRowId[rowId].claimedCount += 1;
@@ -202,6 +215,12 @@ async function getTransferClaimStatusByRowId(
       const amount = Number(row.bank_amount_cents ?? 0);
       if (amount > 0) statusByRowId[rowId].hasPositive = true;
       if (amount < 0) statusByRowId[rowId].hasNegative = true;
+      const direction = normalizedFlowDirection(
+        amount,
+        outflowIsPositiveByAccount[String(row.bank_account_name ?? "")] === true,
+      );
+      if (direction < 0) statusByRowId[rowId].hasOutflow = true;
+      else statusByRowId[rowId].hasInflow = true;
     }
 
     for (const rowId of Object.keys(statusByRowId)) {

@@ -5,6 +5,8 @@ import {
   parseActivityGroupingIds,
   type ActivityActor,
 } from "@/lib/activityLog";
+import { getOutflowIsPositiveByAccount } from "@/lib/accounts";
+import { normalizedFlowDirection } from "@/services/reconciliationService";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,21 +61,44 @@ export async function GET() {
       ORDER BY created_at DESC
     `) as TransferClaimRow[];
 
+    // Flow direction per leg, so consumers can tell which side is still missing
+    // without knowing each account's CSV sign convention. See
+    // normalizedFlowDirection — a raw sign is meaningless across accounts.
+    const outflowIsPositiveByAccount = await getOutflowIsPositiveByAccount(sql, userId);
+
     const statusByRowId: Record<
       string,
-      { claimedCount: number; expectedLegs: number; isComplete: boolean }
+      {
+        claimedCount: number;
+        expectedLegs: number;
+        isComplete: boolean;
+        hasOutflow: boolean;
+        hasInflow: boolean;
+      }
     > = {};
     for (const row of rows) {
       const rowId = String(row.transfer_sheet_row_id ?? "").trim();
       if (!rowId) continue;
       const expectedLegs = Number(row.expected_legs ?? 2) === 1 ? 1 : 2;
       if (!statusByRowId[rowId]) {
-        statusByRowId[rowId] = { claimedCount: 0, expectedLegs, isComplete: false };
+        statusByRowId[rowId] = {
+          claimedCount: 0,
+          expectedLegs,
+          isComplete: false,
+          hasOutflow: false,
+          hasInflow: false,
+        };
       }
       statusByRowId[rowId].claimedCount += 1;
       if (expectedLegs < statusByRowId[rowId].expectedLegs) {
         statusByRowId[rowId].expectedLegs = expectedLegs;
       }
+      const direction = normalizedFlowDirection(
+        Number(row.bank_amount_cents ?? 0),
+        outflowIsPositiveByAccount[String(row.bank_account_name ?? "")] === true,
+      );
+      if (direction < 0) statusByRowId[rowId].hasOutflow = true;
+      else statusByRowId[rowId].hasInflow = true;
       statusByRowId[rowId].isComplete =
         statusByRowId[rowId].claimedCount >= statusByRowId[rowId].expectedLegs;
     }
@@ -167,11 +192,30 @@ export async function POST(request: NextRequest) {
 
     const newAmountCents = toCents(bankAmount);
     if (effectiveExpectedLegs === 2 && existing.length > 0) {
-      const hasPositive = existing.some((row) => Number(row.bank_amount_cents) > 0);
-      const hasNegative = existing.some((row) => Number(row.bank_amount_cents) < 0);
-      if ((newAmountCents > 0 && hasPositive) || (newAmountCents < 0 && hasNegative)) {
+      // Compare FLOW DIRECTION, not raw sign.
+      //
+      // Paying a credit card from checking produces two negative legs: checking
+      // writes the outflow as negative, and the card's credit column writes the
+      // payment received as negative too (its `outflow_is_positive` says a
+      // charge is the positive one). Comparing signs rejected the real second
+      // leg of every card payment. `normalizedFlowDirection` folds each
+      // account's convention away so -1 always means "left this account".
+      const outflowIsPositiveByAccount = await getOutflowIsPositiveByAccount(sql, userId);
+      const directionOf = (amountCents: number, accountId: string | null): 1 | -1 =>
+        normalizedFlowDirection(amountCents, outflowIsPositiveByAccount[String(accountId ?? "")] === true);
+
+      const newDirection = directionOf(newAmountCents, bankAccountName || null);
+      const conflicting = existing.find(
+        (row) => directionOf(Number(row.bank_amount_cents), row.bank_account_name) === newDirection,
+      );
+      if (conflicting) {
         return NextResponse.json(
-          { error: "Second leg must be opposite sign of existing claimed leg." },
+          {
+            error:
+              newDirection < 0
+                ? "Both legs show money leaving an account. The second leg should be the account the money arrived in."
+                : "Both legs show money arriving in an account. The second leg should be the account the money left.",
+          },
           { status: 409 },
         );
       }
