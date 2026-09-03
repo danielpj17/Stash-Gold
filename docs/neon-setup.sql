@@ -347,6 +347,31 @@ CREATE TABLE reconciliation_transfer_claim_links (
   UNIQUE (user_id, bank_hash)
 );
 
+-- The inverse of a claim link: pairs the user explicitly disconnected.
+--
+-- Without this, disconnecting is futile. handleDisconnectSheetLink deletes the
+-- claim and then re-runs matching, and findMatches' first branch pairs on amount
+-- and date alone — so it re-picks the same wrong row and the rematch auto-claims
+-- it again. Recording the rejection is what makes the disconnect stick.
+--
+-- Keyed on the PAIR, never on either side alone: rejecting A->X must still let
+-- A match Y and X match B. That is the whole point when several same-amount
+-- subscriptions land on one date.
+--
+-- Claiming a pair clears its rejection (see the claims and transfer-claims POST
+-- routes), so disconnect stays usable as "redo this link" rather than a one-way
+-- door.
+CREATE TABLE reconciliation_rejected_matches (
+  user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  bank_hash    TEXT NOT NULL,
+  sheet_name   TEXT NOT NULL DEFAULT 'Expenses',
+  sheet_row_id TEXT NOT NULL,
+  account_name TEXT,
+  created_at   TIMESTAMP DEFAULT now(),
+  PRIMARY KEY (user_id, bank_hash, sheet_name, sheet_row_id)
+);
+CREATE INDEX idx_rejected_matches_hash ON reconciliation_rejected_matches(user_id, bank_hash);
+
 -- Bank statement rows the user dismissed (fees, refunds — nothing to log).
 CREATE TABLE reconciliation_statement_dismissals (
   user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

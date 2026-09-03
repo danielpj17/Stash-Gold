@@ -220,6 +220,14 @@ export async function POST(request: NextRequest) {
         VALUES (${userId}::uuid, ${bankHash}, ${bankAccountName || null})
         ON CONFLICT (user_id, hash) DO UPDATE SET account_name = EXCLUDED.account_name
       `,
+      // Claiming a pair clears its rejection — see the note in the claims route.
+      sql`
+        DELETE FROM reconciliation_rejected_matches
+        WHERE user_id = ${userId}
+          AND bank_hash = ${bankHash}
+          AND sheet_name = 'Transfers'
+          AND sheet_row_id = ${transferRowId}
+      `,
       logInsert,
     ]);
 
@@ -322,6 +330,12 @@ export async function DELETE(request: NextRequest) {
       success: true,
       bankHash,
       deleted: existing.length,
+      // See the claims route: the caller turns these into rejected pairs.
+      deletedLinks: existing.map((row) => ({
+        sheetName: "Transfers",
+        sheetRowId: row.transfer_sheet_row_id,
+        accountName: row.bank_account_name ?? null,
+      })),
       actionId,
     });
   } catch (err) {

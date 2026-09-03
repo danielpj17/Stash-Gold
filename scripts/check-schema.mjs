@@ -44,6 +44,7 @@ const USER_SCOPED = [
   "account_anchors",
   "reconciliation_claim_links",
   "reconciliation_transfer_claim_links",
+  "reconciliation_rejected_matches",
   "reconciliation_statement_dismissals",
   "reconciliation_user_sheet_dismissals",
   "reconciliation_csv_rows",
@@ -75,6 +76,7 @@ const EXPECTED_CONSTRAINTS = [
   ["account_anchors", ["user_id", "account_name"]],
   ["reconciliation_claim_links", ["user_id", "sheet_name", "sheet_row_id"]],
   ["reconciliation_transfer_claim_links", ["user_id", "bank_hash"]],
+  ["reconciliation_rejected_matches", ["user_id", "bank_hash", "sheet_name", "sheet_row_id"]],
   ["reconciliation_statement_dismissals", ["user_id", "hash", "account_name"]],
   ["reconciliation_user_sheet_dismissals", ["user_id", "sheet_name", "sheet_row_id"]],
   ["reconciliation_csv_rows", ["user_id", "account_name", "dedupe_key"]],
@@ -89,6 +91,7 @@ const EXPECTED_CONSTRAINTS = [
 
 /** Partial unique indexes, which information_schema.table_constraints omits. */
 const EXPECTED_INDEXES = [
+  ["reconciliation_rejected_matches", "idx_rejected_matches_hash"],
   ["financial_accounts", "idx_financial_accounts_name"],
   ["financial_accounts", "idx_financial_accounts_one_default"],
   ["household_invites", "idx_household_invites_pending"],
@@ -125,8 +128,17 @@ async function main() {
   `;
   const tables = new Set(tableRows.map((r) => r.table_name));
 
+  // Tables added after the initial schema name their migration, matching what
+  // EXPECTED_COLUMNS does — a bare "missing table" leaves the fix to guesswork.
+  const TABLE_MIGRATIONS = {
+    reconciliation_rejected_matches: "003-rejected-matches.sql",
+  };
   for (const t of [...AUTH_TABLES, ...USER_SCOPED, ...OTHER_TABLES]) {
-    if (!tables.has(t)) problems.push(`missing table: ${t}`);
+    if (tables.has(t)) continue;
+    const migration = TABLE_MIGRATIONS[t];
+    problems.push(
+      migration ? `missing table: ${t} — run docs/migrations/${migration}` : `missing table: ${t}`,
+    );
   }
 
   const columnRows = await sql`

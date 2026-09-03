@@ -5,6 +5,7 @@ import type { Sql } from "@/lib/db";
 import {
   findMatches,
   mapBankRowsToTransactions,
+  rejectedPairKey,
   type MerchantMemoryEntry,
   type SheetExpenseLike,
   type SheetTransferLike,
@@ -255,6 +256,33 @@ async function getClaimLinksByBankHashes(
   }
 }
 
+/**
+ * Pairs the user disconnected, for the bank hashes in this request only.
+ *
+ * findMatches must never read these itself — the query would not be user-scoped,
+ * the same rule that governs processedHashes.
+ */
+async function getRejectedPairs(
+  sql: Sql,
+  userId: string,
+  bankHashes: string[],
+): Promise<string[]> {
+  if (bankHashes.length === 0) return [];
+  try {
+    const rows = (await sql`
+      SELECT bank_hash, sheet_name, sheet_row_id
+      FROM reconciliation_rejected_matches
+      WHERE user_id = ${userId} AND bank_hash = ANY(${bankHashes}::text[])
+    `) as Array<{ bank_hash: string; sheet_name: string; sheet_row_id: string }>;
+    return rows.map((row) =>
+      rejectedPairKey(String(row.bank_hash), String(row.sheet_name), String(row.sheet_row_id)),
+    );
+  } catch {
+    // Table missing (database predates migration 003) — match as before.
+    return [];
+  }
+}
+
 export async function POST(request: NextRequest) {
   const ctx = await requireUser();
   if (isErrorResponse(ctx)) return ctx;
@@ -304,6 +332,7 @@ export async function POST(request: NextRequest) {
   const bankHashes = Array.from(new Set(bankTransactions.map((tx) => tx.hash)));
   const claimLinksByHash = await getClaimLinksByBankHashes(sql, userId, bankHashes);
 
+  const rejectedPairs = await getRejectedPairs(sql, userId, bankHashes);
   const claimedExpenseRowIds = await getClaimedExpenseRowIds(sql, userId);
   const transferClaimStatusByRowId = await getTransferClaimStatusByRowId(sql, userId);
   const merchantMemory = await getMerchantMemoryForAccount(sql, userId, accountName);
@@ -404,6 +433,7 @@ export async function POST(request: NextRequest) {
     transferClaimStatusByRowId,
     merchantMemory,
     outgoingIsPositive,
+    rejectedPairs,
   });
   const matches = [...claimedMatches, ...matcherMatches];
   return NextResponse.json({ bankTransactions, matches });

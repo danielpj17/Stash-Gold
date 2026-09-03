@@ -40,6 +40,7 @@ Reconciliation produces a claim: a persistent link between a bank transaction ha
 | `app/api/reconciliation/memory/route.ts` | Merchant memory CRUD (GET all, POST upsert/increment, DELETE) |
 | `app/api/reconciliation/activity/route.ts` | Activity log fetch with `?since=` filter |
 | `app/api/reconciliation/activity/[id]/undo/route.ts` | Per-action undo |
+| `app/api/reconciliation/rejected-matches/route.ts` | Pairs the user disconnected; consulted by every candidate path in `findMatches` |
 | `app/api/reconciliation/reset/route.ts` | Wipe all reconciliation state from Neon |
 
 ---
@@ -562,6 +563,33 @@ bulkError: string               // error message after partial failure
   - Deletes the file record
   - Returns `{ clearedHashes: string[], removedRowCount: number, rows: string[][] }` (`rows` = the account's remaining stored CSV rows)
 
+### `GET|POST|DELETE /api/reconciliation/rejected-matches`
+
+The inverse of a claim link: pairs the user explicitly disconnected.
+
+- GET: `{ rejections: Array<{ bankHash, sheetName, sheetRowId, accountName }> }`
+- POST: `{ pairs: [...] }` (or one pair inline) — upserts. Disconnect removes every
+  link on a bank hash at once, so it posts a batch
+- DELETE: `{ bankHash, sheetName?, sheetRowId? }` — with `sheetRowId`, clears that
+  one pair; with only `bankHash`, clears every rejection on that bank line
+- **Read path is `/match`, not this route.** `getRejectedPairs()` loads only the
+  hashes in the request and passes them to `findMatches` as `rejectedPairs`
+
+**Why it exists.** Disconnect deletes the claim and then calls
+`rematchAllStoredAccounts()`, which re-matches and auto-claims. `findMatches`'
+first branch pairs on amount+date alone, so it re-picked the same wrong row and
+the disconnect was undone by its own last step. See "Rejected matches" in the
+root CLAUDE.md for the design rules — especially that the key is the *pair*.
+
+**`findMatches` consults it in four places**, not one: the exact amount+date
+branch, the merchant-memory branch, the transfer-candidate filter, and the
+amount-first scored branch. It is strictly a candidate filter — no hash, score
+or threshold changes, so a rejected pair simply falls through to whatever the
+bank line would have matched had that entry not existed.
+
+**Claiming a pair clears its rejection**, done inside the `/claims` and
+`/transfer-claims` POST transactions so no call site can forget it.
+
 ### `POST /api/reconciliation/reset`
 
 - Truncates all reconciliation tables (used from reset modal)
@@ -772,6 +800,20 @@ Used by `rematchAllStoredAccounts()` — survives re-renders without triggering 
 7. POST `/match-cache` to Neon (CSV rows were already persisted by the merge in step 1 — no separate `/csv-rows` save)
 8. `setProcessedHashes`, `setBankHashesWithNeonClaim`, and `setClaimedRowKeys` updated with auto-approved hashes / claimed rows
 9. POST `/uploaded-files` with file name **and `bankHashes`** — derived from the merge's `incomingKeys` (this file's rows only, `id:` keys with the prefix stripped), so the file can later be selectively cleared without touching other statements
+
+### `handleDisconnectSheetLink(match)`
+
+1. Confirms, then DELETEs `/claims`, `/transfer-claims` and `/processed` for the
+   bank hash
+2. **Records the unlinked pairs to `/rejected-matches`** — from the DELETE
+   responses' `deletedLinks`, not from the client's render state, which can be
+   stale or hold a match restored from a claim link
+3. Then re-reads claims/transfer-claims and calls `rematchAllStoredAccounts()`
+
+**Order is load-bearing.** The rejection must be recorded *before* the rematch:
+the rematch auto-claims whatever `findMatches` returns, and without the rejection
+it re-picks the row just detached. A failure to record throws rather than falling
+through silently — a silent no-op here is precisely the bug this fixed.
 
 ### `handleRematchFromSheet()`
 

@@ -561,6 +561,14 @@ export function mergeCsvRowsByIdentity(
 }
 
 /**
+ * Key for one bank-line/logged-entry pair, shared by the matcher, the API routes
+ * and the client so all three agree on what "this exact pair" means.
+ */
+export function rejectedPairKey(bankHash: string, sheetName: string, sheetRowId: string): string {
+  return `${bankHash}|${sheetName}|${sheetRowId}`;
+}
+
+/**
  * Match bank transactions against processed hashes, existing sheet rows, and transfer pairs.
  *
  * Priority:
@@ -592,9 +600,27 @@ export async function findMatches(
      * unmatched bucket; does not affect matching (which is amount-abs based).
      */
     outgoingIsPositive?: boolean;
+    /**
+     * Pairs the user has explicitly disconnected, as `rejectedPairKey(...)`
+     * strings. Supplied by the caller for the same reason as processedHashes: a
+     * read here would not be user-scoped.
+     *
+     * This is strictly a CANDIDATE FILTER. It removes a pair from consideration
+     * before any scoring happens and changes no hash, no score, and no
+     * threshold — a bank line with a rejected pair falls through to whatever it
+     * would have matched had that entry not existed. Without it, Disconnect
+     * cannot stick: the caller re-runs matching immediately afterwards and the
+     * amount+date branch re-picks the same row.
+     */
+    rejectedPairs?: Iterable<string>;
   },
 ): Promise<MatchResult[]> {
   const processedHashes = new Set(options.processedHashes);
+  const rejectedPairs = new Set(options.rejectedPairs ?? []);
+  const isRejected = (tx: BankTransaction, sheetName: string, sheetRowId: string): boolean =>
+    rejectedPairs.size > 0 &&
+    sheetRowId !== "" &&
+    rejectedPairs.has(rejectedPairKey(tx.hash, sheetName, sheetRowId));
   const exactSheetIndex = toIndexedMap(sheetExpenses);
   const amountIndex = toAmountOnlyIndex(sheetExpenses);
   const clusterSet = buildClusterSet(bankTransactions);
@@ -623,6 +649,7 @@ export async function findMatches(
     const exactKey = `${amountKey(tx.amount)}|${txDate}`;
     const exactSheet = (exactSheetIndex.get(exactKey) ?? []).find((row) => {
       const rowId = String(row.rowId ?? "").trim();
+      if (isRejected(tx, "Expenses", rowId)) return false;
       return !rowId || !consumedRowIds.has(rowId);
     });
     const exactSheetIndexValue = exactSheet
@@ -669,6 +696,7 @@ export async function findMatches(
         });
         const pick = sortedCandidates.find((row) => {
           const rowId = String(row.rowId ?? "").trim();
+          if (isRejected(tx, "Expenses", rowId)) return false;
           return !rowId || !consumedRowIds.has(rowId);
         });
         if (pick) {
@@ -693,6 +721,7 @@ export async function findMatches(
       .map((sheetTransfer, index) => {
         if (amountKey(sheetTransfer.amount) !== amountKey(tx.amount)) return null;
         const transferRowId = String(sheetTransfer.transferRowId ?? "").trim();
+        if (isRejected(tx, "Transfers", transferRowId)) return null;
         const claimStatus = transferRowId ? transferClaimStatusByRowId[transferRowId] : undefined;
         if (claimStatus?.isComplete) return null;
 
@@ -764,7 +793,9 @@ export async function findMatches(
     }
 
     // --- Amount-first expense matching ---
-    const amountCandidateRows = amountIndex.get(amountKey(tx.amount)) ?? [];
+    const amountCandidateRows = (amountIndex.get(amountKey(tx.amount)) ?? []).filter(
+      (sheetRow) => !isRejected(tx, "Expenses", String(sheetRow.rowId ?? "").trim()),
+    );
     const scoredCandidates = amountCandidateRows
       .map((sheetRow, _i) => {
         const rowId = String(sheetRow.rowId ?? "").trim();

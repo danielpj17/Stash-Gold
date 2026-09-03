@@ -3291,7 +3291,7 @@ export default function ReconcilePage() {
     async (match: MatchResult) => {
       if (typeof window !== "undefined") {
         const ok = window.confirm(
-          "Remove the Neon link between this bank line and the sheet row, unmark it processed, and put it back in review? You can link again with Claim or the checkmark.",
+          "Remove the link between this bank line and the entry it matched, unmark it processed, and put it back in review?\n\nThis pair will stop auto-matching to each other, so the line is free to match something else. Claiming them together again re-enables it.",
         );
         if (!ok) return;
       }
@@ -3332,6 +3332,53 @@ export default function ReconcilePage() {
         if (!transferDel.ok) {
           const err = await transferDel.json().catch(() => ({ error: transferDel.statusText }));
           throw new Error(err.error || `Could not remove transfer claim (${transferDel.status})`);
+        }
+
+        // Record the pairs just unlinked so they stop matching each other.
+        //
+        // This has to land BEFORE rematchAllStoredAccounts() below. That rematch
+        // re-runs findMatches and auto-claims whatever comes back, and the
+        // amount+date branch would otherwise re-pick the row we just detached —
+        // which is exactly why Disconnect used to appear to do nothing.
+        //
+        // The pairs come from the DELETE responses rather than from `match`: the
+        // server reports what it actually removed, including links this render
+        // never knew about.
+        type DeletedLink = { sheetName?: string; sheetRowId?: string; accountName?: string | null };
+        const rejectPairs: Array<{
+          bankHash: string;
+          sheetName: string;
+          sheetRowId: string;
+          accountName: string;
+        }> = [];
+        for (const res of [claimsDel, transferDel]) {
+          const data = (await res.json().catch(() => ({}))) as { deletedLinks?: DeletedLink[] };
+          for (const link of data.deletedLinks ?? []) {
+            const sheetRowId = String(link.sheetRowId ?? "").trim();
+            if (!sheetRowId) continue;
+            rejectPairs.push({
+              bankHash: tx.hash,
+              sheetName: String(link.sheetName ?? "Expenses").trim() || "Expenses",
+              sheetRowId,
+              accountName: String(link.accountName ?? tx.accountName ?? ""),
+            });
+          }
+        }
+        if (rejectPairs.length > 0) {
+          const rejectRes = await fetch("/api/reconciliation/rejected-matches", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pairs: rejectPairs }),
+          });
+          if (!rejectRes.ok) {
+            // Surface it: without the rejection the rematch below simply undoes
+            // this disconnect, and silently doing nothing is the original bug.
+            const err = await rejectRes.json().catch(() => ({ error: rejectRes.statusText }));
+            throw new Error(
+              err.error ||
+                `Unlinked, but could not record it (${rejectRes.status}) — it may re-match.`,
+            );
+          }
         }
 
         setProcessedHashes((prev) => {

@@ -195,6 +195,22 @@ export async function POST(request: NextRequest) {
         VALUES (${userId}::uuid, ${bankHash}, ${accountName || null})
         ON CONFLICT (user_id, hash) DO UPDATE SET account_name = EXCLUDED.account_name
       `,
+      // Claiming a pair clears any rejection on it, so Disconnect stays "redo
+      // this link" rather than a one-way door. It lives here rather than at the
+      // call sites because four different flows create claims and one of them
+      // would eventually be missed. Auto-matching can never reach a rejected
+      // pair (findMatches filters them out), so anything arriving here is the
+      // user deliberately overriding an earlier disconnect.
+      sql`
+        DELETE FROM reconciliation_rejected_matches
+        WHERE user_id = ${userId}
+          AND bank_hash = ${bankHash}
+          AND (sheet_name, sheet_row_id) IN (
+            SELECT link.sheet_name, link.sheet_row_id
+            FROM unnest(${sheetNames}::text[], ${sheetRowIds}::text[])
+              AS link(sheet_name, sheet_row_id)
+          )
+      `,
       logInsert,
     ]);
 
@@ -293,6 +309,14 @@ export async function DELETE(request: NextRequest) {
       success: true,
       bankHash,
       deleted: existing.length,
+      // The caller records these as rejected pairs. Reporting what was actually
+      // unlinked beats having the client infer it from its own render state,
+      // which can be stale or hold a match restored from a claim link.
+      deletedLinks: existing.map((row) => ({
+        sheetName: row.sheet_name,
+        sheetRowId: row.sheet_row_id,
+        accountName: row.account_name ?? null,
+      })),
       actionId,
     });
   } catch (err) {

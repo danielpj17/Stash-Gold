@@ -68,13 +68,21 @@ silent and expensive.
    (`transactions.entered_by`), for `/api/tokens`, and for `/api/household`.
    Nothing else. See "Household sharing" below.
 4. **Reconciliation hashing is frozen.** `generateTransactionHash`,
-   `cleanBankDescription`, `parseBankAmount`, `normalizeDateOnly`,
-   `disambiguateHashes`, `findMatches` and its scoring helpers must not change.
-   Claims, processed markers, dismissals and the match cache are all keyed to
-   those hashes across nine tables — two of them inside JSONB
-   (`reconciliation_uploaded_files.bank_hashes`, `activity_log.payload`).
-   `app/reconcile/CLAUDE.md` documents an incident where a one-line change to
-   `cleanBankDescription` orphaned ~92 claims.
+   `cleanBankDescription`, `parseBankAmount`, `normalizeDateOnly` and
+   `disambiguateHashes` must not change. Claims, processed markers, dismissals
+   and the match cache are all keyed to those hashes across ten tables — two of
+   them inside JSONB (`reconciliation_uploaded_files.bank_hashes`,
+   `activity_log.payload`). `app/reconcile/CLAUDE.md` documents an incident
+   where a one-line change to `cleanBankDescription` orphaned ~92 claims.
+
+   **`findMatches` and its scoring helpers are a weaker rule: stable by
+   default, changeable deliberately.** Nothing is keyed to a score, so a change
+   here orphans no data — it changes which rows auto-match, which silently
+   rewrites the user's review queue. Never touch the scoring math, thresholds
+   or `scoreCandidate` as a side effect of another change. Adding a *candidate
+   filter* is the sanctioned kind of change: `rejectedPairs` (see "Rejected
+   matches" below) removes pairs from consideration before scoring and alters
+   no hash and no score.
 5. **`findMatches` requires `processedHashes` from the caller.** It must never
    read them itself — such a read would not be user-scoped.
 6. **Deleting an account is a soft delete.** Reconciliation rows reference
@@ -89,6 +97,8 @@ silent and expensive.
 - `/api/accounts/[id]/csv-preview` — mapping detection + live parse preview
 - `/api/budget` — monthly budgets as JSONB, one row per user
 - `/api/reconciliation/*` — bank CSV matching state
+- `/api/reconciliation/rejected-matches` — pairs the user disconnected; the
+  negative signal that makes Disconnect stick
 - `/api/ingest` — iOS Shortcut writes, **bearer token only**, no session
 - `/api/ingest/accounts` — the account list for the Shortcut's picker, so it can
   send a real `financial_accounts.id` instead of baking UUIDs in. Also
@@ -243,6 +253,34 @@ Managed from the **Reconcile** page via `ManageAccountsModal` (rendered in both
 the empty-state and main return branches, so it's reachable before any account
 exists) — *not* from `/settings`, which only covers sharing and sign-out.
 
+### Rejected matches
+
+Disconnecting an auto-match used to do nothing visible: it deleted the claim and
+the processed marker, then finished by calling `rematchAllStoredAccounts()` —
+which re-ran the matcher and auto-claimed the result. `findMatches`' first branch
+pairs a bank line to a logged expense on **amount and date alone** (the
+description is never consulted), so with two same-amount subscriptions on one
+date it re-picked the same wrong row every time. Nothing recorded the user's
+decision, so nothing could consult it.
+
+`reconciliation_rejected_matches` is that record.
+
+- **Keyed on the pair**, never either side alone: rejecting `A→X` must leave `A`
+  free to match `Y` and `X` free to match `B`. That is the entire case that goes
+  wrong.
+- **Fed to `findMatches` by the caller**, as `rejectedPairKey()` strings, for the
+  same reason as `processedHashes` — a read inside the matcher would not be
+  user-scoped (invariant 5).
+- **Applied at all four candidate paths** — exact amount+date, merchant memory,
+  transfer candidates, and amount-first scoring. Filtering only the first would
+  just move the wrong match one branch down.
+- **Cleared by claiming that pair**, inside the `/claims` and `/transfer-claims`
+  POST routes rather than at the call sites — four flows create claims and one
+  would eventually be missed. Auto-matching can never reach a rejected pair, so
+  anything arriving there is the user overriding an earlier disconnect.
+- **The client records it before the rematch, not after**, and surfaces a failure
+  rather than swallowing it: a silent no-op here is the original bug.
+
 ### CSV formats
 
 Column mappings live per account in `account_csv_profiles`.
@@ -278,6 +316,7 @@ the parsed sign, which would change hashes.
 | `services/accountBalancesService.ts` | Balances from accounts + transactions + transfers + anchors |
 | `docs/neon-setup.sql` | The schema. Single source of truth |
 | `docs/migrations/` | Ordered ALTERs for databases created from an older schema |
+| `app/api/reconciliation/rejected-matches/route.ts` | Disconnected pairs — see "Rejected matches" |
 | `docs/reconciliation-guide.md` | User-facing guide (in-app at `/guide/reconcile`) |
 | `docs/ios-shortcut-setup.md` | One-time authoring of the shareable Shortcut |
 
