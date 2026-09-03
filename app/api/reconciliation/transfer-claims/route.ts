@@ -5,8 +5,6 @@ import {
   parseActivityGroupingIds,
   type ActivityActor,
 } from "@/lib/activityLog";
-import { getOutflowIsPositiveByAccount } from "@/lib/accounts";
-import { normalizedFlowDirection } from "@/services/reconciliationService";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,19 +59,17 @@ export async function GET() {
       ORDER BY created_at DESC
     `) as TransferClaimRow[];
 
-    // Flow direction per leg, so consumers can tell which side is still missing
-    // without knowing each account's CSV sign convention. See
-    // normalizedFlowDirection — a raw sign is meaningless across accounts.
-    const outflowIsPositiveByAccount = await getOutflowIsPositiveByAccount(sql, userId);
-
+    // `claimedAccounts` is which accounts already hold a leg. Consumers use it to
+    // find the side still missing — by account identity, never by amount sign,
+    // which depends on a per-account `outflow_is_positive` flag that detection
+    // only guesses at. See the POST for what a wrong guess used to cost.
     const statusByRowId: Record<
       string,
       {
         claimedCount: number;
         expectedLegs: number;
         isComplete: boolean;
-        hasOutflow: boolean;
-        hasInflow: boolean;
+        claimedAccounts: string[];
       }
     > = {};
     for (const row of rows) {
@@ -85,20 +81,17 @@ export async function GET() {
           claimedCount: 0,
           expectedLegs,
           isComplete: false,
-          hasOutflow: false,
-          hasInflow: false,
+          claimedAccounts: [],
         };
       }
       statusByRowId[rowId].claimedCount += 1;
       if (expectedLegs < statusByRowId[rowId].expectedLegs) {
         statusByRowId[rowId].expectedLegs = expectedLegs;
       }
-      const direction = normalizedFlowDirection(
-        Number(row.bank_amount_cents ?? 0),
-        outflowIsPositiveByAccount[String(row.bank_account_name ?? "")] === true,
-      );
-      if (direction < 0) statusByRowId[rowId].hasOutflow = true;
-      else statusByRowId[rowId].hasInflow = true;
+      const legAccount = String(row.bank_account_name ?? "").trim();
+      if (legAccount && !statusByRowId[rowId].claimedAccounts.includes(legAccount)) {
+        statusByRowId[rowId].claimedAccounts.push(legAccount);
+      }
       statusByRowId[rowId].isComplete =
         statusByRowId[rowId].claimedCount >= statusByRowId[rowId].expectedLegs;
     }
@@ -192,29 +185,51 @@ export async function POST(request: NextRequest) {
 
     const newAmountCents = toCents(bankAmount);
     if (effectiveExpectedLegs === 2 && existing.length > 0) {
-      // Compare FLOW DIRECTION, not raw sign.
-      //
-      // Paying a credit card from checking produces two negative legs: checking
-      // writes the outflow as negative, and the card's credit column writes the
-      // payment received as negative too (its `outflow_is_positive` says a
-      // charge is the positive one). Comparing signs rejected the real second
-      // leg of every card payment. `normalizedFlowDirection` folds each
-      // account's convention away so -1 always means "left this account".
-      const outflowIsPositiveByAccount = await getOutflowIsPositiveByAccount(sql, userId);
-      const directionOf = (amountCents: number, accountId: string | null): 1 | -1 =>
-        normalizedFlowDirection(amountCents, outflowIsPositiveByAccount[String(accountId ?? "")] === true);
-
-      const newDirection = directionOf(newAmountCents, bankAccountName || null);
+      /**
+       * The two legs must be on two DIFFERENT accounts.
+       *
+       * This used to compare the legs' flow direction, derived from each
+       * account's `outflow_is_positive`. That flag is a guess — detection sets
+       * it true for any debit/credit-column file — and when it is wrong the
+       * check rejects a perfectly good second leg. It did: AF Checking writes an
+       * outgoing payment in its CREDIT column, which parses negative, while its
+       * profile claims outflows are positive. Both legs of a real AF Checking →
+       * Discover payment therefore read as "money arriving" and the claim was
+       * refused.
+       *
+       * Account identity needs no convention and cannot be defeated by a
+       * mis-detected flag: a transfer moves money between two accounts, so each
+       * leg lands in a different account's statement. Two legs in one statement
+       * are two transactions, not two legs of one.
+       */
       const conflicting = existing.find(
-        (row) => directionOf(Number(row.bank_amount_cents), row.bank_account_name) === newDirection,
+        (row) => String(row.bank_account_name ?? "") === bankAccountName,
       );
       if (conflicting) {
+        // Name the account still expected, when the transfer says who that is.
+        const transferRows = (await sql`
+          SELECT transfer_from, transfer_to
+          FROM transactions
+          WHERE user_id = ${userId} AND id = ${transferRowId} AND kind = 'transfer'
+        `) as Array<{ transfer_from: string | null; transfer_to: string | null }>;
+        const legs = [transferRows[0]?.transfer_from, transferRows[0]?.transfer_to]
+          .map((id) => String(id ?? "").trim())
+          .filter(Boolean);
+        const otherSide = legs.find((id) => id !== bankAccountName);
+        const otherName = otherSide
+          ? ((
+              await sql`
+                SELECT name FROM financial_accounts
+                WHERE user_id = ${userId} AND id = ${otherSide}::uuid
+              `
+            ) as Array<{ name: string }>)[0]?.name
+          : undefined;
+
         return NextResponse.json(
           {
-            error:
-              newDirection < 0
-                ? "Both legs show money leaving an account. The second leg should be the account the money arrived in."
-                : "Both legs show money arriving in an account. The second leg should be the account the money left.",
+            error: otherName
+              ? `That statement line is on the same account as the leg already claimed. The other leg should be on ${otherName}.`
+              : "That statement line is on the same account as the leg already claimed. The other leg should be on the account on the other side of this transfer.",
           },
           { status: 409 },
         );

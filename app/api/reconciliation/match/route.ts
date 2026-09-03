@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isErrorResponse, requireUser } from "@/lib/apiAuth";
-import { getAccount, getOutflowIsPositiveByAccount, toBankProfile } from "@/lib/accounts";
+import { getAccount, toBankProfile } from "@/lib/accounts";
 import type { Sql } from "@/lib/db";
 import {
   findMatches,
   mapBankRowsToTransactions,
-  normalizedFlowDirection,
   rejectedPairKey,
   type MerchantMemoryEntry,
   type SheetExpenseLike,
@@ -161,10 +160,7 @@ async function getTransferClaimStatusByRowId(
       claimedCount: number;
       expectedLegs: number;
       isComplete: boolean;
-      hasPositive: boolean;
-      hasNegative: boolean;
-      hasOutflow: boolean;
-      hasInflow: boolean;
+      claimedAccounts: string[];
     }
   >
 > {
@@ -175,21 +171,16 @@ async function getTransferClaimStatusByRowId(
       WHERE user_id = ${userId}
     `) as TransferClaimRow[];
 
-    // findMatches compares the incoming line's flow direction against these, so
-    // each stored leg's own account convention has to be folded away here — a
-    // raw sign is only meaningful within one account. See normalizedFlowDirection.
-    const outflowIsPositiveByAccount = await getOutflowIsPositiveByAccount(sql, userId);
-
+    // findMatches drops a transfer candidate whose account already holds a leg,
+    // so it needs the accounts, not the amounts. Signs cannot answer this: they
+    // depend on each account's `outflow_is_positive`, which detection guesses.
     const statusByRowId: Record<
       string,
       {
         claimedCount: number;
         expectedLegs: number;
         isComplete: boolean;
-        hasPositive: boolean;
-        hasNegative: boolean;
-        hasOutflow: boolean;
-        hasInflow: boolean;
+        claimedAccounts: string[];
       }
     > = {};
 
@@ -202,25 +193,17 @@ async function getTransferClaimStatusByRowId(
           claimedCount: 0,
           expectedLegs,
           isComplete: false,
-          hasPositive: false,
-          hasNegative: false,
-          hasOutflow: false,
-          hasInflow: false,
+          claimedAccounts: [],
         };
       }
       statusByRowId[rowId].claimedCount += 1;
       if (expectedLegs > statusByRowId[rowId].expectedLegs) {
         statusByRowId[rowId].expectedLegs = expectedLegs;
       }
-      const amount = Number(row.bank_amount_cents ?? 0);
-      if (amount > 0) statusByRowId[rowId].hasPositive = true;
-      if (amount < 0) statusByRowId[rowId].hasNegative = true;
-      const direction = normalizedFlowDirection(
-        amount,
-        outflowIsPositiveByAccount[String(row.bank_account_name ?? "")] === true,
-      );
-      if (direction < 0) statusByRowId[rowId].hasOutflow = true;
-      else statusByRowId[rowId].hasInflow = true;
+      const legAccount = String(row.bank_account_name ?? "").trim();
+      if (legAccount && !statusByRowId[rowId].claimedAccounts.includes(legAccount)) {
+        statusByRowId[rowId].claimedAccounts.push(legAccount);
+      }
     }
 
     for (const rowId of Object.keys(statusByRowId)) {

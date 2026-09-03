@@ -91,7 +91,13 @@ type TransferClaimModalState = {
 
 type TransferClaimStatusByRowId = Record<
   string,
-  { claimedCount: number; expectedLegs: number; isComplete: boolean }
+  {
+    claimedCount: number;
+    expectedLegs: number;
+    isComplete: boolean;
+    /** Accounts already holding a leg — the missing side is the other one. */
+    claimedAccounts?: string[];
+  }
 >;
 
 /** What `claimTransferLeg` reports back after saving one leg. */
@@ -235,8 +241,12 @@ type UserStatementClaimModalState = {
   legStage: 1 | 2;
   /** Leg 1's bank line, named in the leg-2 header so the pair is obvious. */
   firstLegLabel: string | null;
-  /** Sign of leg 1's amount; leg 2 must be the opposite side. */
-  firstLegSign: 1 | -1 | null;
+  /**
+   * Transfer row whose second leg is being picked. The accounts already claimed
+   * come from `transferClaimStatusByRowId`, which `claimTransferLeg` refreshes —
+   * a sign was never enough to say which side is missing.
+   */
+  legTransferRowId: string | null;
 };
 
 const ALL_ACCOUNTS_OPTION = "All";
@@ -830,7 +840,7 @@ export default function ReconcilePage() {
     error: "",
     legStage: 1,
     firstLegLabel: null,
-    firstLegSign: null,
+    legTransferRowId: null,
   });
   const [transferClaimModal, setTransferClaimModal] = useState<TransferClaimModalState>({
     open: false,
@@ -2039,14 +2049,17 @@ export default function ReconcilePage() {
     let list = allUnprocessedStatementMatchesForClaim.filter(
       (m) => toCents(Math.abs(m.bankTransaction.amount)) === userCents,
     );
-    // Leg 2 of a transfer is the opposite side by definition: money left one
-    // account and arrived in another. Leg 1 itself is already gone from this
-    // list (it is processed and carries a Neon claim), so this narrows what
-    // remains to the sides that could actually be the counterpart. The server
-    // enforces the same rule — this only keeps the list honest.
-    if (userStatementClaimModal.legStage === 2 && userStatementClaimModal.firstLegSign !== null) {
-      const wanted = userStatementClaimModal.firstLegSign;
-      list = list.filter((m) => (m.bankTransaction.amount < 0 ? -1 : 1) !== wanted);
+    // Leg 2 is on the OTHER account: a transfer moves money between two
+    // accounts, so its legs land in two different statements. Filtering by sign
+    // instead looked equivalent but was not — whether an outflow parses positive
+    // depends on each account's `outflow_is_positive`, a detection guess, and a
+    // wrong one hid the genuine counterpart. The server enforces the same rule.
+    const legRowId = userStatementClaimModal.legTransferRowId;
+    if (userStatementClaimModal.legStage === 2 && legRowId) {
+      const claimed = transferClaimStatusByRowId[legRowId]?.claimedAccounts ?? [];
+      if (claimed.length > 0) {
+        list = list.filter((m) => !claimed.includes(m.bankTransaction.accountName));
+      }
     }
     if (userStatementClaimModal.accountFilter !== ALL_ACCOUNTS_OPTION) {
       list = list.filter(
@@ -2064,7 +2077,12 @@ export default function ReconcilePage() {
       });
     }
     return list;
-  }, [allUnprocessedStatementMatchesForClaim, labelFor, userStatementClaimModal]);
+  }, [
+    allUnprocessedStatementMatchesForClaim,
+    labelFor,
+    transferClaimStatusByRowId,
+    userStatementClaimModal,
+  ]);
 
   const openQuickAdd = useCallback((match: MatchResult) => {
     const tx = match.bankTransaction;
@@ -2214,7 +2232,7 @@ export default function ReconcilePage() {
       error: "",
       legStage: resumingLegTwo ? 2 : 1,
       firstLegLabel: null,
-      firstLegSign: null,
+      legTransferRowId: null,
     });
   }, []);
 
@@ -2230,7 +2248,7 @@ export default function ReconcilePage() {
       error: "",
       legStage: 1,
       firstLegLabel: null,
-      firstLegSign: null,
+      legTransferRowId: null,
     });
   }, []);
 
@@ -2680,7 +2698,7 @@ export default function ReconcilePage() {
           accountFilter: ALL_ACCOUNTS_OPTION,
           legStage: 2,
           firstLegLabel: `${labelFor(tx.accountName)} • ${fmtDate(tx.date)} • ${fmtMoney(tx.amount)}`,
-          firstLegSign: tx.amount < 0 ? -1 : 1,
+          legTransferRowId: rowId,
         }));
         return;
       }

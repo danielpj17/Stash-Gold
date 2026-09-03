@@ -58,19 +58,20 @@ type TransferClaimStatus = {
   claimedCount: number;
   expectedLegs: number;
   isComplete: boolean;
-  hasPositive: boolean;
-  hasNegative: boolean;
   /**
-   * The same information as hasPositive/hasNegative, but in FLOW direction
-   * rather than raw parsed sign — see `normalizedFlowDirection`. Only these two
-   * are safe to compare across accounts.
+   * Accounts that already hold a leg of this transfer.
    *
-   * Optional because a status object built before this existed (a cached
-   * response, an older caller) carries neither; callers fall back to the raw
-   * flags, which are correct whenever both accounts share a convention.
+   * This replaced a pair of sign flags. Amount signs cannot identify the missing
+   * side: whether an outflow parses positive or negative depends on each
+   * account's `outflow_is_positive`, which detection only guesses at, and a
+   * wrong guess made the matcher discard the correct second leg. Account
+   * identity is exact — a transfer moves money between two accounts, so its two
+   * legs land in two different statements.
+   *
+   * Optional: a status object from an older caller carries none, and the filter
+   * simply does not narrow.
    */
-  hasOutflow?: boolean;
-  hasInflow?: boolean;
+  claimedAccounts?: string[];
 };
 
 export type MatchType =
@@ -737,24 +738,12 @@ export async function findMatches(
         const claimStatus = transferRowId ? transferClaimStatusByRowId[transferRowId] : undefined;
         if (claimStatus?.isComplete) return null;
 
-        // The other leg must be the opposite DIRECTION, which is not the same as
-        // the opposite sign once a credit card is involved — see
-        // normalizedFlowDirection. Fall back to raw signs only when the caller
-        // supplied no direction flags (correct whenever both accounts share a
-        // convention, which is what the old comparison silently assumed).
+        // The other leg is on the OTHER account. Not the opposite sign: whether
+        // an outflow parses positive depends on each account's
+        // `outflow_is_positive`, a detection guess, and a wrong one discarded
+        // the genuine second leg. Two legs never share a statement.
         if (claimStatus && claimStatus.expectedLegs === 2) {
-          const hasDirections =
-            claimStatus.hasOutflow !== undefined || claimStatus.hasInflow !== undefined;
-          if (hasDirections) {
-            const txDirection = normalizedFlowDirection(tx.amount, options?.outgoingIsPositive === true);
-            const hasSameDirectionClaim =
-              txDirection > 0 ? claimStatus.hasInflow === true : claimStatus.hasOutflow === true;
-            if (hasSameDirectionClaim) return null;
-          } else {
-            const txSign = cents(tx.amount) >= 0 ? 1 : -1;
-            const hasSameSignClaim = txSign > 0 ? claimStatus.hasPositive : claimStatus.hasNegative;
-            if (hasSameSignClaim) return null;
-          }
+          if (claimStatus.claimedAccounts?.includes(tx.accountName)) return null;
         }
 
         const transferDate = sheetTransfer.date ?? sheetTransfer.timestamp ?? "";

@@ -516,41 +516,34 @@ bulkError: string               // error message after partial failure
   separate `/processed` POST
 - Idempotent per `bank_hash` — re-claiming the same leg returns `alreadyClaimed`
 
-#### A raw sign means nothing across accounts
+#### The second leg is the OTHER ACCOUNT, never the opposite sign
 
-Two legs of a transfer are opposite in **direction**, not necessarily in parsed
-sign. Paying a credit card from checking produces **two negative legs**:
+A transfer moves money between two accounts, so its legs land in two different
+statements. Pairing them is an account-identity question, and
+`statusByRowId[rowId].claimedAccounts` is what answers it — in the leg validator
+(`POST /transfer-claims`), in `findMatches`' transfer-candidate filter, and in
+the client's leg-2 picker.
 
-| Leg | Account | `outflow_is_positive` | Parsed | Direction |
-|---|---|---|---|---|
-| 1 | WF Checking | `false` | `-364.23` | OUT |
-| 2 | CapitalOne Credit | `true` | `-364.23` (credit column) | IN |
+**Do not reintroduce a sign or direction comparison here.** Two attempts failed:
 
-`mapBankRowToTransaction` writes the debit column positive and the credit column
-negative, so on a card a *payment received* lands negative — the same sign as the
-checking outflow. Comparing raw signs therefore rejected the genuine second leg
-of every card payment with "must be opposite sign".
+1. *Opposite raw sign.* Paying a credit card from checking yields two negative
+   legs — checking writes the outflow negative, and the card's credit column
+   writes the payment received negative too.
+2. *Opposite flow direction*, folding in each account's `outflow_is_positive`.
+   Better, but that flag is a **guess**: `detectCsvProfile` sets it `true` for any
+   debit/credit-column file. AF Checking is a debit/credit file that uses the
+   ordinary checking convention (deposits positive, withdrawals negative), so its
+   `true` is wrong, both its legs read as "money arriving", and a real
+   AF Checking → Discover payment was refused.
 
-`normalizedFlowDirection(amount, outflowIsPositive)` folds the account's
-convention away: `-1` = money left this account, `+1` = money entered it.
-**Anything comparing two legs, or deciding whether a line cost the user money,
-must use this.** The parsed sign itself is never normalized — that would change
-hashes and orphan every claim keyed to them.
+Account identity depends on no convention and cannot be defeated by a
+mis-detected flag.
 
-It lives in **`lib/flowDirection.ts`**, not the service, because
-`CsvMappingModal` is a client component and `reconciliationService` imports
-`node:crypto` — the same split as `lib/merchantFingerprint.ts`. The service
-re-exports it, so the API routes import it from there unchanged.
-
-Conventions come from `getOutflowIsPositiveByAccount(sql, userId)` in
-`lib/accounts.ts`, one query for all accounts because the comparison spans an
-unknown number of stored legs.
-
-The GET's `statusByRowId` therefore publishes `hasOutflow` / `hasInflow`
-alongside the legacy `hasPositive` / `hasNegative`; only the first pair is safe
-across accounts. `findMatches` prefers them and falls back to the raw flags when
-absent (correct whenever both accounts share a convention, which is what the old
-comparison silently assumed).
+`normalizedFlowDirection` (in **`lib/flowDirection.ts`**, re-exported by the
+service) is still the right tool where the question really is "did this line cost
+the user money" — the CSV mapping preview colours by it. It is only ever as
+correct as the account's `outflow_is_positive`, which is exactly why it must not
+gate leg pairing.
 
 **Transfer legs live in `reconciliation_transfer_claim_links` only. Never also
 POST a `sheetName: "Transfers"` link to `/claims`.** Four handlers used to do
@@ -1132,12 +1125,20 @@ This was used to recover WF Checking (92 claims + 101 processed, 0 ambiguous map
 
 - **One bank hash per transfer leg.** `UNIQUE(bank_hash)` on `reconciliation_transfer_claim_links`. The same `transfer_sheet_row_id` appears twice (two legs).
 
-- **Never compare bank amount signs across accounts.** A checking outflow and a
-  credit-card payment both parse negative, so "opposite sign" is not "opposite
-  leg". Use `normalizedFlowDirection` with the account's `outflow_is_positive` —
-  see the transfer-claims route above. This bit the leg-2 validator and the
-  matcher's transfer-candidate filter; assume any new sign comparison spanning
-  two accounts is wrong until it goes through that helper.
+- **Never pair transfer legs by amount sign.** Use `claimedAccounts` — the legs
+  are on two different accounts, full stop. Sign says nothing across accounts (a
+  checking outflow and a credit-card payment both parse negative), and neither
+  does flow direction, because that leans on `outflow_is_positive`, which
+  detection only guesses. See the transfer-claims route above for the two
+  attempts this replaced.
+
+- **`outflow_is_positive` is a guess, not a fact.** `detectCsvProfile` sets it
+  `true` for every debit/credit-column file, but `mapBankRowToTransaction`
+  already normalizes those columns (debit → positive, credit → negative), so the
+  flag really answers "is the debit column the money-out column?" — and banks
+  disagree. AF Checking is a debit/credit file whose deposits parse positive, so
+  its detected `true` is wrong. The CSV mapping preview now colours by direction,
+  which makes a wrong flag visible: outflows show green.
 
 - **Transfer claim triggers full rematch.** `handleTransferClaimSubmit()` calls `rematchAllStoredAccounts()` which hits `/match` once per account. Expensive with many stored accounts.
 
