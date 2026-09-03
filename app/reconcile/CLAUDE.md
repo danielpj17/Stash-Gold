@@ -683,16 +683,34 @@ bank line would have matched had that entry not existed.
 
 ### View Modes
 
-- `"home"` — two-column dashboard: incomplete user entries + matched entries (left) | account summaries (right)
-- `"accountDetail"` — CSV upload zone + review/matched/closed sections for one account
+- `"home"` — two-column dashboard: incomplete user entries + matched entries (left) | Statement Accounts (right)
+- `"accountDetail"` — account header + CSV upload zone + review/matched/closed sections for one account
 
 ### Rendering Structure
 
 ```
 <page header>                                                 // shared by both view modes
-{viewMode === "accountDetail" && <upload zone + file list>}   // always top when in account detail
+{viewMode === "accountDetail" && <account header>}            // name + balance + Set balance
+{viewMode === "accountDetail" && <upload zone + file list>}
 {viewMode === "home" ? <home view> : <account detail sections>}
 ```
+
+**Statement Accounts rows and the account header are two halves of one split.**
+Each row is a single clickable `<button>` — account name, a "N to reconcile" /
+"All reconciled" line, and the balance, and nothing else. It answers the only
+question that list exists for: which account still needs work.
+
+Everything that describes *one* account in detail — the balance's confirmation
+date (`Confirmed 9/2/2026` / `From opening balance`) and the **Set balance**
+button — lives in the account header instead, where there is one account to
+describe and room to state it fully. Those rows previously carried all of it
+plus a "See all transactions" link, three lines per account with the link
+duplicating what clicking the row now does.
+
+`openAccountDetail(account)` is the row's handler and the counterpart to
+`goToAllAccounts()`. Both maintain `?account=` — the query-param mount effect
+reads it, so dropping or setting it is what makes a reload land in the right
+view.
 
 The **page header** is `Reconcile` + a `How this works` link on the left, and on
 the right: a `← All` button (account detail only), the account `GlassDropdown`,

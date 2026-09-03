@@ -756,6 +756,27 @@ export default function ReconcilePage() {
     history.replaceState(null, "", window.location.pathname);
   }, []);
 
+  /**
+   * The counterpart to goToAllAccounts: open one account's detail view.
+   *
+   * The Statement Accounts card is a single click target, so this is the whole
+   * card's handler rather than a link inside it. `?account=` is what survives a
+   * reload — the query-param effect reads it on mount.
+   */
+  const openAccountDetail = useCallback(
+    (account: string) => {
+      setActiveTab(account);
+      if (accountIds.has(account)) setSelectedAccount(account);
+      setViewMode("accountDetail");
+      history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}?account=${encodeURIComponent(account)}`,
+      );
+    },
+    [accountIds],
+  );
+
   const [dismissalNotesById, setDismissalNotesById] = useState<Record<string, string>>({});
   const [userDismissedRowKeys, setUserDismissedRowKeys] = useState<Set<string>>(new Set());
   const [userDismissalNotesByEntryId, setUserDismissalNotesByEntryId] = useState<Record<string, string>>(
@@ -4770,6 +4791,44 @@ export default function ReconcilePage() {
           </div>
         </div>
 
+        {/* The account's own header. Balance, its confirmation date and the Set
+            balance control live here rather than on every Statement Accounts
+            card: there is one account to describe, so it can be stated once and
+            stated fully. */}
+        {viewMode === "accountDetail" && (() => {
+          const balance = accountBalances[activeTab];
+          const anchor = anchorByAccount.get(activeTab);
+          return (
+            <div className="rounded-xl bg-[#252525] border border-charcoal-dark px-4 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <div className="flex items-baseline gap-3 min-w-0">
+                <h2 className="text-xl font-semibold text-white truncate">{labelFor(activeTab)}</h2>
+                <span
+                  className={`text-xl font-semibold tabular-nums shrink-0 ${
+                    Number.isFinite(balance) && balance < 0 ? "text-red-400" : "text-gray-100"
+                  }`}
+                >
+                  {!Number.isFinite(balance)
+                    ? "—"
+                    : balance < 0
+                      ? `(${fmtMoney(Math.abs(balance))})`
+                      : fmtMoney(balance)}
+                </span>
+                <span className="text-xs text-gray-500 shrink-0">
+                  {anchor ? `Confirmed ${fmtDate(anchor.asOfDate)}` : "From opening balance"}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => openAnchorModal(activeTab)}
+                className="shrink-0 px-2.5 py-1 rounded-md border border-charcoal-dark text-xs text-gray-300 hover:text-white hover:bg-charcoal transition-colors"
+                title="Correct this balance to what the bank actually says"
+              >
+                Set balance
+              </button>
+            </div>
+          );
+        })()}
+
         {viewMode === "accountDetail" && (
           <div className="grid gap-4 lg:grid-cols-2">
             <div
@@ -5306,71 +5365,58 @@ export default function ReconcilePage() {
                   to reconcile
                 </span>
               </div>
-              <div className="p-3 text-sm space-y-3">
+              {/* One row per account, whole row clickable.
+                  These used to be three-row cards carrying a "See all
+                  transactions" link, the balance's confirmation date and a Set
+                  balance button. With one card per account that is a lot of
+                  chrome to scroll past to answer the only question this list
+                  exists for: which account still needs work. The balance detail
+                  and its controls moved to the account's own header, where
+                  there is room for them and only one account to describe. */}
+              <div className="p-2 text-sm space-y-1.5">
                 {tabAccounts.map((account) => {
                   const reviewRows = statementReviewRowsByAccount[account] ?? [];
-                  const hasParser = accountHasConfiguredParser(account);
                   // Undefined for an archived account that still has stored
                   // matches: it is in `tabAccounts` but not in `activeAccounts`,
                   // so there is no opening balance to run from.
                   const balance = accountBalances[account];
-                  const anchor = anchorByAccount.get(account);
+                  const pending = reviewRows.length;
                   return (
-                    <div
+                    <button
+                      type="button"
                       key={account}
-                      className="rounded-lg border border-charcoal-dark bg-[#2c2c2c] px-3 py-3"
+                      onClick={() => openAccountDetail(account)}
+                      className="w-full text-left rounded-lg border border-charcoal-dark bg-[#2c2c2c] px-3 py-2 flex items-center justify-between gap-3 hover:bg-[#333] hover:border-gray-600 transition-colors"
                     >
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-gray-100 font-medium">{labelFor(account)}</p>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActiveTab(account);
-                            if (accountIds.has(account)) {
-                              setSelectedAccount(account);
-                            }
-                            setViewMode("accountDetail");
-                            history.replaceState(null, "", `${window.location.pathname}?account=${encodeURIComponent(account)}`);
-                          }}
-                          className="px-2.5 py-1 rounded-md text-xs text-blue-300 hover:text-blue-200 hover:bg-blue-500/10 transition-colors"
+                      <span className="min-w-0">
+                        <span className="block text-gray-100 font-medium truncate">
+                          {labelFor(account)}
+                        </span>
+                        <span
+                          className={`block text-[11px] ${
+                            pending > 0 ? "text-amber-300/80" : "text-gray-500"
+                          }`}
                         >
-                          See all transactions
-                        </button>
-                      </div>
-                      <div className="mt-2 flex items-end justify-between gap-3">
-                        <div className="min-w-0">
-                          {/* Parenthesised negatives and the red, to match the
-                              balances table on the dashboard. */}
-                          <p
-                            className={`text-base font-semibold tabular-nums ${
-                              Number.isFinite(balance) && balance < 0 ? "text-red-400" : "text-gray-100"
-                            }`}
-                          >
-                            {!Number.isFinite(balance)
-                              ? "—"
-                              : balance < 0
-                                ? `(${fmtMoney(Math.abs(balance))})`
-                                : fmtMoney(balance)}
-                          </p>
-                          <p className="text-[11px] text-gray-500 mt-0.5">
-                            {anchor
-                              ? `Confirmed ${fmtDate(anchor.asOfDate)}`
-                              : "From opening balance"}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => openAnchorModal(account)}
-                          className="shrink-0 px-2.5 py-1 rounded-md border border-charcoal-dark text-xs text-gray-300 hover:text-white hover:bg-charcoal transition-colors"
-                          title="Correct this balance to what the bank actually says"
-                        >
-                          Set balance
-                        </button>
-                      </div>
-                      <p className="text-xs text-gray-400 mt-2">
-                        Unmatched / suggested: {reviewRows.length}
-                      </p>
-                    </div>
+                          {pending > 0 ? `${pending} to reconcile` : "All reconciled"}
+                        </span>
+                      </span>
+                      {/* Sized to stand as tall as the two lines beside it — the
+                          balance is what the eye is looking for in this list, so
+                          it reads as the row's subject rather than a footnote to
+                          the name. Parenthesised negatives and the red match the
+                          balances table on the dashboard. */}
+                      <span
+                        className={`shrink-0 text-2xl font-semibold tabular-nums tracking-tight leading-tight ${
+                          Number.isFinite(balance) && balance < 0 ? "text-red-400" : "text-gray-100"
+                        }`}
+                      >
+                        {!Number.isFinite(balance)
+                          ? "—"
+                          : balance < 0
+                            ? `(${fmtMoney(Math.abs(balance))})`
+                            : fmtMoney(balance)}
+                      </span>
+                    </button>
                   );
                 })}
               </div>
