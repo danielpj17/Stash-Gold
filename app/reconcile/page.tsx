@@ -94,6 +94,13 @@ type TransferClaimStatusByRowId = Record<
   { claimedCount: number; expectedLegs: number; isComplete: boolean }
 >;
 
+/** What `claimTransferLeg` reports back after saving one leg. */
+type TransferLegResult = {
+  claimedCount: number;
+  expectedLegs: number;
+  isComplete: boolean;
+};
+
 type ReconcileViewMode = "home" | "accountDetail";
 
 type UserInputtedEntry = {
@@ -136,6 +143,16 @@ type UserInputtedEntry = {
   description?: string;
   transferFrom?: string;
   transferTo?: string;
+  /**
+   * Leg progress for a transfer, from `transferClaimStatusByRowId`. Present only
+   * on `source: "Transfers"` entries that have at least one leg claimed.
+   *
+   * A 2-leg transfer is half-done for as long as it takes to upload the other
+   * account's statement, so the claim modal needs to know which side is still
+   * outstanding and the review tile needs to say so.
+   */
+  transferLegsClaimed?: number;
+  transferLegsExpected?: number;
 };
 
 type AnchorModalState = {
@@ -206,6 +223,20 @@ type UserStatementClaimModalState = {
   transferExpectedLegs: 1 | 2;
   submitting: boolean;
   error: string;
+  /**
+   * Second pass of a 2-leg transfer. Leg 1 is already saved; the modal reopens
+   * asking for the other side rather than closing, because a transfer with one
+   * leg claimed is a job half done and sending the user back to the list to
+   * find the same entry again is the long way round.
+   *
+   * Leg 1 is persisted before this stage begins, so abandoning here is safe —
+   * the entry stays in review reading "1 of 2 legs claimed".
+   */
+  legStage: 1 | 2;
+  /** Leg 1's bank line, named in the leg-2 header so the pair is obvious. */
+  firstLegLabel: string | null;
+  /** Sign of leg 1's amount; leg 2 must be the opposite side. */
+  firstLegSign: 1 | -1 | null;
 };
 
 const ALL_ACCOUNTS_OPTION = "All";
@@ -776,6 +807,9 @@ export default function ReconcilePage() {
     transferExpectedLegs: 2,
     submitting: false,
     error: "",
+    legStage: 1,
+    firstLegLabel: null,
+    firstLegSign: null,
   });
   const [transferClaimModal, setTransferClaimModal] = useState<TransferClaimModalState>({
     open: false,
@@ -1706,7 +1740,6 @@ export default function ReconcilePage() {
     const transferEntries: UserInputtedEntry[] = sheetTransfers.map((row, index) => {
       const rowId = (row.transferRowId ?? "").trim();
       const status = rowId ? transferClaimStatusByRowId[rowId] : undefined;
-      const claimed = rowId ? claimedRowKeys.has(claimKey("Transfers", rowId)) : false;
       const dateValue = sheetTransferDateRaw(row);
       const title = `${labelFor(row.transferFrom) || "—"} → ${labelFor(row.transferTo) || "—"}`;
       const autoCompleted = autoCompletedTransferSignatures.has(
@@ -1720,8 +1753,14 @@ export default function ReconcilePage() {
       const tid = rowId ? `Transfers:${rowId}` : `Transfers:missing:${index}`;
       const userDismissed = userDismissedRowKeys.has(tid);
       const amountDateLine = joinParts(fmtMoney(Number(row.amount ?? 0)), fmtDate(dateValue));
+      // Half-done 2-leg transfers say so. Otherwise "still in the list" is the
+      // only signal that one side is outstanding, which reads as a bug.
+      const legNote =
+        status && status.expectedLegs === 2 && status.claimedCount > 0 && !status.isComplete
+          ? `${status.claimedCount} of ${status.expectedLegs} legs claimed`
+          : undefined;
       // No account segment: `title` is already "From → To".
-      const detailLine = joinParts("Transfer", row.enteredByName);
+      const detailLine = joinParts("Transfer", legNote, row.enteredByName);
       return {
         id: tid,
         source: "Transfers",
@@ -1731,9 +1770,22 @@ export default function ReconcilePage() {
         detailLine,
         subtitle: joinParts(amountDateLine, detailLine),
         amount: Number(row.amount ?? 0),
-        isCompleted: claimed || Boolean(status?.isComplete) || autoCompleted || userDismissed,
+        /**
+         * Completion is the leg count and nothing else.
+         *
+         * `claimedRowKeys` is deliberately NOT consulted here. It is built from
+         * `/claims`, whose `claimedRowIds` covers every sheet_name including
+         * 'Transfers' — so one claimed leg made a 2-leg transfer look finished,
+         * dropped it out of review, and left the second leg unreachable. Legs
+         * live in `reconciliation_transfer_claim_links`; `status.isComplete`
+         * (claimedCount >= expectedLegs) is the only honest answer. Do not add
+         * `claimed ||` back.
+         */
+        isCompleted: Boolean(status?.isComplete) || autoCompleted || userDismissed,
         transferFrom: row.transferFrom,
         transferTo: row.transferTo,
+        transferLegsClaimed: status?.claimedCount,
+        transferLegsExpected: status?.expectedLegs,
       };
     });
 
@@ -1956,6 +2008,15 @@ export default function ReconcilePage() {
     let list = allUnprocessedStatementMatchesForClaim.filter(
       (m) => toCents(Math.abs(m.bankTransaction.amount)) === userCents,
     );
+    // Leg 2 of a transfer is the opposite side by definition: money left one
+    // account and arrived in another. Leg 1 itself is already gone from this
+    // list (it is processed and carries a Neon claim), so this narrows what
+    // remains to the sides that could actually be the counterpart. The server
+    // enforces the same rule — this only keeps the list honest.
+    if (userStatementClaimModal.legStage === 2 && userStatementClaimModal.firstLegSign !== null) {
+      const wanted = userStatementClaimModal.firstLegSign;
+      list = list.filter((m) => (m.bankTransaction.amount < 0 ? -1 : 1) !== wanted);
+    }
     if (userStatementClaimModal.accountFilter !== ALL_ACCOUNTS_OPTION) {
       list = list.filter(
         (m) => m.bankTransaction.accountName === userStatementClaimModal.accountFilter,
@@ -1995,10 +2056,11 @@ export default function ReconcilePage() {
     const tx = match.bankTransaction;
     setActionError("");
     try {
-      const [freshSheetRows, freshTransfers, claimsRes] = await Promise.all([
+      const [freshSheetRows, freshTransfers, claimsRes, transferClaimsRes] = await Promise.all([
         getExpenses(),
         getTransfers(),
         fetch("/api/reconciliation/claims", { cache: "no-store" }),
+        fetch("/api/reconciliation/transfer-claims", { cache: "no-store" }),
       ]);
       if (!claimsRes.ok) {
         const err = await claimsRes.json().catch(() => ({ error: claimsRes.statusText }));
@@ -2009,6 +2071,13 @@ export default function ReconcilePage() {
         claims?: Array<{ bankHash?: string }>;
       };
       const claimedRows = new Set((claimsData.claimedRowIds ?? []).map((id) => String(id)));
+      // Transfers are filtered by leg status, not by claimedRowIds — a transfer
+      // with one of two legs claimed must stay selectable so the other leg can
+      // be linked from here.
+      const freshTransferStatus: TransferClaimStatusByRowId = transferClaimsRes.ok
+        ? (((await transferClaimsRes.json()) as { statusByRowId?: TransferClaimStatusByRowId })
+            .statusByRowId ?? {})
+        : {};
 
       setSheetExpenses(freshSheetRows);
       setSheetTransfers(freshTransfers);
@@ -2040,7 +2109,7 @@ export default function ReconcilePage() {
         .filter((row) => {
           const rowId = (row.transferRowId ?? "").trim();
           if (!rowId) return false;
-          return !claimedRows.has(claimKey("Transfers", rowId));
+          return !freshTransferStatus[rowId]?.isComplete;
         })
         .map((row) => {
           const rowId = (row.transferRowId ?? "").trim();
@@ -2097,6 +2166,12 @@ export default function ReconcilePage() {
   }, []);
 
   const openUserStatementClaimModal = useCallback((entry: UserInputtedEntry) => {
+    // Reopening a transfer that already has a leg lands straight on leg 2 —
+    // the first side is claimed, so there is nothing to re-pick.
+    const resumingLegTwo =
+      entry.source === "Transfers" &&
+      entry.transferLegsExpected === 2 &&
+      (entry.transferLegsClaimed ?? 0) === 1;
     setUserStatementClaimModal({
       open: true,
       entry,
@@ -2106,6 +2181,9 @@ export default function ReconcilePage() {
       transferExpectedLegs: 2,
       submitting: false,
       error: "",
+      legStage: resumingLegTwo ? 2 : 1,
+      firstLegLabel: null,
+      firstLegSign: null,
     });
   }, []);
 
@@ -2119,6 +2197,9 @@ export default function ReconcilePage() {
       transferExpectedLegs: 2,
       submitting: false,
       error: "",
+      legStage: 1,
+      firstLegLabel: null,
+      firstLegSign: null,
     });
   }, []);
 
@@ -2236,6 +2317,75 @@ export default function ReconcilePage() {
       // Memory recording is non-fatal — don't block the user's claim flow.
     }
   }, []);
+
+  /**
+   * Claim one leg of a transfer, and refresh the leg status afterwards.
+   *
+   * **Transfer legs go here and nowhere else.** They must never also be POSTed to
+   * `/claims` as a `sheetName: "Transfers"` link, which four handlers used to do:
+   *
+   *  - `reconciliation_claim_links` is UNIQUE (user_id, sheet_name, sheet_row_id),
+   *    so one transfer row id holds ONE link — leg 2 would 409.
+   *  - `/claims` GET returns `claimedRowIds` for every sheet_name, so that row
+   *    made `claimedRowKeys` report a half-claimed transfer as finished and the
+   *    entry vanished from review before the second leg could be claimed.
+   *
+   * Nothing is lost by skipping it: the match route's `getClaimLinksByBankHashes`
+   * already unions `reconciliation_transfer_claim_links` when restoring matches,
+   * `bankHashesWithNeonClaim` merges both endpoints, and this route inserts the
+   * `processed_transactions` row itself.
+   */
+  const claimTransferLeg = useCallback(
+    async (args: {
+      transferRowId: string;
+      expectedLegs: 1 | 2;
+      bankTransaction: BankTransaction;
+      csvUploadId?: string | null;
+    }): Promise<TransferLegResult> => {
+      const res = await fetch("/api/reconciliation/transfer-claims", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transferRowId: args.transferRowId,
+          expectedLegs: args.expectedLegs,
+          bankTransaction: {
+            hash: args.bankTransaction.hash,
+            accountName: args.bankTransaction.accountName,
+            amount: args.bankTransaction.amount,
+          },
+          csvUploadId: args.csvUploadId ?? null,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `Failed to claim transfer leg (${res.status})`);
+      }
+      const payload = (await res.json()) as {
+        claimedCount?: number;
+        expectedLegs?: number;
+        isComplete?: boolean;
+      };
+
+      const claimedCount = Number(payload.claimedCount ?? 1);
+      const expectedLegs = payload.expectedLegs === 1 ? 1 : 2;
+      const isComplete = Boolean(payload.isComplete);
+
+      const refreshed = await fetch("/api/reconciliation/transfer-claims", { cache: "no-store" });
+      if (refreshed.ok) {
+        const data = (await refreshed.json()) as { statusByRowId?: TransferClaimStatusByRowId };
+        setTransferClaimStatusByRowId(data.statusByRowId ?? {});
+      } else {
+        // Optimistic patch when the refresh endpoint is unavailable.
+        setTransferClaimStatusByRowId((prev) => ({
+          ...prev,
+          [args.transferRowId]: { claimedCount, expectedLegs, isComplete },
+        }));
+      }
+
+      return { claimedCount, expectedLegs, isComplete };
+    },
+    [],
+  );
 
   const persistProcessedHash = useCallback(
     async (
@@ -2374,68 +2524,52 @@ export default function ReconcilePage() {
 
     setUserStatementClaimModal((prev) => ({ ...prev, submitting: true, error: "" }));
     try {
-      const res = await fetch("/api/reconciliation/claims", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          bankTransaction: {
-            hash: selected.bankTransaction.hash,
-            accountName: selected.bankTransaction.accountName,
-            amount: selected.bankTransaction.amount,
-            date: selected.bankTransaction.date,
-            description: selected.bankTransaction.description,
-          },
-          links: [
-            {
-              sheetName,
-              sheetRowId: rowId,
-              amount: Math.abs(entry.amount),
-            },
-          ],
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.error || `Failed to claim (${res.status})`);
-      }
-
+      // Transfers go to /transfer-claims ONLY — see claimTransferLeg.
+      let legResult: TransferLegResult | null = null;
       if (sheetName === "Transfers") {
-        const tRes = await fetch("/api/reconciliation/transfer-claims", {
+        legResult = await claimTransferLeg({
+          transferRowId: rowId,
+          expectedLegs: transferExpectedLegs,
+          bankTransaction: selected.bankTransaction,
+        });
+      } else {
+        const res = await fetch("/api/reconciliation/claims", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            transferRowId: rowId,
-            expectedLegs: transferExpectedLegs,
             bankTransaction: {
               hash: selected.bankTransaction.hash,
               accountName: selected.bankTransaction.accountName,
               amount: selected.bankTransaction.amount,
+              date: selected.bankTransaction.date,
+              description: selected.bankTransaction.description,
             },
+            links: [
+              {
+                sheetName,
+                sheetRowId: rowId,
+                amount: Math.abs(entry.amount),
+              },
+            ],
           }),
         });
-        if (!tRes.ok) {
-          const err = await tRes.json().catch(() => ({ error: tRes.statusText }));
-          throw new Error(
-            err.error ||
-              `Saved sheet link but transfer leg tracking failed (${tRes.status}). Try again.`,
-          );
-        }
-        const tClaimsGet = await fetch("/api/reconciliation/transfer-claims", { cache: "no-store" });
-        if (tClaimsGet.ok) {
-          const transferClaimsData = (await tClaimsGet.json()) as {
-            statusByRowId?: TransferClaimStatusByRowId;
-          };
-          setTransferClaimStatusByRowId(transferClaimsData.statusByRowId ?? {});
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText }));
+          throw new Error(err.error || `Failed to claim (${res.status})`);
         }
       }
 
       await persistProcessedHash(selected.bankTransaction);
       setProcessedHashes((prev) => new Set(prev).add(selected.bankTransaction.hash));
-      setClaimedRowKeys((prev) => {
-        const next = new Set(prev);
-        next.add(claimKey(sheetName, rowId));
-        return next;
-      });
+      // Only expense claims belong in claimedRowKeys. A "Transfers:" key here
+      // would mark a half-claimed transfer complete — the bug this flow had.
+      if (sheetName === "Expenses") {
+        setClaimedRowKeys((prev) => {
+          const next = new Set(prev);
+          next.add(claimKey(sheetName, rowId));
+          return next;
+        });
+      }
 
       const bankRowId = idForTx(selected.bankTransaction);
       setMatchesByAccount((prev) => {
@@ -2495,7 +2629,31 @@ export default function ReconcilePage() {
         next.delete(bankRowId);
         return next;
       });
+      // Record the claim locally as well as refreshing. The refresh is
+      // fire-and-forget, and the leg-2 candidate list must not still be
+      // offering the leg we just claimed on the very next render.
+      setBankHashesWithNeonClaim((prev) => new Set(prev).add(selected.bankTransaction.hash));
       void refreshBankHashesWithNeonClaim();
+
+      // A 2-leg transfer with one side still open stays in the modal and asks
+      // for the other side, rather than closing and making the user find the
+      // same entry again. Leg 1 is already saved, so closing here is also fine.
+      if (legResult && legResult.expectedLegs === 2 && !legResult.isComplete) {
+        const tx = selected.bankTransaction;
+        setUserStatementClaimModal((prev) => ({
+          ...prev,
+          submitting: false,
+          error: "",
+          selectedBankRowId: null,
+          searchQuery: "",
+          accountFilter: ALL_ACCOUNTS_OPTION,
+          legStage: 2,
+          firstLegLabel: `${labelFor(tx.accountName)} • ${fmtDate(tx.date)} • ${fmtMoney(tx.amount)}`,
+          firstLegSign: tx.amount < 0 ? -1 : 1,
+        }));
+        return;
+      }
+
       closeUserStatementClaimModal();
     } catch (err) {
       setUserStatementClaimModal((prev) => ({
@@ -2506,7 +2664,9 @@ export default function ReconcilePage() {
     }
   }, [
     allMatches,
+    claimTransferLeg,
     closeUserStatementClaimModal,
+    labelFor,
     persistProcessedHash,
     refreshBankHashesWithNeonClaim,
     sheetExpenses,
@@ -2515,6 +2675,12 @@ export default function ReconcilePage() {
   ]);
 
   const handleUserStatementClaimSaveClick = useCallback(() => {
+    // On leg 2 the count is already settled — asking "1 or 2 legs?" again would
+    // be asking a question we answered when the user picked 2 the first time.
+    if (userStatementClaimModal.legStage === 2) {
+      void handleUserStatementClaimSubmit(2);
+      return;
+    }
     if (userStatementClaimModal.entry?.source === "Transfers") {
       const existingLegs = userStatementClaimModal.transferExpectedLegs;
       setTransferClaimModal({
@@ -2827,61 +2993,14 @@ export default function ReconcilePage() {
         setActionError("");
         setProcessingId(id);
         try {
-          const res = await fetch("/api/reconciliation/claims", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              bankTransaction: {
-                hash: tx.hash,
-                accountName: tx.accountName,
-                amount: tx.amount,
-                date: tx.date,
-                description: tx.description,
-              },
-              links: [
-                {
-                  sheetName: "Transfers",
-                  sheetRowId: transferRowIdFromEntry,
-                  amount: bankAbs,
-                },
-              ],
-            }),
+          // Transfer legs go to /transfer-claims only — see claimTransferLeg.
+          await claimTransferLeg({
+            transferRowId: transferRowIdFromEntry,
+            expectedLegs: 2,
+            bankTransaction: tx,
           });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({ error: res.statusText }));
-            throw new Error(err.error || `Failed to save transfer link (${res.status})`);
-          }
-          const tRes = await fetch("/api/reconciliation/transfer-claims", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              transferRowId: transferRowIdFromEntry,
-              expectedLegs: 2,
-              bankTransaction: {
-                hash: tx.hash,
-                accountName: tx.accountName,
-                amount: tx.amount,
-              },
-            }),
-          });
-          if (!tRes.ok) {
-            const err = await tRes.json().catch(() => ({ error: res.statusText }));
-            throw new Error(err.error || `Saved link but transfer tracking failed (${tRes.status}).`);
-          }
-          const tClaimsGet = await fetch("/api/reconciliation/transfer-claims", { cache: "no-store" });
-          if (tClaimsGet.ok) {
-            const transferClaimsData = (await tClaimsGet.json()) as {
-              statusByRowId?: TransferClaimStatusByRowId;
-            };
-            setTransferClaimStatusByRowId(transferClaimsData.statusByRowId ?? {});
-          }
           await persistProcessedHash(tx);
           setProcessedHashes((prev) => new Set(prev).add(tx.hash));
-          setClaimedRowKeys((prev) => {
-            const next = new Set(prev);
-            next.add(claimKey("Transfers", transferRowIdFromEntry));
-            return next;
-          });
           setMatchesByAccount((prev) => {
             const next: Record<string, MatchResult[]> = {};
             for (const [account, rows] of Object.entries(prev)) {
@@ -3025,60 +3144,15 @@ export default function ReconcilePage() {
         setActionError("");
         setProcessingId(id);
         try {
-          const res = await fetch("/api/reconciliation/claims", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              bankTransaction: {
-                hash: tx.hash,
-                accountName: tx.accountName,
-                amount: tx.amount,
-                date: tx.date,
-                description: tx.description,
-              },
-              links: [
-                {
-                  sheetName: "Transfers",
-                  sheetRowId: transferRowId,
-                  amount: bankAbs,
-                },
-              ],
-            }),
+          // Transfer legs go to /transfer-claims only — see claimTransferLeg.
+          // That route inserts the processed_transactions row itself, which is
+          // why this mirrors the hash into local state without a POST.
+          await claimTransferLeg({
+            transferRowId,
+            expectedLegs: 2,
+            bankTransaction: tx,
           });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({ error: res.statusText }));
-            throw new Error(err.error || `Failed to save transfer link (${res.status})`);
-          }
-          const tRes = await fetch("/api/reconciliation/transfer-claims", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              transferRowId,
-              expectedLegs: 2,
-              bankTransaction: {
-                hash: tx.hash,
-                accountName: tx.accountName,
-                amount: tx.amount,
-              },
-            }),
-          });
-          if (!tRes.ok) {
-            const err = await tRes.json().catch(() => ({ error: res.statusText }));
-            throw new Error(err.error || `Saved link but transfer tracking failed (${tRes.status}).`);
-          }
-          const tClaimsGet = await fetch("/api/reconciliation/transfer-claims", { cache: "no-store" });
-          if (tClaimsGet.ok) {
-            const transferClaimsData = (await tClaimsGet.json()) as {
-              statusByRowId?: TransferClaimStatusByRowId;
-            };
-            setTransferClaimStatusByRowId(transferClaimsData.statusByRowId ?? {});
-          }
           setProcessedHashes((prev) => new Set(prev).add(tx.hash));
-          setClaimedRowKeys((prev) => {
-            const next = new Set(prev);
-            next.add(claimKey("Transfers", transferRowId));
-            return next;
-          });
           setMatchesByAccount((prev) => {
             const next: Record<string, MatchResult[]> = {};
             for (const [account, rows] of Object.entries(prev)) {
@@ -3138,7 +3212,14 @@ export default function ReconcilePage() {
         setProcessingId(null);
       }
     },
-    [openTransferClaimModal, persistProcessedHash, refreshBankHashesWithNeonClaim, sheetExpenses, sheetTransfers],
+    [
+      claimTransferLeg,
+      openTransferClaimModal,
+      persistProcessedHash,
+      refreshBankHashesWithNeonClaim,
+      sheetExpenses,
+      sheetTransfers,
+    ],
   );
 
   const handleClearFile = useCallback(
@@ -3984,63 +4065,50 @@ export default function ReconcilePage() {
 
     setSplitModal((prev) => ({ ...prev, submitting: true, error: "" }));
     try {
-      const res = await fetch("/api/reconciliation/claims", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          bankTransaction: {
-            hash: selected.bankTransaction.hash,
-            accountName: selected.bankTransaction.accountName,
-            amount: selected.bankTransaction.amount,
-            date: selected.bankTransaction.date,
-            description: selected.bankTransaction.description,
-          },
-          links: selectedRows.map((row) => ({
-            sheetName: row.sheetName,
-            sheetRowId: row.rowId,
-            amount: row.amount,
-          })),
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.error || `Failed to claim existing rows (${res.status})`);
-      }
-
-      if (transferSelected.length === 1) {
-        const tr = transferSelected[0];
-        const tRes = await fetch("/api/reconciliation/transfer-claims", {
+      // The selection is already all-transfers or all-expenses (guarded above),
+      // so a transfer claim skips /claims entirely — legs live only in
+      // reconciliation_transfer_claim_links. See claimTransferLeg.
+      if (transferSelected.length === 0) {
+        const res = await fetch("/api/reconciliation/claims", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            transferRowId: tr.rowId,
-            expectedLegs: overrideLegs ?? splitModal.transferExpectedLegs,
             bankTransaction: {
               hash: selected.bankTransaction.hash,
               accountName: selected.bankTransaction.accountName,
               amount: selected.bankTransaction.amount,
+              date: selected.bankTransaction.date,
+              description: selected.bankTransaction.description,
             },
+            links: selectedRows.map((row) => ({
+              sheetName: row.sheetName,
+              sheetRowId: row.rowId,
+              amount: row.amount,
+            })),
           }),
         });
-        if (!tRes.ok) {
-          const err = await tRes.json().catch(() => ({ error: tRes.statusText }));
-          throw new Error(
-            err.error ||
-              `Saved sheet link but transfer leg tracking failed (${tRes.status}). Try again or use disconnect.`,
-          );
-        }
-        const tClaimsGet = await fetch("/api/reconciliation/transfer-claims", { cache: "no-store" });
-        if (tClaimsGet.ok) {
-          const transferClaimsData = (await tClaimsGet.json()) as {
-            statusByRowId?: TransferClaimStatusByRowId;
-          };
-          setTransferClaimStatusByRowId(transferClaimsData.statusByRowId ?? {});
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText }));
+          throw new Error(err.error || `Failed to claim existing rows (${res.status})`);
         }
       }
 
+      if (transferSelected.length === 1) {
+        const tr = transferSelected[0];
+        await claimTransferLeg({
+          transferRowId: tr.rowId,
+          expectedLegs: overrideLegs ?? splitModal.transferExpectedLegs,
+          bankTransaction: selected.bankTransaction,
+        });
+      }
+
+      // Expense rows only — a "Transfers:" key here would report a half-claimed
+      // transfer as finished. See the note on the transfer entry's isCompleted.
       setClaimedRowKeys((prev) => {
         const next = new Set(prev);
-        selectedRows.forEach((row) => next.add(row.key));
+        selectedRows
+          .filter((row) => row.sheetName === "Expenses")
+          .forEach((row) => next.add(row.key));
         return next;
       });
       setProcessedHashes((prev) => new Set(prev).add(selected.bankTransaction.hash));
@@ -4132,6 +4200,7 @@ export default function ReconcilePage() {
     }
   }, [
     allMatches,
+    claimTransferLeg,
     closeSplitModal,
     refreshBankHashesWithNeonClaim,
     splitModal.rowId,
@@ -6508,10 +6577,25 @@ export default function ReconcilePage() {
                   {userStatementClaimModal.entry.source} • {userStatementClaimModal.entry.subtitle}
                 </p>
               </div>
-              <p className="text-xs text-gray-400">
-                Lists unprocessed statement lines (all accounts when Account is All) whose amount matches this
-                entry. Search and account filter narrow the list.
-              </p>
+              {userStatementClaimModal.legStage === 2 ? (
+                <div className="rounded-md border border-accent/40 bg-accent/10 px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-accent mb-1">
+                    Leg 1 linked — now pick the other side
+                  </p>
+                  {userStatementClaimModal.firstLegLabel && (
+                    <p className="text-xs text-gray-300">{userStatementClaimModal.firstLegLabel}</p>
+                  )}
+                  <p className="text-xs text-gray-400 mt-1">
+                    Only the opposite side of this transfer is listed. You can close this and finish
+                    the second leg later — the transfer stays in review until both are linked.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400">
+                  Lists unprocessed statement lines (all accounts when Account is All) whose amount matches this
+                  entry. Search and account filter narrow the list.
+                </p>
+              )}
               <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
                 <div className="flex-1 min-w-0">
                   <label className="block text-xs text-gray-400 mb-1">Search statement lines</label>
@@ -6615,7 +6699,7 @@ export default function ReconcilePage() {
                 className="px-3 py-1.5 rounded-lg text-sm bg-accent text-white hover:bg-accent-dark transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
               >
                 {userStatementClaimModal.submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                Link statement
+                {userStatementClaimModal.legStage === 2 ? "Link second leg" : "Link statement"}
               </button>
             </div>
           </div>

@@ -120,6 +120,9 @@ type UserStatementClaimModalState = {
   transferExpectedLegs: 1 | 2;
   submitting: boolean;
   error: string;
+  legStage: 1 | 2;          // 2 = leg 1 saved, picking the other side
+  firstLegLabel: string | null;
+  firstLegSign: 1 | -1 | null;
 };
 
 type DismissModalState = {
@@ -495,6 +498,36 @@ bulkError: string               // error message after partial failure
 
 - **In:** `{ transferRowId, expectedLegs: 1|2, bankTransaction: { hash, accountName, amount } }`
 - Validates: new leg must have opposite sign if 2-leg transfer; returns 409 if complete
+- Inserts the `processed_transactions` row itself, so a leg claim needs no
+  separate `/processed` POST
+- Idempotent per `bank_hash` — re-claiming the same leg returns `alreadyClaimed`
+
+**Transfer legs live in `reconciliation_transfer_claim_links` only. Never also
+POST a `sheetName: "Transfers"` link to `/claims`.** Four handlers used to do
+both, and it broke every 2-leg transfer:
+
+- `reconciliation_claim_links` is `UNIQUE (user_id, sheet_name, sheet_row_id)`,
+  so one transfer row id holds **one** link — leg 2 would 409.
+- `/claims` GET returns `claimedRowIds` for *every* `sheet_name`, so that row
+  landed in `claimedRowKeys` and made a half-claimed transfer report as
+  finished. The entry left the review list and the second leg became
+  unreachable.
+
+Nothing is lost by skipping it: the match route's `getClaimLinksByBankHashes`
+already unions `reconciliation_transfer_claim_links` when restoring matches, and
+`bankHashesWithNeonClaim` merges the claims from both endpoints.
+
+The single client entry point is `claimTransferLeg(...)` in `page.tsx`, which
+POSTs the leg and refreshes `transferClaimStatusByRowId`. Every claim path uses
+it — `handleApprove` (both transfer branches), `handleUserStatementClaimSubmit`,
+`handleSplitSubmit`, `handleTransferClaimSubmit`.
+
+**A transfer's completion is `status.isComplete`** (`claimedCount >=
+expectedLegs`), never `claimedRowKeys`. `userInputtedEntries` carries a comment
+saying so; do not add `claimed ||` back to the transfer branch's `isCompleted`.
+Legacy `Transfers:` rows still exist in `reconciliation_claim_links` from before
+this fix — they are inert because nothing reads them for completion, and they
+still feed the match restore, so they are deliberately left in place.
 
 ### `GET|POST|DELETE /api/reconciliation/processed`
 
@@ -731,7 +764,12 @@ Used by `rematchAllStoredAccounts()` — survives re-renders without triggering 
 ### Key `useMemo` Values
 
 **`userInputtedEntries`** — combines expenses + transfers, marks each as "completed" if:
-- Claimed to a bank hash, OR auto-matched by exact match, OR transfer is auto-completed, OR user-dismissed
+- **Expenses:** claimed to a bank hash, OR auto-matched by exact match, OR user-dismissed
+- **Transfers:** `transferClaimStatusByRowId[rowId].isComplete` (all expected legs
+  claimed), OR auto-completed, OR user-dismissed. `claimedRowKeys` is
+  deliberately **not** consulted — see the transfer-claims route above. A
+  partly-claimed transfer also carries `transferLegsClaimed` /
+  `transferLegsExpected` and reads "1 of 2 legs claimed" in its detail line.
 
 **`statementReviewRowsByAccount`** — bank transactions needing manual review (unmatched, suggested, questionable, transfer). Excludes `processed` unless disconnected. Also applies **count-based duplicate suppression**: a pending row is hidden when the same transaction identity (base hash, ignoring the `-N` suffix) already appears as a matched/closed row for that account — preventing the same bank transaction from showing in both the Unmatched and Matched sections. Count-based so genuine duplicate purchases (no resolved sibling) are still shown. (Note: this only suppresses against matched rows currently *loaded*; matched rows older than the match-cache window aren't loaded — see hash-change recovery in Gotchas.)
 
@@ -902,11 +940,28 @@ a modal.
 
 ### Transfer Claim (2-leg)
 
-1. User records a $1000 transfer Checking → Savings in Sheets
+From the **bank side** (account detail), one leg at a time:
+
+1. User records a $1000 transfer Checking → Savings
 2. Upload Checking CSV: `-$1000` → matches transfer, claim leg 1 (`expectedLegs=2`)
 3. `rematchAllStoredAccounts()` runs
 4. Upload Savings CSV: `+$1000` → matches same transfer, claim leg 2
 5. Transfer status: `claimedCount=2`, `isComplete=true`
+
+From the **all page** (entry side), both legs in one pass:
+
+1. Click the transfer in "User-inputted: Needs review"
+2. Pick the outgoing bank line → **Link statement** → choose **2 legs**
+3. Leg 1 saves and the modal stays open at `legStage: 2`, headed "Leg 1 linked —
+   now pick the other side". The candidate list drops leg 1 (now processed and
+   claimed) and filters to the opposite sign
+4. Pick the incoming line → **Link second leg**. No legs prompt this time; the
+   count was settled in step 2
+
+Between steps 2 and 4 the transfer is genuinely half-claimed and reads
+`1 of 2 legs claimed` in its review tile. **Closing the modal there is safe** —
+leg 1 is already persisted and the entry stays in review. Reopening it goes
+straight to `legStage: 2`.
 
 ### Disconnect & Re-reconcile
 
