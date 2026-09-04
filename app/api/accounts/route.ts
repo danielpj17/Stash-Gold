@@ -89,3 +89,61 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+/**
+ * Reorder accounts: `{ order: string[] }`, the ids in their new order.
+ *
+ * `sort_order` already governs every list in the app — `listAccounts` sorts on
+ * it, and the pickers, the reconcile dropdown, Statement Accounts and the iOS
+ * Shortcut's picker (`/api/ingest/accounts`) all map straight over that result.
+ * The column and its index existed from the first schema; nothing could ever
+ * write to it. This is that missing half.
+ *
+ * Positions are assigned from the array, so the caller sends the COMPLETE order
+ * it is showing. An id it omits keeps whatever it had, which is what makes
+ * soft-deleted accounts (invisible in the modal) harmless to leave out.
+ */
+export async function PATCH(request: NextRequest) {
+  const ctx = await requireUser();
+  if (isErrorResponse(ctx)) return ctx;
+  const { sql, userId } = ctx;
+
+  let body: { order?: unknown };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  if (!Array.isArray(body.order)) {
+    return NextResponse.json({ error: "order must be an array of account ids" }, { status: 400 });
+  }
+
+  const ids = body.order.map((id) => String(id ?? "").trim()).filter(Boolean);
+  if (ids.length === 0) {
+    return NextResponse.json({ error: "order must contain at least one account id" }, { status: 400 });
+  }
+  if (new Set(ids).size !== ids.length) {
+    return NextResponse.json({ error: "order contains a duplicate account id" }, { status: 400 });
+  }
+
+  try {
+    // One statement, so a reorder is atomic — a half-applied order would leave
+    // duplicate positions and an arbitrary list. `user_id` in the WHERE is what
+    // makes an id from another scope a no-op rather than a cross-user write.
+    const positions = ids.map((_id, index) => index);
+    await sql`
+      UPDATE financial_accounts AS a
+      SET sort_order = o.position
+      FROM unnest(${ids}::uuid[], ${positions}::int[]) AS o(id, position)
+      WHERE a.user_id = ${userId}::uuid AND a.id = o.id
+    `;
+
+    return NextResponse.json({ accounts: await listAccounts(sql, userId) });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to reorder accounts" },
+      { status: 502 },
+    );
+  }
+}

@@ -93,7 +93,8 @@ silent and expensive.
 
 - All pages are client components fetching internal API routes (`/api/*`)
 - `/api/transactions` — expenses, income and transfers (replaced `/api/sheets`)
-- `/api/accounts` — user-defined accounts and their CSV parsing profiles
+- `/api/accounts` — user-defined accounts and their CSV parsing profiles;
+  `PATCH` with `{ order }` sets `sort_order` (drag-to-reorder)
 - `/api/accounts/[id]/csv-preview` — mapping detection + live parse preview
 - `/api/budget` — monthly budgets as JSONB, one row per user
 - `/api/reconciliation/*` — bank CSV matching state
@@ -238,6 +239,15 @@ bulk selection.
   account (via `/api/ingest/accounts`), but still lands here when the user
   chooses **Default** — and when it sends an id that no longer resolves, which
   `/api/ingest` drops rather than saving as a dead reference.
+- **`sort_order`** — the account order the user drags into place, and the single
+  source of that order app-wide. `listAccounts` sorts on it, and every consumer
+  maps straight over that result: the transfer pickers, the reconcile dropdown,
+  Statement Accounts, the dashboard and net-worth balance lists (which read
+  `computeAccountBalances`, seeded from `activeAccounts` in order), and the iOS
+  Shortcut's picker via `/api/ingest/accounts`. **Never re-sort an account list
+  at a call site** — that silently opts one screen out of the user's ordering.
+  `PATCH /api/accounts` with `{ order: [...ids] }` is the only writer; it assigns
+  positions from the array in one statement, so the write is atomic.
 - **`deleted_at`** — deletion is soft. The row stays so past matches remain
   matched *and* correctly labeled, while the account vanishes from every picker.
   `AccountsContext.byId` therefore includes deleted accounts (for labels) while

@@ -1,7 +1,15 @@
 "use client";
 
-import { useCallback, useState } from "react";
-import { Loader2, Plus, Trash2, Star, Archive, ArchiveRestore } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
+import {
+  Loader2,
+  Plus,
+  Trash2,
+  Star,
+  Archive,
+  ArchiveRestore,
+  GripVertical,
+} from "lucide-react";
 import GlassDropdown from "@/components/GlassDropdown";
 import NumberField from "@/components/NumberField";
 import { useAccounts } from "@/contexts/AccountsContext";
@@ -92,6 +100,110 @@ export default function ManageAccountsModal({ onClose }: { onClose: () => void }
     [apply, refresh],
   );
 
+  /**
+   * Drag-to-reorder.
+   *
+   * Pointer events rather than HTML5 drag-and-drop, which fires no events on
+   * touch — and this modal is reachable inside the installed PWA. The same
+   * handlers cover mouse and finger; `touch-action: none` on the handle stops
+   * the browser scrolling the page instead of starting a drag.
+   *
+   * `dragOrder` is a local override rendered in place of the context list while
+   * a drag is in flight, so rows follow the finger without a round trip per
+   * move. It clears once the server's order comes back.
+   */
+  const [dragOrder, setDragOrder] = useState<FinancialAccount[] | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [reordering, setReordering] = useState(false);
+  const rowRefs = useRef(new Map<string, HTMLLIElement | null>());
+
+  const rows = dragOrder ?? accounts;
+
+  const commitOrder = useCallback(
+    async (next: FinancialAccount[]) => {
+      const previous = accounts;
+      setAccounts(next); // optimistic: the list must not snap back mid-gesture
+      setDragOrder(null);
+      setReordering(true);
+      setError("");
+      try {
+        const res = await fetch("/api/accounts", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ order: next.map((a) => a.id) }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error ?? `Failed to save order (${res.status})`);
+        apply(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to save the new order");
+        setAccounts(previous);
+        await refresh();
+      } finally {
+        setReordering(false);
+      }
+    },
+    [accounts, apply, refresh, setAccounts],
+  );
+
+  /** Move one row to a new index, returning a new array. */
+  const moveRow = useCallback((list: FinancialAccount[], from: number, to: number) => {
+    const next = [...list];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return next;
+  }, []);
+
+  const handleDragMove = useCallback(
+    (event: React.PointerEvent) => {
+      if (!dragId) return;
+      const list = dragOrder ?? accounts;
+      const from = list.findIndex((a) => a.id === dragId);
+      if (from < 0) return;
+
+      // Move as the pointer crosses a neighbour's midpoint — measured from the
+      // live DOM, so it stays correct however the rows have wrapped.
+      let to = from;
+      for (let i = 0; i < list.length; i += 1) {
+        const el = rowRefs.current.get(list[i].id);
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        const middle = rect.top + rect.height / 2;
+        if (i < from && event.clientY < middle) {
+          to = i;
+          break;
+        }
+        if (i > from && event.clientY > middle) to = i;
+      }
+      if (to !== from) setDragOrder(moveRow(list, from, to));
+    },
+    [accounts, dragId, dragOrder, moveRow],
+  );
+
+  const handleDragEnd = useCallback(() => {
+    if (!dragId) return;
+    const next = dragOrder;
+    setDragId(null);
+    // Only write when the order actually changed — a click on the handle is a
+    // zero-distance drag, and that should not cost a request.
+    if (next && next.some((a, i) => a.id !== accounts[i]?.id)) {
+      void commitOrder(next);
+    } else {
+      setDragOrder(null);
+    }
+  }, [accounts, commitOrder, dragId, dragOrder]);
+
+  /** Keyboard equivalent: focus a handle, then Arrow Up/Down. */
+  const nudge = useCallback(
+    (account: FinancialAccount, delta: -1 | 1) => {
+      const from = accounts.findIndex((a) => a.id === account.id);
+      const to = from + delta;
+      if (from < 0 || to < 0 || to >= accounts.length) return;
+      void commitOrder(moveRow(accounts, from, to));
+    },
+    [accounts, commitOrder, moveRow],
+  );
+
   const handleDelete = useCallback(
     async (account: FinancialAccount) => {
       const ok = window.confirm(
@@ -125,8 +237,9 @@ export default function ManageAccountsModal({ onClose }: { onClose: () => void }
         <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-2">
           <div>
             <h3 className="text-white font-semibold">Accounts</h3>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Add or remove the accounts you reconcile against.
+            <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1.5">
+              Add or remove the accounts you reconcile against. Drag to reorder.
+              {reordering && <Loader2 className="w-3 h-3 animate-spin" aria-label="Saving order" />}
             </p>
           </div>
           <button
@@ -194,11 +307,42 @@ export default function ManageAccountsModal({ onClose }: { onClose: () => void }
           <p className="p-4 text-sm text-gray-400">No accounts yet. Add your first one above.</p>
         ) : (
           <ul className="divide-y divide-charcoal-dark">
-            {accounts.map((account) => (
+            {rows.map((account) => (
               <li
                 key={account.id}
-                className={`p-3 flex items-center gap-2 flex-wrap ${account.isActive ? "" : "opacity-60"}`}
+                ref={(el) => {
+                  rowRefs.current.set(account.id, el);
+                }}
+                className={`p-3 flex items-center gap-2 flex-wrap transition-colors ${
+                  account.isActive ? "" : "opacity-60"
+                } ${dragId === account.id ? "bg-[#333] ring-1 ring-inset ring-[#50C878]/40" : ""}`}
               >
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    // Capture so the drag survives the pointer leaving the row.
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    setDragOrder(accounts);
+                    setDragId(account.id);
+                  }}
+                  onPointerMove={handleDragMove}
+                  onPointerUp={handleDragEnd}
+                  onPointerCancel={handleDragEnd}
+                  onKeyDown={(e) => {
+                    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+                    e.preventDefault();
+                    nudge(account, e.key === "ArrowUp" ? -1 : 1);
+                  }}
+                  // Without this the browser scrolls the page instead of
+                  // reporting the pointer moves this drag is built on.
+                  style={{ touchAction: "none" }}
+                  title="Drag to reorder — or focus and use the arrow keys"
+                  aria-label={`Reorder ${account.name}`}
+                  className="shrink-0 p-1 -ml-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-charcoal cursor-grab active:cursor-grabbing touch-none focus:outline-none focus:text-[#50C878]"
+                >
+                  <GripVertical className="w-4 h-4" />
+                </button>
+
                 <input
                   defaultValue={account.name}
                   maxLength={60}
@@ -306,7 +450,8 @@ export default function ManageAccountsModal({ onClose }: { onClose: () => void }
           Shortcut. Renaming is always safe. Deleting keeps past matches intact; archiving just
           hides an account from pickers. Starting balance is what the account held before your
           first logged transaction — confirming a statement balance overrides it from that date
-          onward.
+          onward. The order you set here is the order accounts appear everywhere else, including
+          the transfer pickers and the iOS Shortcut.
         </p>
       </div>
     </div>

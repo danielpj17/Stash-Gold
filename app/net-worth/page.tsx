@@ -721,8 +721,11 @@ export default function NetWorthPage() {
               {visibleAccountBalances.length === 0 ? (
                 <p className="text-gray-500">No linked balances yet.</p>
               ) : (
+                // No sort: accountBalances is seeded from activeAccounts, so it
+                // already carries the user's chosen account order — the same one
+                // the dashboard, the pickers and the Shortcut use. Sorting by
+                // name here was also mutating the memo's array in place.
                 visibleAccountBalances
-                  .sort(([a], [b]) => a.localeCompare(b))
                   .map(([name, value]) => (
                     <p key={name} className="text-gray-300">
                       {name}: <span className="text-white font-semibold">{fmtCurrency(Number(value ?? 0))}</span>
