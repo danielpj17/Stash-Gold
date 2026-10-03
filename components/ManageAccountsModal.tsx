@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { modalDragHandleProps } from "@/lib/modalBehavior";
 import {
   Loader2,
   Plus,
@@ -234,7 +235,7 @@ export default function ManageAccountsModal({ onClose }: { onClose: () => void }
   return (
     <div className="fixed inset-0 z-50 bg-black/60 p-4 flex items-start justify-center overflow-y-auto">
       <div className="w-full max-w-2xl my-8 rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
-        <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-2">
+        <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-2">
           <div>
             <h3 className="text-white font-semibold">Accounts</h3>
             <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1.5">

@@ -5,7 +5,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import MonthDropdown from "@/components/MonthDropdown";
 import DateField from "@/components/DateField";
 import NumberField from "@/components/NumberField";
-import { backdropDismissProps, handleModalEnterKey } from "@/lib/modalBehavior";
+import { backdropDismissProps, handleModalEnterKey, modalDragHandleProps } from "@/lib/modalBehavior";
 import { useMonth } from "@/contexts/MonthContext";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { useExpensesData } from "@/contexts/ExpensesDataContext";
@@ -784,7 +784,7 @@ export default function NetWorthPage() {
               onClick={(e) => e.stopPropagation()}
               onKeyDown={handleModalEnterKey}
             >
-              <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+              <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
                 <h3 className="text-white font-semibold">
                   {manualFormMode === "create" ? "Add" : "Edit"} {manualFormTab === "assets" ? "Asset" : "Liability"}
                 </h3>

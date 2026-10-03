@@ -14,7 +14,7 @@ import { rowMatchesMonth, transferMatchesMonth, submitTransfer } from "@/service
 import type { SheetRow } from "@/services/transactionsApi";
 import { useAccounts } from "@/contexts/AccountsContext";
 import { CACHE_KEYS, readScopedCache, writeScopedCache } from "@/lib/clientCache";
-import { backdropDismissProps } from "@/lib/modalBehavior";
+import { backdropDismissProps, modalDragHandleProps } from "@/lib/modalBehavior";
 import {
   EXPENSE_CATEGORIES,
   CATEGORY_COLORS,
@@ -1183,7 +1183,7 @@ export default function BudgetPage() {
               onClick={(e) => e.stopPropagation()}
             >
               {/* Modal header */}
-              <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3 shrink-0">
+              <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between gap-3 shrink-0">
                 <h2 id="budget-modal-title" className="text-white font-semibold truncate">
                   {selectedCategory}
                   <span className="ml-2 font-medium text-gray-300">

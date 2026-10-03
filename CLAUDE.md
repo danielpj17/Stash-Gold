@@ -82,7 +82,9 @@ silent and expensive.
    or `scoreCandidate` as a side effect of another change. Adding a *candidate
    filter* is the sanctioned kind of change: `rejectedPairs` (see "Rejected
    matches" below) removes pairs from consideration before scoring and alters
-   no hash and no score.
+   no hash and no score. The same-account auto-match gate (an expense logged to
+   another account is only ever *suggested*) and the 10-day merchant-memory
+   window were deliberate changes of this kind — see `app/reconcile/CLAUDE.md`.
 5. **`findMatches` requires `processedHashes` from the caller.** It must never
    read them itself — such a read would not be user-scoped.
 6. **Deleting an account is a soft delete.** Reconciliation rows reference

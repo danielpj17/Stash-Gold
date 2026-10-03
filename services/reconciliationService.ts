@@ -97,6 +97,12 @@ export type MatchResult = {
   candidateCount?: number;
   isAmbiguousCluster?: boolean;
   /**
+   * The suggested expense was logged to a different account than the bank line
+   * (or to none). Such pairs are offered but never auto-matched, so the UI keeps
+   * them out of "High confidence" bulk approval too.
+   */
+  accountMismatch?: boolean;
+  /**
    * Refines the plain "unmatched" bucket so the UI can separate rows that
    * structurally can't match an expense (money-in and account-to-account
    * transfers) from rows that genuinely still need an expense entry.
@@ -634,6 +640,12 @@ export async function findMatches(
     rejectedPairs.size > 0 &&
     sheetRowId !== "" &&
     rejectedPairs.has(rejectedPairKey(tx.hash, sheetName, sheetRowId));
+  // Auto-matching requires the expense to have been logged to the bank line's
+  // own account. Other accounts' expenses stay candidates, but only as
+  // suggestions: same-amount subscriptions on different cards otherwise steal
+  // each other's rows, because every run sees every account's expenses.
+  const isSameAccount = (tx: BankTransaction, row: SheetExpenseLike): boolean =>
+    Boolean(row.account) && row.account === tx.accountName;
   const exactSheetIndex = toIndexedMap(sheetExpenses);
   const amountIndex = toAmountOnlyIndex(sheetExpenses);
   const clusterSet = buildClusterSet(bankTransactions);
@@ -653,6 +665,10 @@ export async function findMatches(
   // lag / logging delay). Ambiguous (multiple same-amount) candidates still
   // require manual approval.
   const UNIQUE_AMOUNT_AUTO_DAY_WINDOW = 14;
+  // Merchant memory only says "this merchant recurs at this amount" — it can't
+  // tell same-priced APPLE.COM/BILL subscriptions apart. Bounding the date keeps
+  // it from reaching back into another month's entry.
+  const MEMORY_MATCH_DAY_WINDOW = 10;
 
   const consumedRowIds = new Set<string>();
   const results: MatchResult[] = [];
@@ -660,11 +676,12 @@ export async function findMatches(
   for (const tx of bankTransactions) {
     const txDate = normalizeDateOnly(tx.date);
     const exactKey = `${amountKey(tx.amount)}|${txDate}`;
-    const exactSheet = (exactSheetIndex.get(exactKey) ?? []).find((row) => {
+    const exactCandidates = (exactSheetIndex.get(exactKey) ?? []).filter((row) => {
       const rowId = String(row.rowId ?? "").trim();
       if (isRejected(tx, "Expenses", rowId)) return false;
       return !rowId || !consumedRowIds.has(rowId);
     });
+    const exactSheet = exactCandidates.find((row) => isSameAccount(tx, row));
     const exactSheetIndexValue = exactSheet
       ? sheetExpenses.findIndex((row) => row === exactSheet)
       : -1;
@@ -695,23 +712,29 @@ export async function findMatches(
     }
 
     // Merchant Memory: if this fingerprint has been confirmed >= 2 times,
-    // auto-match against the most-recent unclaimed sheet expense with the
-    // same amount.
+    // auto-match against the closest-dated unclaimed expense with the same
+    // amount, logged to this account, within MEMORY_MATCH_DAY_WINDOW days.
+    // No pick falls through to scoring, which can still suggest the others.
     if (memoryByKey.size > 0) {
       const fingerprint = generateMerchantFingerprint(tx.description, tx.amount);
       const memEntry = memoryByKey.get(`${fingerprint}|${tx.accountName}`);
       if (memEntry) {
-        const candidates = amountIndex.get(amountKey(tx.amount)) ?? [];
-        const sortedCandidates = [...candidates].sort((a, b) => {
-          const aDate = String(a.date ?? a.timestamp ?? "");
-          const bDate = String(b.date ?? b.timestamp ?? "");
-          return bDate.localeCompare(aDate);
-        });
-        const pick = sortedCandidates.find((row) => {
+        const candidates = (amountIndex.get(amountKey(tx.amount)) ?? [])
+          .filter((row) => isSameAccount(tx, row))
+          .map((row) => ({
+            row,
+            dayDistance: dateDistanceInDays(row.date ?? row.timestamp ?? "", tx.date),
+          }))
+          .filter(
+            (c): c is { row: SheetExpenseLike; dayDistance: number } =>
+              c.dayDistance !== null && c.dayDistance <= MEMORY_MATCH_DAY_WINDOW,
+          )
+          .sort((a, b) => a.dayDistance - b.dayDistance);
+        const pick = candidates.find(({ row }) => {
           const rowId = String(row.rowId ?? "").trim();
           if (isRejected(tx, "Expenses", rowId)) return false;
           return !rowId || !consumedRowIds.has(rowId);
-        });
+        })?.row;
         if (pick) {
           const rowId = String(pick.rowId ?? "").trim();
           if (rowId) consumedRowIds.add(rowId);
@@ -726,6 +749,26 @@ export async function findMatches(
           continue;
         }
       }
+    }
+
+    // Same amount and date, but logged to another account: offer it, don't
+    // take it. Emitted ahead of the transfer step so a transfer candidate can't
+    // outrank it, which the exact branch has always prevented. The row isn't
+    // consumed, so the account it really belongs to can still auto-match it.
+    const crossAccountExact = exactCandidates[0];
+    if (crossAccountExact) {
+      const index = sheetExpenses.indexOf(crossAccountExact);
+      results.push({
+        bankTransaction: tx,
+        matchType: "suggested_match",
+        reason:
+          "Suggested Match: identical amount and date, but the expense was logged to a different account.",
+        matchedSheetExpense: crossAccountExact,
+        matchedSheetIndex: index >= 0 ? index : undefined,
+        candidateCount: exactCandidates.length,
+        accountMismatch: true,
+      });
+      continue;
     }
 
     const sheetTransfers = options?.sheetTransfers ?? [];
@@ -835,10 +878,12 @@ export async function findMatches(
       const withinUniqueWindow =
         best.dayDistance !== null && best.dayDistance <= UNIQUE_AMOUNT_AUTO_DAY_WINDOW;
       const uniqueAmountAutoMatch = isUniqueAmountCandidate && withinUniqueWindow;
+      const accountMismatch = !isSameAccount(tx, best.row);
 
       const shouldAutoMatch =
         !isCluster &&
         !bestConsumed &&
+        !accountMismatch &&
         ((best.score >= AUTO_SCORE_THRESHOLD && margin >= AUTO_SCORE_MARGIN) ||
           uniqueAmountAutoMatch);
 
@@ -863,6 +908,7 @@ export async function findMatches(
       const reasonParts: string[] = [];
       if (isCluster) reasonParts.push("ambiguous cluster (same merchant/amount/date)");
       if (bestConsumed) reasonParts.push("best candidate already consumed by another match");
+      if (accountMismatch) reasonParts.push("expense logged to a different account");
       if (best.score < AUTO_SCORE_THRESHOLD) reasonParts.push(`score ${best.score.toFixed(2)} below auto threshold`);
       if (margin < AUTO_SCORE_MARGIN) reasonParts.push(`margin ${margin === Infinity ? "∞" : margin.toFixed(2)} too narrow`);
 
@@ -875,6 +921,7 @@ export async function findMatches(
         confidenceScore: best.score,
         candidateCount: scoredCandidates.length,
         isAmbiguousCluster: isCluster,
+        accountMismatch,
       });
       continue;
     }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
+import { modalDragHandleProps } from "@/lib/modalBehavior";
 import type { FinancialAccount, StoredCsvProfile } from "@/lib/accounts";
 import { normalizedFlowDirection } from "@/lib/flowDirection";
 
@@ -226,7 +227,7 @@ export default function CsvMappingModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/60 p-4 flex items-center justify-center overflow-y-auto">
       <div className="w-full max-w-4xl my-8 rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
-        <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark">
+        <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark">
           <h3 className="text-white font-semibold">Set up the CSV format for {account.name}</h3>
           <p className="text-xs text-gray-400 mt-1">
             Tell Stash which column is which. You only do this once per account — later uploads

@@ -302,11 +302,19 @@ Before `findMatches()` runs, the match route pre-processes bank transactions wit
 
 ### Step 0 — Merchant Memory Pre-pass
 
-Before the main algorithm, each unclaimed bank transaction is checked against loaded merchant memory entries (`confirmed_count >= 2`). The fingerprint is computed via `generateMerchantFingerprint(description, amount)` in `lib/merchantFingerprint.ts`. If a memory entry matches, the best unclaimed sheet row with matching category/account is paired as `exact_match` with `actor: "memory_match"`. Memory is account-scoped — WF Checking memory doesn't fire on Capital One.
+Before the main algorithm, each unclaimed bank transaction is checked against loaded merchant memory entries (`confirmed_count >= 2`). The fingerprint is computed via `generateMerchantFingerprint(description, amount)` in `lib/merchantFingerprint.ts`. If a memory entry matches, the closest-dated unclaimed expense at that amount that was **logged to this same account** and is within `MEMORY_MATCH_DAY_WINDOW` (10) days is paired as `exact_match` with `actor: "memory_match"`. No such row → falls through to the later steps. Memory is account-scoped — WF Checking memory doesn't fire on Capital One.
+
+The fingerprint can't tell same-priced subscriptions from one merchant apart (every `APPLE.COM/BILL` at $5.35 shares one), so the account and date bounds are what keep it from grabbing another card's entry or one from a different month. It used to take the newest same-amount row from any account with no date limit.
+
+### Auto-match requires the same account
+
+Every `/match` run sees **every** account's logged expenses, and `consumedRowIds` only lives for one run — so without this, a $5.35 charge on card A and one on card B could both claim the same logged row. No auto-match path (exact, memory, scored) takes an expense whose `account` differs from the bank line's account (or is empty). Those rows are **not dropped**: they come back as `suggested_match` with `accountMismatch: true`, are labeled "Account mismatch" in review, and are excluded from the **High confidence** bulk filter. The row isn't consumed, so the account it belongs to can still auto-match it.
+
+A same-date cross-account row is emitted as that suggestion *after* memory but *before* the transfer step, preserving the old rule that an exact amount+date expense outranks transfer candidates.
 
 ### Step 1 — Exact Match (Sheet Expense)
 
-- Bank amount and date match a sheet expense row exactly
+- Bank amount and date match a sheet expense row exactly, **logged to the same account** (see above)
 - Finds the first **unclaimed** Sheets entry (skips rows already consumed by an earlier bank transaction in this batch)
 - Sheet row consumed from pool
 - `matchType: "exact_match"`
@@ -347,6 +355,7 @@ Finds all sheet expenses with matching amount, then scores each:
 - Gap between top and second score >= 0.3
 - Transaction is NOT in an ambiguous cluster
 - Sheet row is not already claimed
+- Best candidate was logged to the bank line's account
 
 Below threshold → `matchType: "suggested_match"` (needs user approval)
 

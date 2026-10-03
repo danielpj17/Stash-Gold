@@ -36,7 +36,7 @@ import { useAccounts } from "@/contexts/AccountsContext";
 import CsvMappingModal from "@/components/CsvMappingModal";
 import ManageAccountsModal from "@/components/ManageAccountsModal";
 import { RECONCILIATION_RESET_CONFIRM } from "@/lib/reconciliationReset";
-import { backdropDismissProps, handleModalEnterKey } from "@/lib/modalBehavior";
+import { backdropDismissProps, handleModalEnterKey, modalDragHandleProps } from "@/lib/modalBehavior";
 
 /**
  * An account's UUID. Accounts are user-defined now, so this can't be a closed
@@ -610,6 +610,7 @@ function filterMatchForBulk(
     return (
       match.matchType === "suggested_match" &&
       Boolean(match.matchedSheetExpense?.rowId) &&
+      !match.accountMismatch &&
       (match.confidenceScore ?? 0) >= 1.0
     );
   }
@@ -5765,7 +5766,9 @@ export default function ReconcilePage() {
                                   </p>
                                   {match.matchType === "suggested_match" && (
                                     <p className="text-[11px] text-blue-400/70 mt-0.5">
-                                      Suggested — approve to confirm
+                                      {match.accountMismatch
+                                        ? "Account mismatch"
+                                        : "Suggested — approve to confirm"}
                                     </p>
                                   )}
                                 </>
@@ -6097,7 +6100,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <div>
                 <h2 id="memory-modal-title" className="text-white font-semibold">Merchant Memory</h2>
                 <p className="text-xs text-gray-400 mt-0.5">
@@ -6205,7 +6208,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <div>
                 <h2 id="activity-modal-title" className="text-white font-semibold">Reconciliation Activity</h2>
                 <p className="text-xs text-gray-400 mt-0.5">
@@ -6326,7 +6329,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="quick-add-title" className="text-white font-semibold">Quick Add Transaction</h2>
               <button
                 type="button"
@@ -6408,7 +6411,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="dismiss-statement-title" className="text-white font-semibold">
                 Dismiss statement line
               </h2>
@@ -6482,7 +6485,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="dismiss-user-sheet-title" className="text-white font-semibold">
                 Dismiss user-inputted row
               </h2>
@@ -6554,7 +6557,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="reset-reconcile-title" className="text-white font-semibold">
                 Clear all reconciliation data
               </h2>
@@ -6631,7 +6634,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="claim-existing-title" className="text-white font-semibold">
                 Claim Existing Sheet Rows
               </h2>
@@ -6769,7 +6772,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between shrink-0">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between shrink-0">
               <h2 id="user-statement-claim-title" className="text-white font-semibold">
                 Link to statement transaction
               </h2>
@@ -6932,7 +6935,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="transfer-claim-title" className="text-white font-semibold">
                 Claim Transfer Leg
               </h2>
@@ -7014,7 +7017,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="statement-anchor-title" className="text-white font-semibold">
                 Set Statement Ending Balance
               </h2>
@@ -7101,7 +7104,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="edit-entry-title" className="text-white font-semibold">
                 {editEntryModal.entry.source === "Expenses" ? "Edit Expense" : "Edit Transfer"}
               </h2>
@@ -7225,7 +7228,7 @@ export default function ReconcilePage() {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleModalEnterKey}
           >
-            <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
+            <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="delete-entry-title" className="text-white font-semibold">Delete Entry</h2>
               <button
                 type="button"

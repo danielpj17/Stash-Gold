@@ -1,9 +1,72 @@
-import type { KeyboardEvent, MouseEvent } from "react";
+import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
 
 /**
- * Shared modal behavior: backdrop dismissal that survives text selection, and
- * Enter-to-advance / Enter-to-save inside a modal panel.
+ * Shared modal behavior: backdrop dismissal that survives text selection,
+ * Enter-to-advance / Enter-to-save inside a modal panel, and dragging a modal
+ * by its header.
  */
+
+/** How much of a dragged panel must stay on screen, so it can always be dragged back. */
+const DRAG_MIN_VISIBLE_X = 80;
+const DRAG_MIN_VISIBLE_Y = 48;
+
+const clamp = (n: number, min: number, max: number) => Math.min(Math.max(n, min), max);
+
+const DRAG_HANDLE_STYLE: CSSProperties = { cursor: "move", userSelect: "none" };
+
+/**
+ * Props for a modal's header: drag it with the mouse to move the whole panel
+ * (the header's parent element).
+ *
+ * Plain DOM rather than React state: the offset lives in a `transform` on the
+ * panel, so a drag re-renders nothing, and every modal mounts fresh when it
+ * opens, so each one starts centered again. Mouse only, so a touch on a phone
+ * header still behaves as it did. Presses on buttons or fields in the header
+ * (the close X) are ignored so they keep working.
+ */
+export function modalDragHandleProps() {
+  return {
+    style: DRAG_HANDLE_STYLE,
+    onPointerDown: (e: PointerEvent<HTMLElement>) => {
+      if (e.pointerType !== "mouse" || e.button !== 0) return;
+      if ((e.target as Element).closest("button, a, input, select, textarea, [role='button']")) return;
+      const handle = e.currentTarget;
+      const panel = handle.parentElement;
+      if (!panel) return;
+      e.preventDefault();
+
+      const [baseX, baseY] = (panel.dataset.dragOffset ?? "0,0").split(",").map(Number);
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const rect = panel.getBoundingClientRect();
+      const prevBodySelect = document.body.style.userSelect;
+      document.body.style.userSelect = "none";
+      handle.setPointerCapture(e.pointerId);
+
+      const move = (ev: globalThis.PointerEvent) => {
+        const dx = clamp(
+          ev.clientX - startX,
+          DRAG_MIN_VISIBLE_X - rect.right,
+          window.innerWidth - DRAG_MIN_VISIBLE_X - rect.left,
+        );
+        const dy = clamp(ev.clientY - startY, -rect.top, window.innerHeight - DRAG_MIN_VISIBLE_Y - rect.top);
+        const x = baseX + dx;
+        const y = baseY + dy;
+        panel.style.transform = `translate(${x}px, ${y}px)`;
+        panel.dataset.dragOffset = `${x},${y}`;
+      };
+      const end = () => {
+        document.body.style.userSelect = prevBodySelect;
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    },
+  };
+}
 
 /**
  * Props for a modal's backdrop element: dismiss on a click that both started
