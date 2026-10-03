@@ -5,6 +5,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import MonthDropdown from "@/components/MonthDropdown";
 import DateField from "@/components/DateField";
 import NumberField from "@/components/NumberField";
+import { backdropDismissProps, handleModalEnterKey } from "@/lib/modalBehavior";
 import { useMonth } from "@/contexts/MonthContext";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { useExpensesData } from "@/contexts/ExpensesDataContext";
@@ -14,7 +15,9 @@ import { getNetWorthSummary, type NetWorthSummary } from "@/services/netWorthSer
 import {
   computeAccountBalances,
   getAccountAnchors,
+  getStatementBalanceInputs,
   type AccountAnchor,
+  type StatementBalanceInputs,
 } from "@/services/accountBalancesService";
 import {
   ASSET_CATEGORIES,
@@ -209,6 +212,7 @@ export default function NetWorthPage() {
 
   const [goalTarget, setGoalTarget] = useState<number>(100000);
   const [accountAnchors, setAccountAnchors] = useState<AccountAnchor[]>([]);
+  const [statementInputs, setStatementInputs] = useState<StatementBalanceInputs | null>(null);
 
   const summaryReqRef = useRef(0);
   const tableReqRef = useRef(0);
@@ -269,8 +273,9 @@ export default function NetWorthPage() {
   }, [sheetsHistoryByMonth]);
 
   const accountBalances = useMemo(
-    () => computeAccountBalances(allRows, allTransfers, accountAnchors, activeAccounts),
-    [allRows, allTransfers, accountAnchors, activeAccounts]
+    () =>
+      computeAccountBalances(allRows, allTransfers, accountAnchors, activeAccounts, statementInputs),
+    [allRows, allTransfers, accountAnchors, activeAccounts, statementInputs]
   );
   // Keyed by account id; resolve to display names for rendering.
   const visibleAccountBalances = useMemo(
@@ -339,6 +344,12 @@ export default function NetWorthPage() {
 
   const loadAccountAnchors = useCallback(async () => {
     const reqId = ++anchorsReqRef.current;
+    // Statement summaries ride with anchors: both feed computeAccountBalances.
+    // On failure balances fall back to logged entries alone.
+    const statementsPromise = getStatementBalanceInputs().catch((err) => {
+      console.error("Failed to load statement balances:", err);
+      return null;
+    });
     try {
       const anchors = await getAccountAnchors();
       if (reqId !== anchorsReqRef.current) return;
@@ -348,6 +359,9 @@ export default function NetWorthPage() {
       console.error("Failed to load account anchors:", err);
       setAccountAnchors([]);
     }
+    const statements = await statementsPromise;
+    if (reqId !== anchorsReqRef.current) return;
+    setStatementInputs(statements);
   }, []);
 
   useEffect(() => {
@@ -763,11 +777,12 @@ export default function NetWorthPage() {
         {manualModalOpen && (
           <div
             className="fixed inset-0 z-50 bg-black/50 p-4 flex items-center justify-center"
-            onClick={() => setManualModalOpen(false)}
+            {...backdropDismissProps(() => setManualModalOpen(false))}
           >
             <div
               className="w-full max-w-2xl rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
               onClick={(e) => e.stopPropagation()}
+              onKeyDown={handleModalEnterKey}
             >
               <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
                 <h3 className="text-white font-semibold">
@@ -1030,6 +1045,7 @@ export default function NetWorthPage() {
                 <button
                   type="button"
                   onClick={saveManualForm}
+                  data-modal-submit
                   disabled={Boolean(savingRow)}
                   className="px-3 py-1.5 rounded-md bg-[#50C878] text-black disabled:opacity-50"
                 >

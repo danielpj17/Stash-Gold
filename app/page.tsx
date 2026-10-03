@@ -14,6 +14,7 @@ import { rowMatchesMonth, transferMatchesMonth, submitTransfer } from "@/service
 import type { SheetRow } from "@/services/transactionsApi";
 import { useAccounts } from "@/contexts/AccountsContext";
 import { CACHE_KEYS, readScopedCache, writeScopedCache } from "@/lib/clientCache";
+import { backdropDismissProps } from "@/lib/modalBehavior";
 import {
   EXPENSE_CATEGORIES,
   CATEGORY_COLORS,
@@ -22,9 +23,11 @@ import {
 import {
   computeAccountBalances,
   getAccountAnchors,
+  getStatementBalanceInputs,
   EXTERNAL_TRANSFER_SOURCES,
   EXTERNAL_TRANSFER_DESTINATIONS,
   type AccountAnchor,
+  type StatementBalanceInputs,
 } from "@/services/accountBalancesService";
 import {
   PieChart,
@@ -322,6 +325,7 @@ export default function BudgetPage() {
   const [tfStatus, setTfStatus] = useState<"idle" | "submitting" | "error">("idle");
   const [tfError, setTfError] = useState("");
   const [accountAnchors, setAccountAnchors] = useState<AccountAnchor[]>([]);
+  const [statementInputs, setStatementInputs] = useState<StatementBalanceInputs | null>(null);
 
   const rows = useMemo(
     () => allRows.filter((r) => rowMatchesMonth(r, selectedMonth)),
@@ -401,6 +405,14 @@ export default function BudgetPage() {
       .catch(() => {
         if (cancelled) return;
         setAccountAnchors([]);
+      });
+    // On failure balances fall back to logged entries alone.
+    getStatementBalanceInputs()
+      .then((inputs) => {
+        if (!cancelled) setStatementInputs(inputs);
+      })
+      .catch(() => {
+        if (!cancelled) setStatementInputs(null);
       });
     return () => {
       cancelled = true;
@@ -506,8 +518,14 @@ export default function BudgetPage() {
   );
 
   const accountBalances = useMemo(() => {
-    return computeAccountBalances(allRows, allTransfers, accountAnchors, activeAccounts);
-  }, [allRows, allTransfers, accountAnchors, activeAccounts]);
+    return computeAccountBalances(
+      allRows,
+      allTransfers,
+      accountAnchors,
+      activeAccounts,
+      statementInputs,
+    );
+  }, [allRows, allTransfers, accountAnchors, activeAccounts, statementInputs]);
 
   // Balances are keyed by account id; resolve to display names for rendering.
   const visibleAccountBalances = useMemo(() => {
@@ -540,8 +558,9 @@ export default function BudgetPage() {
     setEditBudgetValue(String(budgetGoals[cat] ?? 0));
   }, [budgetGoals]);
 
-  const handleSaveBudget = useCallback(async () => {
-    if (!selectedCategory || selectedMonth === "full") return;
+  /** Resolves true once the budget is persisted, so Enter can close the modal on success only. */
+  const handleSaveBudget = useCallback(async (): Promise<boolean> => {
+    if (!selectedCategory || selectedMonth === "full") return false;
     // Saving replaces the ENTIRE budget store in Neon. If budgets haven't finished
     // loading (null) we don't have the other months/categories in memory, so writing
     // now would wipe them. Refuse and tell the user to refresh.
@@ -549,7 +568,7 @@ export default function BudgetPage() {
       setBudgetError(
         "Budgets haven't loaded yet. Refresh the page before editing to avoid overwriting your saved budgets."
       );
-      return;
+      return false;
     }
     const num = parseFloat(editBudgetValue.replace(/,/g, ""));
     const amount = Number.isNaN(num) ? 0 : num;
@@ -571,15 +590,17 @@ export default function BudgetPage() {
             ? body.error
             : `Save failed (${res.status}). Check Vercel logs if deployed.`;
         setBudgetError(msg);
-        return;
+        return false;
       }
       const savedBudgets = (body as MonthlyBudgets) ?? next;
       setAllBudgets(savedBudgets);
       writeBudgetCache(userId, savedBudgets);
       setBudgetError(null);
+      return true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to save budget. Try again.";
       setBudgetError(msg);
+      return false;
     }
   }, [selectedCategory, selectedMonth, editBudgetValue, allBudgets, budgetsConfirmed, userId]);
 
@@ -1152,7 +1173,7 @@ export default function BudgetPage() {
         {selectedCategory && (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-            onClick={() => setSelectedCategory(null)}
+            {...backdropDismissProps(() => setSelectedCategory(null))}
             role="dialog"
             aria-modal="true"
             aria-labelledby="budget-modal-title"
@@ -1196,7 +1217,14 @@ export default function BudgetPage() {
                         inputMode="decimal"
                         value={editBudgetValue}
                         onChange={(e) => setEditBudgetValue(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") handleSaveBudget(); }}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+                          e.preventDefault();
+                          // Enter saves and closes; the Save button saves and stays open.
+                          void handleSaveBudget().then((saved) => {
+                            if (saved) setSelectedCategory(null);
+                          });
+                        }}
                         disabled={!budgetsConfirmed}
                         className="flex-1 min-w-0 px-3 py-1.5 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 focus:border-accent focus:ring-1 focus:ring-accent outline-none text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                       />

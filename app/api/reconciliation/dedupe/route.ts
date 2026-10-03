@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isErrorResponse, requireUser } from "@/lib/apiAuth";
 import { getBankProfile } from "@/lib/accounts";
 import type { Sql } from "@/lib/db";
+import { redundantDuplicateHashes } from "@/lib/statementBalances";
 import { computeCsvIdentityKeys } from "@/services/reconciliationService";
 
 export const runtime = "nodejs";
@@ -87,35 +88,19 @@ export async function POST(request: NextRequest) {
     const keys = computeCsvIdentityKeys(accountName, existing, profile);
     const resolvedHashes = await getResolvedHashes(sql, userId, accountName);
 
-    // Group parseable rows by base identity (hash without the -N suffix).
-    type Member = { index: number; hash: string; resolved: boolean };
-    const groups = new Map<string, Member[]>();
+    // Headers / unparseable rows are always kept. Parseable keys are `id:<hash>`,
+    // already occurrence-disambiguated, so each hash names exactly one row.
+    const redundant = redundantDuplicateHashes(
+      keys.filter((key) => key.startsWith("id:")).map((key) => key.slice(3)),
+      resolvedHashes,
+    );
     const keepIndices = new Set<number>();
-    existing.forEach((_row, i) => {
-      const key = keys[i];
-      if (!key.startsWith("id:")) {
-        keepIndices.add(i); // headers / unparseable rows are always kept
-        return;
-      }
-      const hash = key.slice(3);
-      const base = hash.replace(/-\d+$/, "");
-      if (!groups.has(base)) groups.set(base, []);
-      groups.get(base)!.push({ index: i, hash, resolved: resolvedHashes.has(hash) });
-    });
-
     const removedHashes: string[] = [];
-    for (const members of groups.values()) {
-      const resolved = members.filter((m) => m.resolved);
-      const unresolved = members.filter((m) => !m.resolved);
-      resolved.forEach((m) => keepIndices.add(m.index));
-      // Drop one unresolved copy for each resolved sibling; keep any extras
-      // (those represent genuine still-unmatched transactions).
-      const dropCount = Math.min(resolved.length, unresolved.length);
-      unresolved.forEach((m, idx) => {
-        if (idx < dropCount) removedHashes.push(m.hash);
-        else keepIndices.add(m.index);
-      });
-    }
+    keys.forEach((key, i) => {
+      const hash = key.startsWith("id:") ? key.slice(3) : null;
+      if (hash && redundant.has(hash)) removedHashes.push(hash);
+      else keepIndices.add(i);
+    });
 
     if (removedHashes.length === 0) {
       return NextResponse.json({ success: true, removedHashes: [], removedCount: 0, rows: existing });

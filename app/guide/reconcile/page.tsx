@@ -151,7 +151,8 @@ export default function ReconcileGuidePage() {
             </li>
             <li>
               <B>Dismiss</B> — for a bank row that will never have a logged entry (fee, refund,
-              interest). You&apos;ll be asked for a note. Works in the other direction too, for
+              interest, a Venmo payback). You&apos;ll be asked for a note. It stays out of your
+              budget, but the balance still moves. Works in the other direction too, for
               something you logged that will never hit a statement.
             </li>
             <li>
@@ -206,6 +207,29 @@ export default function ReconcileGuidePage() {
               <B>⋮ → Memory</B> lists everything learned. Delete an entry to stop it auto-claiming.
             </li>
             <li>Memory is per account, so checking patterns don&apos;t fire on your credit card.</li>
+          </ul>
+        </Section>
+
+        <Section id="balances" title="Where balances come from">
+          <ul className="list-disc pl-5 space-y-1.5">
+            <li>
+              Your <B>budget</B> counts only what you log. Your <B>balances</B> come from your
+              statements.
+            </li>
+            <li>
+              Once an account has a statement uploaded, its balance is the anchor (or starting
+              balance), plus every statement row after it (matched, unmatched or dismissed), plus
+              anything logged since the last statement date that isn&apos;t matched yet.
+            </li>
+            <li>
+              So a $60 card charge and a $30 Venmo payback can both be dismissed: the budget
+              doesn&apos;t change, the card goes down $60 and Venmo goes up $30.
+            </li>
+            <li>Accounts with no statements still count your logged entries.</li>
+            <li>
+              If a balance runs backwards, the account view offers <B>Flip purchase sign</B>.
+              Stash guessed wrong about which way that bank writes purchases.
+            </li>
           </ul>
         </Section>
 

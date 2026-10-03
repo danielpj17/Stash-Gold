@@ -26,13 +26,17 @@ import { generateMerchantFingerprint } from "@/lib/merchantFingerprint";
 import {
   computeAccountBalances,
   getAccountAnchors,
+  getStatementBalanceInputs,
+  statementDirectionLooksReversed,
   type AccountAnchor,
+  type StatementBalanceInputs,
 } from "@/services/accountBalancesService";
 import Link from "next/link";
 import { useAccounts } from "@/contexts/AccountsContext";
 import CsvMappingModal from "@/components/CsvMappingModal";
 import ManageAccountsModal from "@/components/ManageAccountsModal";
 import { RECONCILIATION_RESET_CONFIRM } from "@/lib/reconciliationReset";
+import { backdropDismissProps, handleModalEnterKey } from "@/lib/modalBehavior";
 
 /**
  * An account's UUID. Accounts are user-defined now, so this can't be a closed
@@ -390,6 +394,21 @@ function normalizeText(raw?: string): string {
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Search-haystack text for an amount. Emits both "42.50" and "$42.50" (plus
+ * "1,234.50" grouping) so "42.5", "42", "$42.50" and "1,234" all substring-hit.
+ * The magnitude comes first because lists show logged entries unsigned; the
+ * signed form is added for negatives so "-42.50" still finds a bank debit.
+ */
+function amountSearchText(amount?: number | null): string {
+  const n = Number(amount);
+  if (amount == null || !Number.isFinite(n)) return "";
+  const abs = Math.abs(n);
+  const parts = [abs.toFixed(2), fmtMoney(abs)];
+  if (n < 0) parts.push(n.toFixed(2), fmtMoney(n));
+  return parts.join(" ");
 }
 
 function buildExpenseSignature(amount: number, dateRaw?: string, description?: string): string {
@@ -1537,12 +1556,81 @@ export default function ReconcilePage() {
   }, [accountAnchors]);
 
   /**
+   * What each account's stored statements add up to. Accounts with statements
+   * take their balance from these rows, so it has to follow every upload,
+   * clear, claim and dismissal on this page. Rather than thread a refetch
+   * through each handler, it follows the state those handlers all end by
+   * setting, debounced so one bulk approve costs one request.
+   */
+  const [statementInputs, setStatementInputs] = useState<StatementBalanceInputs | null>(null);
+
+  const refreshStatementInputs = useCallback(async () => {
+    try {
+      setStatementInputs(await getStatementBalanceInputs());
+    } catch {
+      // Keep the last good summary; with none, balances use logged entries alone.
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void refreshStatementInputs(), 800);
+    return () => window.clearTimeout(timer);
+  }, [
+    refreshStatementInputs,
+    matchesByAccount,
+    processedHashes,
+    claimedRowKeys,
+    bankHashesWithNeonClaim,
+    transferClaimStatusByRowId,
+    userDismissedRowKeys,
+    accounts,
+  ]);
+
+  /**
+   * Flip an account's `outflow_is_positive`. Only offered when its claimed bank
+   * lines say the detected guess is backwards. Sent as its own field, not a
+   * whole CSV profile, because the flag changes no hash and so must not clear
+   * the match cache the way a remapping does.
+   */
+  const [flippingDirectionFor, setFlippingDirectionFor] = useState<string | null>(null);
+  const flipStatementDirection = useCallback(
+    async (accountId: string) => {
+      const account = accountsById.get(accountId);
+      if (!account?.csvProfile) return;
+      setFlippingDirectionFor(accountId);
+      try {
+        const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ outflowIsPositive: !account.csvProfile.outflowIsPositive }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || `Update failed (${res.status})`);
+        if (Array.isArray(body.accounts)) setAccounts(body.accounts);
+        await refreshStatementInputs();
+      } catch (err) {
+        window.alert(err instanceof Error ? err.message : "Failed to update the account.");
+      } finally {
+        setFlippingDirectionFor(null);
+      }
+    },
+    [accountsById, refreshStatementInputs, setAccounts],
+  );
+
+  /**
    * The same computation the dashboard and net-worth pages run, over state this
    * page already holds — so the number here can't disagree with those.
    */
   const accountBalances = useMemo(
-    () => computeAccountBalances(sheetExpenses, sheetTransfers, accountAnchors, activeAccounts),
-    [accountAnchors, activeAccounts, sheetExpenses, sheetTransfers],
+    () =>
+      computeAccountBalances(
+        sheetExpenses,
+        sheetTransfers,
+        accountAnchors,
+        activeAccounts,
+        statementInputs,
+      ),
+    [accountAnchors, activeAccounts, sheetExpenses, sheetTransfers, statementInputs],
   );
 
   const statementRowsByAccount = useMemo(() => {
@@ -1886,9 +1974,11 @@ export default function ReconcilePage() {
           entry.accountLabel,
           labelFor(entry.transferFrom),
           labelFor(entry.transferTo),
+          amountSearchText(entry.amount),
           tx?.description,
           labelFor(tx?.accountName),
           tx?.date,
+          amountSearchText(tx?.amount),
         ]
           .map((v) => normalizeText(v))
           .join(" ");
@@ -1942,11 +2032,14 @@ export default function ReconcilePage() {
           tx.description,
           labelFor(tx.accountName),
           tx.date,
+          amountSearchText(tx.amount),
           exp?.description,
           exp?.expenseType,
           labelFor(exp?.account),
+          amountSearchText(exp?.amount),
           labelFor(tr?.transferFrom),
           labelFor(tr?.transferTo),
+          amountSearchText(tr?.amount),
         ]
           .map((v) => normalizeText(v))
           .join(" ");
@@ -1981,6 +2074,7 @@ export default function ReconcilePage() {
           tx.description,
           labelFor(tx.accountName),
           tx.date,
+          amountSearchText(tx.amount),
           note,
           match.matchType,
           match.reason,
@@ -2014,6 +2108,7 @@ export default function ReconcilePage() {
           entry.accountLabel,
           labelFor(entry.transferFrom),
           labelFor(entry.transferTo),
+          amountSearchText(entry.amount),
           userDismissalNotesByEntryId[entry.id],
         ]
           .map((v) => normalizeText(v))
@@ -2070,7 +2165,7 @@ export default function ReconcilePage() {
     if (q) {
       list = list.filter((m) => {
         const tx = m.bankTransaction;
-        return [tx.description, labelFor(tx.accountName), tx.date, String(tx.amount)]
+        return [tx.description, labelFor(tx.accountName), tx.date, amountSearchText(tx.amount)]
           .map((v) => normalizeText(v))
           .join(" ")
           .includes(q);
@@ -4041,6 +4136,7 @@ export default function ReconcilePage() {
         labelFor(row.account),
         row.rowId,
         row.timestamp,
+        amountSearchText(row.amount),
       ].some((value) => normalizeText(value).includes(q)),
     );
   }, [describeSplitCandidate, labelFor, sortedSplitCandidates, splitSearchQuery]);
@@ -4834,6 +4930,8 @@ export default function ReconcilePage() {
         {viewMode === "accountDetail" && (() => {
           const balance = accountBalances[activeTab];
           const anchor = anchorByAccount.get(activeTab);
+          const statement = statementInputs?.statements[activeTab];
+          const looksReversed = statementDirectionLooksReversed(statement);
           return (
             <div className="rounded-xl bg-[#252525] border border-charcoal-dark px-4 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
               <div className="flex items-baseline gap-3 min-w-0">
@@ -4851,6 +4949,7 @@ export default function ReconcilePage() {
                 </span>
                 <span className="text-xs text-gray-500 shrink-0">
                   {anchor ? `Confirmed ${fmtDate(anchor.asOfDate)}` : "From opening balance"}
+                  {statement && ` · statements through ${fmtDate(statement.lastDate)}`}
                 </span>
               </div>
               <button
@@ -4861,6 +4960,26 @@ export default function ReconcilePage() {
               >
                 Set balance
               </button>
+              {/* A wrong outflow_is_positive inverts every statement row in
+                  this balance. The claims are the evidence: lines matched to
+                  logged expenses should read as money out. */}
+              {looksReversed && statement && (
+                <div className="basis-full flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
+                  <span>
+                    This balance may be running backwards. {statement.directionCheck.disagree} of{" "}
+                    {statement.directionCheck.agree + statement.directionCheck.disagree} statement
+                    lines matched to your expenses read as money coming <em>in</em>.
+                  </span>
+                  <button
+                    type="button"
+                    disabled={flippingDirectionFor === activeTab}
+                    onClick={() => void flipStatementDirection(activeTab)}
+                    className="shrink-0 px-2.5 py-1 rounded-md border border-amber-400/40 text-amber-100 hover:bg-amber-400/20 transition-colors disabled:opacity-50"
+                  >
+                    {flippingDirectionFor === activeTab ? "Fixing…" : "Flip purchase sign"}
+                  </button>
+                </div>
+              )}
             </div>
           );
         })()}
@@ -4977,7 +5096,7 @@ export default function ReconcilePage() {
                       type="search"
                       value={homeSearchQuery}
                       onChange={(e) => setHomeSearchQuery(e.target.value)}
-                      placeholder="Search incomplete & matched lists (user text, bank description, account…)"
+                      placeholder="Search incomplete & matched lists (user text, bank description, amount, account…)"
                       className="w-full px-3 py-1.5 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
                     />
                   </div>
@@ -5968,7 +6087,7 @@ export default function ReconcilePage() {
       {memoryModal.open && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeMemoryModal}
+          {...backdropDismissProps(closeMemoryModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="memory-modal-title"
@@ -5976,6 +6095,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <div>
@@ -6075,7 +6195,7 @@ export default function ReconcilePage() {
       {activityModal.open && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeActivityModal}
+          {...backdropDismissProps(closeActivityModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="activity-modal-title"
@@ -6083,6 +6203,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-3xl max-h-[85vh] flex flex-col rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <div>
@@ -6195,7 +6316,7 @@ export default function ReconcilePage() {
       {quickAdd.open && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeQuickAdd}
+          {...backdropDismissProps(closeQuickAdd)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="quick-add-title"
@@ -6203,6 +6324,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-md rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="quick-add-title" className="text-white font-semibold">Quick Add Transaction</h2>
@@ -6262,6 +6384,7 @@ export default function ReconcilePage() {
               <button
                 type="button"
                 onClick={handleQuickAddSubmit}
+                data-modal-submit
                 disabled={quickAdd.submitting}
                 className="px-3 py-1.5 rounded-lg text-sm bg-accent text-white hover:bg-accent-dark transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
               >
@@ -6275,7 +6398,7 @@ export default function ReconcilePage() {
       {dismissModal.open && dismissModal.match && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeDismissModal}
+          {...backdropDismissProps(closeDismissModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="dismiss-statement-title"
@@ -6283,6 +6406,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-md rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="dismiss-statement-title" className="text-white font-semibold">
@@ -6334,6 +6458,7 @@ export default function ReconcilePage() {
               <button
                 type="button"
                 onClick={() => void handleDismissSubmit()}
+                data-modal-submit
                 disabled={dismissModal.submitting}
                 className="px-3 py-1.5 rounded-lg text-sm bg-amber-700/90 text-white hover:bg-amber-700 transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
               >
@@ -6347,7 +6472,7 @@ export default function ReconcilePage() {
       {userDismissModal.open && userDismissModal.entry && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeUserDismissModal}
+          {...backdropDismissProps(closeUserDismissModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="dismiss-user-sheet-title"
@@ -6355,6 +6480,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-md rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="dismiss-user-sheet-title" className="text-white font-semibold">
@@ -6404,6 +6530,7 @@ export default function ReconcilePage() {
               <button
                 type="button"
                 onClick={() => void handleUserDismissSubmit()}
+                data-modal-submit
                 disabled={userDismissModal.submitting}
                 className="px-3 py-1.5 rounded-lg text-sm bg-amber-700/90 text-white hover:bg-amber-700 transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
               >
@@ -6417,7 +6544,7 @@ export default function ReconcilePage() {
       {resetReconcileModal.open && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeResetReconcileModal}
+          {...backdropDismissProps(closeResetReconcileModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="reset-reconcile-title"
@@ -6425,6 +6552,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-md rounded-xl bg-[#252525] border border-red-500/30 overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="reset-reconcile-title" className="text-white font-semibold">
@@ -6493,7 +6621,7 @@ export default function ReconcilePage() {
       {splitModal.open && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeSplitModal}
+          {...backdropDismissProps(closeSplitModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="claim-existing-title"
@@ -6501,6 +6629,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-3xl rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="claim-existing-title" className="text-white font-semibold">
@@ -6549,10 +6678,10 @@ export default function ReconcilePage() {
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Search rows</label>
                 <input
-                  type="text"
+                  type="search"
                   value={splitSearchQuery}
                   onChange={(e) => setSplitSearchQuery(e.target.value)}
-                  placeholder="Search expenses or transfers (type, description, row ID, date)"
+                  placeholder="Search expenses or transfers (type, description, amount, row ID, date)"
                   className="w-full px-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-gray-200 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
                 />
               </div>
@@ -6616,6 +6745,7 @@ export default function ReconcilePage() {
               <button
                 type="button"
                 onClick={handleSplitSaveClick}
+                data-modal-submit
                 disabled={splitModal.submitting}
                 className="px-3 py-1.5 rounded-lg text-sm bg-accent text-white hover:bg-accent-dark transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
               >
@@ -6629,7 +6759,7 @@ export default function ReconcilePage() {
       {userStatementClaimModal.open && userStatementClaimModal.entry && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeUserStatementClaimModal}
+          {...backdropDismissProps(closeUserStatementClaimModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="user-statement-claim-title"
@@ -6637,6 +6767,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-3xl rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden max-h-[90vh] flex flex-col"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between shrink-0">
               <h2 id="user-statement-claim-title" className="text-white font-semibold">
@@ -6777,6 +6908,7 @@ export default function ReconcilePage() {
               <button
                 type="button"
                 onClick={handleUserStatementClaimSaveClick}
+                data-modal-submit
                 disabled={userStatementClaimModal.submitting}
                 className="px-3 py-1.5 rounded-lg text-sm bg-accent text-white hover:bg-accent-dark transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
               >
@@ -6790,7 +6922,7 @@ export default function ReconcilePage() {
       {transferClaimModal.open && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeTransferClaimModal}
+          {...backdropDismissProps(closeTransferClaimModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="transfer-claim-title"
@@ -6798,6 +6930,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-md rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="transfer-claim-title" className="text-white font-semibold">
@@ -6857,6 +6990,7 @@ export default function ReconcilePage() {
               <button
                 type="button"
                 onClick={handleTransferClaimSubmit}
+                data-modal-submit
                 disabled={transferClaimModal.submitting}
                 className="px-3 py-1.5 rounded-lg text-sm bg-accent text-white hover:bg-accent-dark transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
               >
@@ -6870,7 +7004,7 @@ export default function ReconcilePage() {
       {anchorModal.open && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeAnchorModal}
+          {...backdropDismissProps(closeAnchorModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="statement-anchor-title"
@@ -6878,6 +7012,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-md rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="statement-anchor-title" className="text-white font-semibold">
@@ -6942,6 +7077,7 @@ export default function ReconcilePage() {
               <button
                 type="button"
                 onClick={handleSaveAnchor}
+                data-modal-submit
                 disabled={anchorModal.loading || anchorModal.saving}
                 className="px-3 py-1.5 rounded-lg text-sm bg-accent text-white hover:bg-accent-dark transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
               >
@@ -6955,7 +7091,7 @@ export default function ReconcilePage() {
       {editEntryModal.open && editEntryModal.entry && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeEditEntryModal}
+          {...backdropDismissProps(closeEditEntryModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="edit-entry-title"
@@ -6963,6 +7099,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-sm rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="edit-entry-title" className="text-white font-semibold">
@@ -7063,6 +7200,7 @@ export default function ReconcilePage() {
               <button
                 type="button"
                 onClick={() => void handleEditEntrySubmit()}
+                data-modal-submit
                 disabled={editEntryModal.submitting}
                 className="px-3 py-1.5 rounded-lg text-sm bg-accent text-white hover:bg-accent-dark transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
               >
@@ -7077,7 +7215,7 @@ export default function ReconcilePage() {
       {deleteEntryModal.open && deleteEntryModal.entry && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          onClick={closeDeleteEntryModal}
+          {...backdropDismissProps(closeDeleteEntryModal)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="delete-entry-title"
@@ -7085,6 +7223,7 @@ export default function ReconcilePage() {
           <div
             className="w-full max-w-sm rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleModalEnterKey}
           >
             <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <h2 id="delete-entry-title" className="text-white font-semibold">Delete Entry</h2>

@@ -126,7 +126,10 @@ actions.
 row. It logs the expense *and* links it to that bank row in one step.
 
 **Dismiss** a bank row that will never have a logged entry — a bank fee, a
-refund, interest. You'll be asked for a short note so future-you knows why.
+refund, interest, a friend paying you back on Venmo. You'll be asked for a short
+note so future-you knows why. Dismissing keeps it out of your budget, but the
+account's balance still moves, because the money really did move (see "Where
+balances come from" below).
 
 You can also dismiss in the other direction: an entry you logged that will never
 appear on a statement (cash you handed someone, a reimbursement that netted
@@ -188,6 +191,32 @@ your credit card.
 
 ---
 
+## Where balances come from
+
+Your **budget** counts only what you log. Your **balances** come from your
+statements.
+
+Once an account has a statement uploaded, its balance is:
+
+- its anchor (or starting balance),
+- plus every statement row after that, whether it's matched, unmatched or dismissed,
+- plus anything you've logged since the last statement date that no bank row
+  has claimed yet, so the balance stays current between uploads.
+
+So if a $60 dinner goes on your credit card and a friend Venmos you $30, you can
+dismiss both: your budget doesn't change, the card balance goes down $60 and
+Venmo goes up $30.
+
+Accounts with no statements uploaded still count your logged entries, as before.
+
+If an account's balance seems to run backwards, the account view shows a
+warning with a **Flip purchase sign** button. That happens when Stash guessed
+wrong about whether the bank writes purchases as positive or negative numbers.
+It catches this by checking the bank rows you've matched to expenses: those
+should read as money going out.
+
+---
+
 ## Anchors: confirming a balance
 
 An **anchor** is you telling Stash "this account definitely held $X on this
@@ -200,7 +229,8 @@ Use one when:
 
 Set it from the account view on the Reconcile page — **⋮ → Ending balance** —
 using the ending balance printed on a statement. From that date forward, Stash
-resumes counting your logged transactions.
+resumes counting statement rows (or, for an account with no statements, your
+logged transactions).
 
 ---
 

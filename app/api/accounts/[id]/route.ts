@@ -34,6 +34,8 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
     isActive?: unknown;
     isDefault?: unknown;
     csvProfile?: Record<string, unknown> | null;
+    /** Flip just this flag, leaving the mapping and match cache alone. */
+    outflowIsPositive?: unknown;
   };
   try {
     body = (await request.json()) as typeof body;
@@ -81,6 +83,23 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
            WHERE user_id = ${userId} AND id = ${accountId}::uuid AND deleted_at IS NULL
         `,
       ]);
+    }
+
+    // Unlike a remapping, this flag changes no hash (the parsed sign is never
+    // touched), so the match cache stays valid. It decides which way statement
+    // rows move the balance, and how unmatched lines are bucketed.
+    if (typeof body.outflowIsPositive === "boolean" && body.csvProfile === undefined) {
+      if (!existing.csvProfile) {
+        return NextResponse.json(
+          { error: "This account has no CSV mapping yet." },
+          { status: 400 },
+        );
+      }
+      await sql`
+        UPDATE account_csv_profiles
+           SET outflow_is_positive = ${body.outflowIsPositive}, updated_at = now()
+         WHERE user_id = ${userId} AND account_id = ${accountId}::uuid
+      `;
     }
 
     if (body.csvProfile !== undefined) {

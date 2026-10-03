@@ -100,6 +100,8 @@ silent and expensive.
 - `/api/reconciliation/*` — bank CSV matching state
 - `/api/reconciliation/rejected-matches` — pairs the user disconnected; the
   negative signal that makes Disconnect stick
+- `/api/reconciliation/statement-balances` — per-account statement totals that
+  balances are built from; see "Balances" below
 - `/api/ingest` — iOS Shortcut writes, **bearer token only**, no session
 - `/api/ingest/accounts` — the account list for the Shortcut's picker, so it can
   send a real `financial_accounts.id` instead of baking UUIDs in. Also
@@ -291,6 +293,44 @@ decision, so nothing could consult it.
 - **The client records it before the rematch, not after**, and surfaces a failure
   rather than swallowing it: a silent no-op here is the original bug.
 
+### Balances
+
+**The budget is built from logged entries; balances are built from statements.**
+That split is the point: a card charge and a Venmo payback can both be
+dismissed, staying out of the budget, while both accounts' balances still move.
+Dismissal is a reconciliation decision, never a claim that money didn't move.
+
+`computeAccountBalances` (client, pure) picks a source per account:
+
+- **Has uploaded statements** → anchor-or-opening + every statement row dated
+  after the anchor (matched, unmatched *and* dismissed) + logged entries dated
+  after the account's latest statement row that no bank line has claimed and the
+  user hasn't dismissed. Entries on or before that date are presumed covered by the
+  statement: counting an unreconciled one would double it.
+- **No statements** → logged entries only, exactly as before. That path keys
+  anchors on the UTC timestamp and is deliberately byte-identical.
+
+The statement side comes from `lib/statementBalances.ts` via
+`/api/reconciliation/statement-balances`. It must run server-side (it parses with
+`reconciliationService`) and it returns per-date nets rather than one total, so
+anchors are applied in the one client function and can't disagree. It skips
+redundant duplicate copies with the same rule `/dedupe` uses
+(`redundantDuplicateHashes`, shared), so legacy overlap doesn't double a balance
+before anyone presses Remove duplicate rows.
+
+**Direction comes from `outflow_is_positive`, which is a guess**, and a wrong
+guess runs the whole balance backwards. Each summary carries a `directionCheck`:
+claimed bank lines vs the `kind` of the logged entry they're linked to (expenses
+should be money out). `statementDirectionLooksReversed` turns that into a warning
+in the reconcile account header with a one-click flip. The flip PATCHes
+`outflowIsPositive` **on its own**, not a whole `csvProfile`, because it changes
+no hash and must not clear the match cache the way a remapping does.
+
+The reconcile page refetches the summary on a debounce keyed to the state every
+reconciliation handler ends by setting (matches, processed, claims, transfer
+status, dismissals, accounts), rather than threading a refetch through each
+handler.
+
 ### CSV formats
 
 Column mappings live per account in `account_csv_profiles`.
@@ -303,7 +343,8 @@ because the mapping determines each transaction's hash.
 
 `outflow_is_positive` feeds the pre-existing `outgoingIsPositive` option on
 `findMatches` — it only affects how the unmatched bucket is classified, never
-the parsed sign, which would change hashes.
+the parsed sign, which would change hashes. It also decides which way each
+statement row moves a balance (see "Balances").
 
 ### Key Files
 
@@ -323,7 +364,8 @@ the parsed sign, which would change hashes.
 | `app/guide/reconcile/page.tsx` | In-app user guide |
 | `services/transactionsApi.ts` | Client transaction fetch/submit + type normalization |
 | `services/reconciliationService.ts` | Match algorithm and hashing — **frozen**, see above |
-| `services/accountBalancesService.ts` | Balances from accounts + transactions + transfers + anchors |
+| `services/accountBalancesService.ts` | Balances from accounts + anchors + statements (or logged entries where there are none) |
+| `lib/statementBalances.ts` | Server-side statement summaries for balances; shared duplicate rule with `/dedupe` |
 | `docs/neon-setup.sql` | The schema. Single source of truth |
 | `docs/migrations/` | Ordered ALTERs for databases created from an older schema |
 | `app/api/reconciliation/rejected-matches/route.ts` | Disconnected pairs — see "Rejected matches" |
