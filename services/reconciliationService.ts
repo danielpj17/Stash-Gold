@@ -435,6 +435,39 @@ function classifyUnmatched(
   return "no_candidate";
 }
 
+/**
+ * Description for a row whose mapped description cell is blank but which has a
+ * real date and amount. Venmo leaves "Note" empty on bank transfers ("Standard
+ * Transfer"), so those rows used to be dropped entirely — invisible to
+ * reconcile and missing from the balance.
+ *
+ * Takes the FIRST non-empty text cell outside the mapped columns (Venmo's
+ * "Type"), not a join of every cell: this string feeds the hash, so it must not
+ * shift when a volatile column like Status changes between exports. Rows that
+ * reach here produced no hash before, so no existing claim is keyed to them.
+ * Once shipped, this rule is as frozen as `cleanBankDescription`.
+ */
+function fallbackDescription(row: string[], profile: BankProfile): string {
+  const mapped = new Set(
+    [
+      profile.dateIndex,
+      profile.amountIndex,
+      profile.descriptionIndex,
+      profile.debitIndex,
+      profile.creditIndex,
+    ].filter((index): index is number => index != null),
+  );
+  for (let i = 0; i < row.length; i += 1) {
+    if (mapped.has(i)) continue;
+    const cell = String(row[i] ?? "").trim();
+    if (!cell || cell.length > 100) continue;
+    if (parseBankAmount(cell) !== null) continue; // ids, balances, fees
+    if (!/[a-z]/i.test(cell)) continue;
+    return cleanBankDescription(cell);
+  }
+  return "";
+}
+
 export function mapBankRowToTransaction(
   accountName: string,
   row: string[],
@@ -470,14 +503,16 @@ export function mapBankRowToTransaction(
       amount = null;
     }
   }
-  if (!date || !description || amount === null) return null;
+  if (!date || amount === null) return null;
+  const resolvedDescription = description || fallbackDescription(row, profile);
+  if (!resolvedDescription) return null;
 
   return {
     accountName: String(accountName),
     date,
     amount,
-    description,
-    hash: generateTransactionHash(date, amount, description),
+    description: resolvedDescription,
+    hash: generateTransactionHash(date, amount, resolvedDescription),
     raw: row,
   };
 }
