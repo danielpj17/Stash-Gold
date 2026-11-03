@@ -13,18 +13,28 @@ type MemoryRow = {
   last_confirmed_at: string;
 };
 
-export async function GET() {
+/** `?account=<financial_accounts.id>` narrows to one account; omitted = all. */
+export async function GET(request: NextRequest) {
   const ctx = await requireUser();
   if (isErrorResponse(ctx)) return ctx;
   const { sql, userId } = ctx;
 
+  const account = request.nextUrl.searchParams.get("account")?.trim() || null;
+
   try {
-    const rows = (await sql`
-      SELECT fingerprint, bank_account_name, sheet_category, sheet_account, confirmed_count, last_confirmed_at
-      FROM reconciliation_merchant_memory
-      WHERE user_id = ${userId}
-      ORDER BY confirmed_count DESC, last_confirmed_at DESC
-    `) as MemoryRow[];
+    const rows = (account
+      ? await sql`
+          SELECT fingerprint, bank_account_name, sheet_category, sheet_account, confirmed_count, last_confirmed_at
+          FROM reconciliation_merchant_memory
+          WHERE user_id = ${userId} AND bank_account_name = ${account}
+          ORDER BY confirmed_count DESC, last_confirmed_at DESC
+        `
+      : await sql`
+          SELECT fingerprint, bank_account_name, sheet_category, sheet_account, confirmed_count, last_confirmed_at
+          FROM reconciliation_merchant_memory
+          WHERE user_id = ${userId}
+          ORDER BY confirmed_count DESC, last_confirmed_at DESC
+        `) as MemoryRow[];
 
     return NextResponse.json({
       entries: rows.map((row) => ({

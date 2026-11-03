@@ -237,6 +237,15 @@ Two profile flags replace what used to be hardcoded per bank:
   from the description instead of using the posted date. Auto-detected when
   >30% of sampled descriptions match that pattern.
 
+**The format can be reviewed and edited later** from ⋮ → Accounts: each row's
+"CSV set" / "no CSV yet" badge opens the same modal (`openCsvFormatEditor`),
+previewed against the account's stored statement rows — or a sample file the
+user picks if none are stored, which is only previewed, never uploaded. Saving
+an edit sends a full `csvProfile` (clearing the match cache, then
+`handleCsvFormatEdited` re-matches) **only if a hash-affecting field changed**
+(`parseKeyOf`); a lone sign-convention change PATCHes `outflowIsPositive` by
+itself, and no change at all just closes.
+
 Header rows need no special handling: they produce no date/amount/description,
 so `mapBankRowToTransaction` returns null and they drop out. That is more robust
 than slicing at a fixed header offset, because a merged CSV can contain header
@@ -409,11 +418,11 @@ Every successful claim handler (`handleApprove`, `handleSplitSubmit`, `handleTra
 
 ### Memory Management
 
-**⋮ → Memory** in the page header opens a modal showing all memory entries per account. Users can delete individual entries to stop auto-claiming a pattern.
+**⋮ → Memory** in the page header opens a modal of memory entries. **Scoped to the view it was opened from**: on All it lists every account's entries (each labelled via `labelFor`); in an account's detail view it lists only that account's (`?account=`). **⋮ → Activity** follows the same rule. Users can delete individual entries to stop auto-claiming a pattern.
 
 ### API: `/api/reconciliation/memory`
 
-- `GET` — returns all entries
+- `GET` — returns all entries; `?account=<id>` narrows to one account
 - `POST { fingerprint, bankAccountName, sheetCategory?, sheetAccount? }` — upsert + increment count
 - `DELETE { fingerprint, bankAccountName }` — remove single entry
 
@@ -444,6 +453,7 @@ This allows all actions triggered by one upload to be grouped and undone togethe
 
 - `GET ?since=YYYY-MM-DD` — returns log entries from that date forward, grouped by `csvUploadId` when present
 - Default window: last 30 days
+- `&account=<id>` narrows to one account. The log has no account column, so it matches the payload's `accountName` / `bankAccountName` (or the same under `originalPayload` for undo entries); sheet-row dismissals, which carry no bank account, are attributed through `transactions.account` of the dismissed entry
 
 ### API: `/api/reconciliation/activity/[id]/undo`
 

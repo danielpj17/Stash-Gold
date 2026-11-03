@@ -33,8 +33,18 @@ const KIND_OPTIONS = ACCOUNT_KINDS.map((k) => ({ value: k, label: KIND_LABELS[k]
  * Deleting is a soft delete server-side: past matches against the account stay
  * matched and correctly named. The copy below says so, because "delete" that
  * silently preserves data is otherwise surprising in the other direction.
+ *
+ * `onEditCsv` makes each row's CSV badge open the column-mapping editor. It is
+ * a callback rather than built in because the editor needs sample rows, and
+ * only the reconcile page holds the account's stored statement rows.
  */
-export default function ManageAccountsModal({ onClose }: { onClose: () => void }) {
+export default function ManageAccountsModal({
+  onClose,
+  onEditCsv,
+}: {
+  onClose: () => void;
+  onEditCsv?: (account: FinancialAccount) => void;
+}) {
   const { accounts, setAccounts, refresh } = useAccounts();
 
   const [newName, setNewName] = useState("");
@@ -382,15 +392,34 @@ export default function ManageAccountsModal({ onClose }: { onClose: () => void }
                   className="stash-number-input w-[7rem] shrink-0 rounded-md bg-[#1f1f1f] border border-charcoal-dark px-3 py-1.5 text-white text-right focus:outline-none focus:border-[#50C878]"
                 />
 
-                <span
-                  className={`text-xs px-2 py-1 rounded shrink-0 ${
-                    account.csvProfile
-                      ? "bg-[#50C878]/15 text-[#50C878]"
-                      : "bg-yellow-400/10 text-yellow-300/90"
-                  }`}
-                >
-                  {account.csvProfile ? "CSV set" : "no CSV yet"}
-                </span>
+                {onEditCsv ? (
+                  <button
+                    type="button"
+                    onClick={() => onEditCsv(account)}
+                    title={
+                      account.csvProfile
+                        ? "View or edit how this account's CSV statements are read"
+                        : "Set up how this account's CSV statements are read"
+                    }
+                    className={`text-xs px-2 py-1 rounded shrink-0 transition hover:brightness-125 hover:underline underline-offset-2 ${
+                      account.csvProfile
+                        ? "bg-[#50C878]/15 text-[#50C878]"
+                        : "bg-yellow-400/10 text-yellow-300/90"
+                    }`}
+                  >
+                    {account.csvProfile ? "CSV set" : "no CSV yet"}
+                  </button>
+                ) : (
+                  <span
+                    className={`text-xs px-2 py-1 rounded shrink-0 ${
+                      account.csvProfile
+                        ? "bg-[#50C878]/15 text-[#50C878]"
+                        : "bg-yellow-400/10 text-yellow-300/90"
+                    }`}
+                  >
+                    {account.csvProfile ? "CSV set" : "no CSV yet"}
+                  </span>
+                )}
 
                 <div className="flex items-center gap-1 ml-auto shrink-0">
                   <button

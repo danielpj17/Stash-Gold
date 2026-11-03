@@ -41,9 +41,50 @@ export async function GET(request: NextRequest) {
   const { sql, userId } = ctx;
 
   const since = parseSinceParam(request.nextUrl.searchParams.get("since"));
+  const account = request.nextUrl.searchParams.get("account")?.trim() || null;
 
   try {
-    const rows = (await sql`
+    // Narrowing to one account has to read the account out of the payload,
+    // because the log has no account column. Routes write it under
+    // `accountName` (claims, processed, dismissals) or `bankAccountName`
+    // (transfer claims), and an undo nests the original under
+    // `originalPayload`. Sheet-row dismissals carry no bank account at all, so
+    // they are attributed through the logged entry's own account — still
+    // filtered on user_id inside the subquery.
+    const rows = (account
+      ? await sql`
+      SELECT
+        a.id,
+        a.occurred_at,
+        a.action_type,
+        a.actor,
+        a.csv_upload_id,
+        a.bulk_action_id,
+        a.parent_action_id,
+        a.payload,
+        a.reverted_at,
+        a.reverted_by_action_id
+      FROM reconciliation_activity_log a
+      WHERE a.user_id = ${userId}
+        AND a.occurred_at >= ${since}::timestamp
+        AND (
+          COALESCE(
+            a.payload->>'accountName',
+            a.payload->>'bankAccountName',
+            a.payload->'originalPayload'->>'accountName',
+            a.payload->'originalPayload'->>'bankAccountName'
+          ) = ${account}
+          OR EXISTS (
+            SELECT 1 FROM transactions t
+            WHERE t.user_id = ${userId}
+              AND t.id = COALESCE(a.payload->>'sheetRowId', a.payload->'originalPayload'->>'sheetRowId')
+              AND t.account = ${account}
+          )
+        )
+      ORDER BY a.occurred_at DESC
+      LIMIT 500
+    `
+      : await sql`
       SELECT
         id,
         occurred_at,

@@ -77,6 +77,27 @@ function assignRole(profile: DraftProfile, index: number, role: ColumnRole): Dra
   return next;
 }
 
+/**
+ * The fields the parser builds its `BankProfile` from — and therefore the only
+ * fields that change a transaction's hash. Shared by the preview refetch and by
+ * the save path, which must not clear the match cache over anything else.
+ */
+function parseKeyOf(
+  p: Pick<
+    StoredCsvProfile,
+    "dateIndex" | "amountIndex" | "descriptionIndex" | "debitIndex" | "creditIndex" | "deriveDateFromDescription"
+  >,
+): string {
+  return [
+    p.dateIndex,
+    p.amountIndex,
+    p.descriptionIndex,
+    p.debitIndex,
+    p.creditIndex,
+    p.deriveDateFromDescription,
+  ].join("|");
+}
+
 const fmtMoney = (n: number) =>
   (n < 0 ? "-$" : "$") +
   Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -88,6 +109,11 @@ const fmtMoney = (n: number) =>
  * preview produced by the real parser and has to accept it. A silently-wrong
  * mapping would produce plausible-but-wrong transaction hashes, and claims key
  * off those hashes.
+ *
+ * Also opened from Manage Accounts to review or edit a format that is already
+ * saved (`account.csvProfile` set), in which case `rows` are the account's
+ * stored statement rows. `onSaved` reports `remapped` so the caller knows
+ * whether hashes changed and the account needs re-matching.
  */
 export default function CsvMappingModal({
   account,
@@ -98,8 +124,9 @@ export default function CsvMappingModal({
   account: FinancialAccount;
   rows: string[][];
   onCancel: () => void;
-  onSaved: (updatedAccounts: FinancialAccount[]) => void;
+  onSaved: (updatedAccounts: FinancialAccount[], result: { remapped: boolean }) => void;
 }) {
+  const isEditing = Boolean(account.csvProfile);
   const [profile, setProfile] = useState<DraftProfile | null>(null);
   const [data, setData] = useState<PreviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -175,16 +202,10 @@ export default function CsvMappingModal({
    * data; that flag changes how an amount is *read*, never how it is parsed, so
    * it is handled at render time instead.
    */
-  const parseKey = profile
-    ? [
-        profile.dateIndex,
-        profile.amountIndex,
-        profile.descriptionIndex,
-        profile.debitIndex,
-        profile.creditIndex,
-        profile.deriveDateFromDescription,
-      ].join("|")
-    : "";
+  const parseKey = profile ? parseKeyOf(profile) : "";
+  const remapsSavedProfile = Boolean(
+    account.csvProfile && profile && parseKeyOf(account.csvProfile) !== parseKey,
+  );
 
   // Re-preview whenever the mapping changes so the sample below is always live.
   useEffect(() => {
@@ -205,22 +226,38 @@ export default function CsvMappingModal({
 
   const handleSave = useCallback(async () => {
     if (!profile || !isUsable) return;
+    const saved = account.csvProfile;
+
+    // Editing without touching the columns: a full csvProfile PATCH would clear
+    // the match cache for nothing. Only the sign convention can differ, and it
+    // goes on its own exactly as the reconcile header's direction flip does.
+    let patchBody: Record<string, unknown> = { csvProfile: profile };
+    let remapped = true;
+    if (saved && !remapsSavedProfile) {
+      if (saved.outflowIsPositive === profile.outflowIsPositive) {
+        onCancel();
+        return;
+      }
+      patchBody = { outflowIsPositive: profile.outflowIsPositive };
+      remapped = false;
+    }
+
     setSaving(true);
     setError("");
     try {
       const res = await fetch(`/api/accounts/${account.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ csvProfile: profile }),
+        body: JSON.stringify(patchBody),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.error ?? `Failed to save (${res.status})`);
-      onSaved(Array.isArray(body.accounts) ? body.accounts : []);
+      onSaved(Array.isArray(body.accounts) ? body.accounts : [], { remapped });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save CSV format");
       setSaving(false);
     }
-  }, [profile, isUsable, account.id, onSaved]);
+  }, [profile, isUsable, account.id, account.csvProfile, remapsSavedProfile, onCancel, onSaved]);
 
   const columnCount = data?.columnCount ?? 0;
 
@@ -228,10 +265,13 @@ export default function CsvMappingModal({
     <div className="fixed inset-0 z-50 bg-black/60 p-4 flex items-center justify-center overflow-y-auto">
       <div className="w-full max-w-4xl my-8 rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
         <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark">
-          <h3 className="text-white font-semibold">Set up the CSV format for {account.name}</h3>
+          <h3 className="text-white font-semibold">
+            {isEditing ? `CSV format for ${account.name}` : `Set up the CSV format for ${account.name}`}
+          </h3>
           <p className="text-xs text-gray-400 mt-1">
-            Tell Stash which column is which. You only do this once per account — later uploads
-            use the same setup.
+            {isEditing
+              ? "How Stash reads this account's statements, shown against rows you've already uploaded."
+              : "Tell Stash which column is which. You only do this once per account — later uploads use the same setup."}
           </p>
         </div>
 
@@ -243,6 +283,14 @@ export default function CsvMappingModal({
           <div className="p-6 text-red-400 text-sm">{error || "Couldn't read that file."}</div>
         ) : (
           <div className="p-4 space-y-5">
+            {remapsSavedProfile && (
+              <p className="text-xs text-yellow-300/90 bg-yellow-400/10 rounded-md px-3 py-2">
+                Changing which columns are read changes how each transaction is identified. Saving
+                re-matches this account&apos;s statements, and lines you already matched may need
+                matching again.
+              </p>
+            )}
+
             {profile.detectedAutomatically && (
               <p className="text-xs text-[#50C878] bg-[#50C878]/10 rounded-md px-3 py-2">
                 We guessed the columns below. Check the preview at the bottom and correct anything
@@ -427,7 +475,7 @@ export default function CsvMappingModal({
             className="flex items-center gap-2 px-4 py-2 rounded-md bg-[#50C878] font-semibold text-charcoal disabled:opacity-50 hover:brightness-110 transition"
           >
             {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-            Save and continue
+            {isEditing ? "Save" : "Save and continue"}
           </button>
         </div>
       </div>

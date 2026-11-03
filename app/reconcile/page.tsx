@@ -742,12 +742,19 @@ export default function ReconcilePage() {
   );
 
   const [selectedAccount, setSelectedAccount] = useState<AccountOption>("");
-  /** Set when a dropped file needs its column mapping confirmed first. */
+  /**
+   * Set when a dropped file needs its column mapping confirmed first
+   * (`pendingFile` is that file, uploaded once the mapping saves), or when the
+   * format is opened from Manage Accounts to view/edit (`pendingFile: null`).
+   */
   const [csvMapping, setCsvMapping] = useState<{
     accountId: string;
     rows: string[][];
-    pendingFile: File;
+    pendingFile: File | null;
   } | null>(null);
+  /** Fallback for editing a format when the account has no stored statement rows. */
+  const csvFormatFileInputRef = useRef<HTMLInputElement | null>(null);
+  const csvFormatFileAccountRef = useRef<string | null>(null);
   const [manageAccountsOpen, setManageAccountsOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [removingDuplicates, setRemovingDuplicates] = useState(false);
@@ -962,14 +969,18 @@ export default function ReconcilePage() {
     confirmedCount: number;
     lastConfirmedAt: string;
   };
+  // `account` is the scope the modal was opened in: an account id from that
+  // account's detail view, or null from All (every account).
   const [memoryModal, setMemoryModal] = useState<{
     open: boolean;
+    account: string | null;
     loading: boolean;
     entries: MemoryEntry[];
     error: string;
     forgettingKey: string | null;
   }>({
     open: false,
+    account: null,
     loading: false,
     entries: [],
     error: "",
@@ -991,6 +1002,7 @@ export default function ReconcilePage() {
   };
   const [activityModal, setActivityModal] = useState<{
     open: boolean;
+    account: string | null;
     loading: boolean;
     entries: ActivityEntry[];
     since: string;
@@ -998,6 +1010,7 @@ export default function ReconcilePage() {
     undoingId: string | null;
   }>({
     open: false,
+    account: null,
     loading: false,
     entries: [],
     since: formatSinceDate(MATCH_CACHE_DEFAULT_DAYS),
@@ -1034,10 +1047,11 @@ export default function ReconcilePage() {
     }
   }, [loadingOlderMatches, matchCacheSinceDate]);
 
-  const loadMemoryEntries = useCallback(async () => {
+  const loadMemoryEntries = useCallback(async (account: string | null) => {
     setMemoryModal((prev) => ({ ...prev, loading: true, error: "" }));
     try {
-      const res = await fetch("/api/reconciliation/memory", { cache: "no-store" });
+      const query = account ? `?account=${encodeURIComponent(account)}` : "";
+      const res = await fetch(`/api/reconciliation/memory${query}`, { cache: "no-store" });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error ?? `Memory fetch failed (${res.status})`);
@@ -1058,10 +1072,20 @@ export default function ReconcilePage() {
     }
   }, []);
 
-  const openMemoryModal = useCallback(() => {
-    setMemoryModal((prev) => ({ ...prev, open: true, error: "", forgettingKey: null }));
-    void loadMemoryEntries();
-  }, [loadMemoryEntries]);
+  const openMemoryModal = useCallback(
+    (account: string | null) => {
+      setMemoryModal((prev) => ({
+        ...prev,
+        open: true,
+        account,
+        entries: [],
+        error: "",
+        forgettingKey: null,
+      }));
+      void loadMemoryEntries(account);
+    },
+    [loadMemoryEntries],
+  );
 
   const closeMemoryModal = useCallback(() => {
     setMemoryModal((prev) => ({ ...prev, open: false }));
@@ -1102,10 +1126,13 @@ export default function ReconcilePage() {
     [],
   );
 
-  const loadActivityEntries = useCallback(async (since: string) => {
+  const loadActivityEntries = useCallback(async (since: string, account: string | null) => {
     setActivityModal((prev) => ({ ...prev, loading: true, error: "" }));
     try {
-      const res = await fetch(`/api/reconciliation/activity?since=${since}`, { cache: "no-store" });
+      const accountQuery = account ? `&account=${encodeURIComponent(account)}` : "";
+      const res = await fetch(`/api/reconciliation/activity?since=${since}${accountQuery}`, {
+        cache: "no-store",
+      });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error ?? `Activity fetch failed (${res.status})`);
@@ -1127,18 +1154,22 @@ export default function ReconcilePage() {
     }
   }, []);
 
-  const openActivityModal = useCallback(() => {
-    const initialSince = formatSinceDate(MATCH_CACHE_DEFAULT_DAYS);
-    setActivityModal((prev) => ({
-      ...prev,
-      open: true,
-      since: initialSince,
-      entries: [],
-      error: "",
-      undoingId: null,
-    }));
-    void loadActivityEntries(initialSince);
-  }, [loadActivityEntries]);
+  const openActivityModal = useCallback(
+    (account: string | null) => {
+      const initialSince = formatSinceDate(MATCH_CACHE_DEFAULT_DAYS);
+      setActivityModal((prev) => ({
+        ...prev,
+        open: true,
+        account,
+        since: initialSince,
+        entries: [],
+        error: "",
+        undoingId: null,
+      }));
+      void loadActivityEntries(initialSince, account);
+    },
+    [loadActivityEntries],
+  );
 
   const closeActivityModal = useCallback(() => {
     setActivityModal((prev) => ({ ...prev, open: false }));
@@ -1151,8 +1182,8 @@ export default function ReconcilePage() {
       : new Date();
     base.setUTCDate(base.getUTCDate() - MATCH_CACHE_LOAD_MORE_DAYS);
     const next = base.toISOString().slice(0, 10);
-    void loadActivityEntries(next);
-  }, [activityModal.since, loadActivityEntries]);
+    void loadActivityEntries(next, activityModal.account);
+  }, [activityModal.since, activityModal.account, loadActivityEntries]);
 
   const handleUndoActivity = useCallback(
     async (entry: ActivityEntry) => {
@@ -1169,7 +1200,7 @@ export default function ReconcilePage() {
           throw new Error(data.error ?? `Undo failed (${res.status})`);
         }
         // Refresh activity list so the UI reflects reverted state.
-        await loadActivityEntries(activityModal.since);
+        await loadActivityEntries(activityModal.since, activityModal.account);
       } catch (err) {
         setActivityModal((prev) => ({
           ...prev,
@@ -1180,7 +1211,7 @@ export default function ReconcilePage() {
       }
       setActivityModal((prev) => ({ ...prev, undoingId: null }));
     },
-    [activityModal.since, loadActivityEntries],
+    [activityModal.since, activityModal.account, loadActivityEntries],
   );
 
   const isBulkApprovableMatch = useCallback((match: MatchResult): boolean => {
@@ -3513,6 +3544,60 @@ export default function ReconcilePage() {
     }
   }, [rematchAllStoredAccounts]);
 
+  /**
+   * Open the CSV format editor from Manage Accounts. The preview needs real
+   * rows, so it uses the statements already stored for the account; with none
+   * stored, the user picks a sample file, which is only previewed — nothing is
+   * uploaded or saved until they press Save, and then only the mapping.
+   */
+  const openCsvFormatEditor = useCallback((account: { id: string }) => {
+    const stored = statementCsvRowsByAccountRef.current[account.id];
+    if (stored?.length) {
+      setCsvMapping({ accountId: account.id, rows: stored, pendingFile: null });
+      return;
+    }
+    csvFormatFileAccountRef.current = account.id;
+    csvFormatFileInputRef.current?.click();
+  }, []);
+
+  const handleCsvFormatSampleChosen = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      const accountId = csvFormatFileAccountRef.current;
+      event.target.value = ""; // so choosing the same file again still fires
+      csvFormatFileAccountRef.current = null;
+      if (!file || !accountId) return;
+      const rows = await parseCsvFile(file).catch(() => [] as string[][]);
+      if (rows.length === 0) {
+        window.alert("That CSV file has no data rows.");
+        return;
+      }
+      setCsvMapping({ accountId, rows, pendingFile: null });
+    },
+    [],
+  );
+
+  /**
+   * A saved remap clears the account's match cache server-side, because every
+   * hash may have changed. Re-match straight away so the account isn't left
+   * empty until the next upload.
+   */
+  const handleCsvFormatEdited = useCallback(
+    async (accountId: string, remapped: boolean) => {
+      if (!remapped || !statementCsvRowsByAccountRef.current[accountId]?.length) return;
+      setRematching(true);
+      setActionError("");
+      try {
+        await rematchAllStoredAccounts();
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : "Re-match failed.");
+      } finally {
+        setRematching(false);
+      }
+    },
+    [rematchAllStoredAccounts],
+  );
+
   const handleDisconnectSheetLink = useCallback(
     async (match: MatchResult) => {
       if (typeof window !== "undefined") {
@@ -4894,15 +4979,23 @@ export default function ReconcilePage() {
                   key: "memory",
                   label: "Memory",
                   icon: <Brain className="w-4 h-4" />,
-                  title: "Merchant patterns learned for auto-claiming",
-                  onSelect: () => void openMemoryModal(),
+                  title:
+                    viewMode === "accountDetail"
+                      ? `Merchant patterns learned for ${labelFor(selectedAccount)}`
+                      : "Merchant patterns learned for auto-claiming, all accounts",
+                  onSelect: () =>
+                    openMemoryModal(viewMode === "accountDetail" ? selectedAccount : null),
                 },
                 {
                   key: "activity",
                   label: "Activity",
                   icon: <History className="w-4 h-4" />,
-                  title: "Log of every reconciliation action, with undo",
-                  onSelect: () => void openActivityModal(),
+                  title:
+                    viewMode === "accountDetail"
+                      ? `Reconciliation actions on ${labelFor(selectedAccount)}, with undo`
+                      : "Log of every reconciliation action, with undo",
+                  onSelect: () =>
+                    openActivityModal(viewMode === "accountDetail" ? selectedAccount : null),
                 },
                 {
                   key: "anchor",
@@ -6102,7 +6195,10 @@ export default function ReconcilePage() {
           >
             <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <div>
-                <h2 id="memory-modal-title" className="text-white font-semibold">Merchant Memory</h2>
+                <h2 id="memory-modal-title" className="text-white font-semibold">
+                  Merchant Memory
+                  {memoryModal.account ? ` — ${labelFor(memoryModal.account)}` : " — All accounts"}
+                </h2>
                 <p className="text-xs text-gray-400 mt-0.5">
                   Patterns the system remembers. Auto-claim fires after 2+ confirmations.
                 </p>
@@ -6127,7 +6223,10 @@ export default function ReconcilePage() {
                 </div>
               ) : memoryModal.entries.length === 0 ? (
                 <p className="text-gray-400 text-sm text-center py-8">
-                  No remembered patterns yet. The system will start learning after you claim recurring transactions.
+                  {memoryModal.account
+                    ? `No remembered patterns for ${labelFor(memoryModal.account)} yet.`
+                    : "No remembered patterns yet."}{" "}
+                  The system will start learning after you claim recurring transactions.
                 </p>
               ) : (
                 <div className="space-y-2">
@@ -6143,9 +6242,12 @@ export default function ReconcilePage() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-[11px] uppercase tracking-wide text-gray-500">
-                                {entry.bankAccountName}
-                              </span>
+                              {/* bank_account_name holds an account id — never render it raw. */}
+                              {!memoryModal.account && (
+                                <span className="text-[11px] uppercase tracking-wide text-gray-500">
+                                  {labelFor(entry.bankAccountName)}
+                                </span>
+                              )}
                               <span
                                 className={`text-[10px] uppercase tracking-wide font-semibold ${
                                   isAutoClaiming ? "text-accent" : "text-gray-500"
@@ -6210,7 +6312,10 @@ export default function ReconcilePage() {
           >
             <div {...modalDragHandleProps()} className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark flex items-center justify-between">
               <div>
-                <h2 id="activity-modal-title" className="text-white font-semibold">Reconciliation Activity</h2>
+                <h2 id="activity-modal-title" className="text-white font-semibold">
+                  Reconciliation Activity
+                  {activityModal.account ? ` — ${labelFor(activityModal.account)}` : " — All accounts"}
+                </h2>
                 <p className="text-xs text-gray-400 mt-0.5">
                   Showing actions since {activityModal.since}. Click Undo to reverse a single action.
                 </p>
@@ -7279,20 +7384,39 @@ export default function ReconcilePage() {
         </div>
       )}
 
-      {manageAccountsOpen && <ManageAccountsModal onClose={() => setManageAccountsOpen(false)} />}
+      {manageAccountsOpen && (
+        <ManageAccountsModal
+          onClose={() => setManageAccountsOpen(false)}
+          onEditCsv={openCsvFormatEditor}
+        />
+      )}
+      <input
+        ref={csvFormatFileInputRef}
+        type="file"
+        accept=".csv,text/csv,text/plain,application/vnd.ms-excel,application/csv"
+        className="hidden"
+        onChange={(e) => void handleCsvFormatSampleChosen(e)}
+      />
 
+      {/* Rendered after ManageAccountsModal so, opened from it, it sits on top. */}
       {csvMapping && accountsById.get(csvMapping.accountId) && (
         <CsvMappingModal
+          // Remount per opening: the modal seeds its draft once, on mount.
+          key={`${csvMapping.accountId}:${csvMapping.pendingFile ? "upload" : "edit"}`}
           account={accountsById.get(csvMapping.accountId)!}
           rows={csvMapping.rows}
           onCancel={() => setCsvMapping(null)}
-          onSaved={(updatedAccounts) => {
-            const pending = csvMapping.pendingFile;
+          onSaved={(updatedAccounts, { remapped }) => {
+            const { accountId, pendingFile } = csvMapping;
             setCsvMapping(null);
             // The context must know about the new profile before the retry, or
             // onDrop would bounce straight back into this modal.
             setAccounts(updatedAccounts);
-            void onDrop([pending]);
+            if (pendingFile) {
+              void onDrop([pendingFile]);
+            } else {
+              void handleCsvFormatEdited(accountId, remapped);
+            }
           }}
         />
       )}
