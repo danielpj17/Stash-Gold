@@ -6,6 +6,7 @@ import { MonthProvider } from "@/contexts/MonthContext";
 import { RefreshProvider } from "@/contexts/RefreshContext";
 import { AccountsProvider } from "@/contexts/AccountsContext";
 import { ExpensesDataProvider } from "@/contexts/ExpensesDataContext";
+import NotificationNavigator from "@/components/NotificationNavigator";
 
 export default function Providers({
   children,
@@ -19,6 +20,7 @@ export default function Providers({
     // there is nothing worth refetching — and each refetch would be a DB round
     // trip on the free tier.
     <SessionProvider session={session} refetchInterval={0} refetchOnWindowFocus={false}>
+      <NotificationNavigator />
       <MonthProvider>
         <RefreshProvider>
           <AccountsProvider>

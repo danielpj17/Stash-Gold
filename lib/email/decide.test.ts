@@ -140,7 +140,7 @@ describe("decide: new purchases and rules", () => {
   });
 
   it("a brand-new merchant uses the starter guess, else no category at all", () => {
-    const gas = decide(ctx({ merchant: null, alert: alert({ merchantRaw: "MAVERIK #412 OGDEN UT" }) }));
+    const gas = decide(ctx({ merchant: null, alert: alert({ merchantRaw: "CHEVRON #412 OGDEN UT" }) }));
     expect(gas.action === "create" && gas.transactions[0].category).toBe("Gas");
     const none = decide(ctx({ merchant: null, alert: alert({ merchantRaw: "JOES BIKE SHOP" }) }));
     expect(none.action === "create" && none.transactions[0]).toMatchObject({

@@ -102,6 +102,8 @@ export async function notifyNeedsReview(
     merchantName: string;
     amountCents: number;
     choices: string[] | "all";
+    /** The description the row was saved with (editable on the screen the tap opens). */
+    description?: string | null;
   },
 ): Promise<{ sent: number }> {
   const settings = await getEmailSyncSettings(sql, scopeUserId);
@@ -128,10 +130,17 @@ export async function notifyNeedsReview(
   const question =
     Array.isArray(info.choices) && info.choices.length > 0 && info.choices.length <= 3
       ? `${info.choices.join(" or ")}?`
-      : "which category?";
+      : "Which category?";
+  // Show the description that will be saved when it says more than the
+  // merchant name (a Venmo note, "Refund · …"); it already names the merchant.
+  const description = info.description?.trim() ?? "";
+  const head =
+    description && description !== info.merchantName
+      ? `${fmtMoney(info.amountCents)} · ${info.accountName}\n${description.slice(0, 120)}`
+      : `${fmtMoney(info.amountCents)} at ${info.merchantName} · ${info.accountName}`;
   const payload: PushPayload = {
     title: "Categorize a purchase",
-    body: `${fmtMoney(info.amountCents)} at ${info.merchantName} · ${info.accountName} — ${question}`,
+    body: `${head}\n${question}`,
     tag: info.transactionId,
     url: `/categorize/${encodeURIComponent(info.transactionId)}`,
   };

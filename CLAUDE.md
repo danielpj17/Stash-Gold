@@ -285,6 +285,10 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   `public/sw.js`. There is no service worker in `next dev`, so push is tested
   on a deployed build. The unattended settle (`lib/email/unattended.ts`) runs
   from the poller heartbeat and on every queue read — there is no cron.
+  A notification tap reaches its screen through a message handshake with
+  `components/NotificationNavigator.tsx` (push to the focused window, plus a
+  pull on load/foreground), **not** `WindowClient.navigate()` — iOS brings a
+  backgrounded Home Screen app forward and ignores the navigate.
 
 ### State Management
 

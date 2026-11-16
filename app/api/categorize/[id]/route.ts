@@ -56,7 +56,9 @@ export async function GET(_request: NextRequest, context: { params: { id: string
 }
 
 /**
- * Answer: { category, always?, addToShortlist? } (plan §5.5).
+ * Answer: { category, always?, addToShortlist?, description? } (plan §5.5).
+ * `description`, when sent, replaces the row's description in the same
+ * update — the screen lets you edit it before you pick.
  *
  * A CONDITIONAL update — `… AND review_status = 'needs_review'` — so when both
  * people answer the same item, the second gets 409 with who already filed it
@@ -83,11 +85,13 @@ export async function POST(request: NextRequest, context: { params: { id: string
     return NextResponse.json({ error: "Pick one of the categories" }, { status: 400 });
   }
   const isIncome = category === "Income";
+  const description = typeof body.description === "string" ? body.description.trim().slice(0, 500) : null;
 
   try {
     const updated = (await sql`
       UPDATE transactions
          SET category = ${category},
+             description = COALESCE(${description}::text, description),
              kind = ${isIncome ? "income" : "expense"},
              categorized_by = 'user',
              review_status = 'confirmed',

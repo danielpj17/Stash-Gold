@@ -56,6 +56,10 @@ export default function CategorizeItemPage() {
     null,
   );
   const [changing, setChanging] = useState(false);
+  // Editable before you pick; saved together with the pick (or on its own via
+  // "Save description" when there's nothing left to pick).
+  const [description, setDescription] = useState("");
+  const [descriptionSaved, setDescriptionSaved] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -63,6 +67,7 @@ export default function CategorizeItemPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error ?? `Failed to load (${res.status})`);
       setDetail(data as Detail);
+      setDescription((data as Detail).item.description ?? "");
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
@@ -82,6 +87,19 @@ export default function CategorizeItemPage() {
     return guess ? [guess] : [];
   }, [item, merchant]);
 
+  const descriptionChanged = item !== null && description.trim() !== (item.description ?? "").trim();
+  /** Sent with any save, only when edited — an untouched field never rewrites the row. */
+  const descriptionPatch = useMemo(
+    () => (descriptionChanged ? { description: description.trim() } : {}),
+    [descriptionChanged, description],
+  );
+  /** Is a pick (category or account) on screen that will carry the description? */
+  const pickPending = item
+    ? item.kind === "transfer"
+      ? item.reviewStatus === "needs_review"
+      : alreadyFiled !== null || changing || item.reviewStatus === "needs_review"
+    : false;
+
   const answer = useCallback(
     async (category: string) => {
       setBusy(true);
@@ -90,7 +108,7 @@ export default function CategorizeItemPage() {
         const res = await fetch(`/api/categorize/${encodeURIComponent(id)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ category, always, addToShortlist }),
+          body: JSON.stringify({ category, always, addToShortlist, ...descriptionPatch }),
         });
         const data = await res.json().catch(() => ({}));
         if (res.status === 409) {
@@ -106,7 +124,7 @@ export default function CategorizeItemPage() {
         setBusy(false);
       }
     },
-    [id, always, addToShortlist, router, triggerRefresh],
+    [id, always, addToShortlist, descriptionPatch, router, triggerRefresh],
   );
 
   /** "Change" after Already filed: the ordinary edit route. */
@@ -117,7 +135,7 @@ export default function CategorizeItemPage() {
         const res = await fetch(`/api/transactions/${encodeURIComponent(id)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ expenseType: category }),
+          body: JSON.stringify({ expenseType: category, ...descriptionPatch }),
         });
         if (!res.ok) throw new Error("Failed to change");
         triggerRefresh();
@@ -128,8 +146,29 @@ export default function CategorizeItemPage() {
         setBusy(false);
       }
     },
-    [id, router, triggerRefresh],
+    [id, descriptionPatch, router, triggerRefresh],
   );
+
+  /** Description only — for a row that's already filed (nothing left to pick). */
+  const saveDescription = useCallback(async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/transactions/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: description.trim() }),
+      });
+      if (!res.ok) throw new Error("Failed to save the description");
+      setDetail((d) => (d ? { ...d, item: { ...d.item, description: description.trim() } } : d));
+      setDescriptionSaved(true);
+      triggerRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save the description");
+    } finally {
+      setBusy(false);
+    }
+  }, [id, description, triggerRefresh]);
 
   const setTransferSide = useCallback(
     async (accountId: string) => {
@@ -140,7 +179,7 @@ export default function CategorizeItemPage() {
         const res = await fetch(`/api/transactions/${encodeURIComponent(id)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ ...body, ...descriptionPatch }),
         });
         if (!res.ok) throw new Error("Failed to save");
         triggerRefresh();
@@ -151,7 +190,7 @@ export default function CategorizeItemPage() {
         setBusy(false);
       }
     },
-    [id, item, router, triggerRefresh],
+    [id, item, descriptionPatch, router, triggerRefresh],
   );
 
   const split = useCallback(async () => {
@@ -250,6 +289,43 @@ export default function CategorizeItemPage() {
                   </button>
                 </div>
               )}
+            </div>
+
+            <div className="rounded-xl bg-[#252525] border border-charcoal-dark p-3 space-y-2">
+              <label htmlFor="categorize-description" className="block text-xs text-gray-400">
+                Description
+              </label>
+              {/* text-base (16px) so iOS doesn't zoom the page when the field is focused. */}
+              <input
+                id="categorize-description"
+                type="text"
+                value={description}
+                maxLength={500}
+                placeholder="Add a description"
+                onChange={(e) => {
+                  setDescription(e.target.value);
+                  setDescriptionSaved(false);
+                }}
+                className="w-full px-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-base text-gray-200 placeholder-gray-500 focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+              />
+              {descriptionChanged ? (
+                pickPending ? (
+                  <p className="text-xs text-gray-500">Saved with your pick below.</p>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void saveDescription()}
+                    disabled={busy}
+                    className="rounded-md bg-[#353535] px-3 py-1.5 text-sm text-gray-200 hover:text-white hover:bg-[#404040] transition disabled:opacity-50"
+                  >
+                    Save description
+                  </button>
+                )
+              ) : descriptionSaved ? (
+                <p className="text-xs text-[#50C878] flex items-center gap-1">
+                  <Check className="w-3 h-3" aria-hidden /> Saved
+                </p>
+              ) : null}
             </div>
 
             {item.kind === "transfer" ? (
