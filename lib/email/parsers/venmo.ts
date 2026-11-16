@@ -4,12 +4,15 @@ import { cleanName, findDate, findLast4, moneyToCents, valueAfterLabel } from "@
 /**
  * Venmo receipts.
  *
- * ⚠ Version 1 is written from Venmo's published subject formats, NOT from real
- * samples (none existed when it was written). That is safe only because
- * Phase 2 runs every parser in SHADOW mode first: nothing is written until a
- * week of shadow output has been checked against reality. When real receipts
- * arrive, export them with scripts/export-email-fixture.mjs, add them under
- * __fixtures__/venmo/, fix anything they disagree with, and bump `version`.
+ * Version 1 was written from Venmo's published subject formats before any real
+ * mail existed. Version 2 (2026-11-16) is corrected against real receipts —
+ * see the `real-*` fixtures:
+ *   - The note sits between the amount block ("$" / "2" / ".00") and the
+ *     "See transaction" button, with no "Note:" label. v1 looked for a line
+ *     starting "Note|Memo|For" and matched the footer ("For any issues…").
+ *   - Money received arrives as "Jane Doe paid $2.00 to your Venmo account.
+ *     Leave it in Venmo or transfer it to your bank account." — v1 saw
+ *     "transfer" and booked it as a cash-out.
  *
  * Venmo alerts carry no card number, so the Venmo account is identified by
  * whose inbox forwarded the receipt (`accountKey: "forwarded_from"`).
@@ -39,9 +42,37 @@ function fundingSourceFrom(text: string): AccountHint | "balance" | undefined {
   return { ...(last4 ? { last4 } : {}), ...(name ? { name } : {}) };
 }
 
+/**
+ * The note the sender typed. Real receipts put it, unlabelled, between the
+ * amount block and "See transaction":
+ *
+ *   You paid Jane Doe / $ / 2 / .00 / <note> / See transaction / …
+ *
+ * Older or other layouts may label it "Note:" / "Memo:". Never a bare "For" —
+ * the footer starts "For any issues, …".
+ */
 function memoFrom(text: string): string | undefined {
-  const labelled = valueAfterLabel(text, /^\s*(?:note|memo|for)\b/i);
-  if (labelled) return cleanName(labelled).slice(0, 200) || undefined;
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const see = lines.findIndex((l) => /^see transaction$/i.test(l));
+  if (see > 0) {
+    // Start after the cents line (".00"), else after the last amount-only line.
+    let start = -1;
+    for (let i = see - 1; i >= 0; i -= 1) {
+      if (/^\.\d{2}$/.test(lines[i]) || /^\$\s?[\d,]+(?:\.\d{2})?$/.test(lines[i])) {
+        start = i + 1;
+        break;
+      }
+    }
+    if (start > 0) {
+      const note = lines.slice(start, see).join(" ").replace(/\s+/g, " ").trim().slice(0, 200);
+      return note || undefined;
+    }
+  }
+  const labelled = valueAfterLabel(text, /^\s*(?:note|memo)\b/i);
+  if (labelled) return labelled.replace(/\s+/g, " ").trim().slice(0, 200) || undefined;
   return undefined;
 }
 
@@ -83,8 +114,13 @@ export function parseVenmo(email: NormalizedEmail): ParseResult {
     };
   }
 
-  // "Jane Doe paid you $25.00" / "Jane Doe completed your $25.00 request"
-  m = new RegExp(String.raw`^(.+?) (?:paid you|completed your)\s+${AMOUNT}`, "i").exec(subject);
+  // "Jane Doe paid you $25.00" / "Jane Doe completed your $25.00 request" /
+  // "Jane Doe paid $25.00 to your Venmo account. Leave it in Venmo or transfer
+  // it to your bank account." (the real 2026 subject — must win over the
+  // transfer branch below, which would see "transfer").
+  m =
+    new RegExp(String.raw`^(.+?) (?:paid you|completed your)\s+${AMOUNT}`, "i").exec(subject) ??
+    new RegExp(String.raw`^(.+?) paid\s+${AMOUNT}\s+to your venmo\b`, "i").exec(subject);
   if (m) {
     const amountCents = moneyToCents(m[2]);
     const counterparty = cleanName(m[1]);
@@ -101,7 +137,9 @@ export function parseVenmo(email: NormalizedEmail): ParseResult {
 
   // Cash-out to a bank: "Your bank transfer has been initiated", "You
   // transferred $100.00 to your bank", "Your Venmo transfer is on its way".
-  if (/\btransfer/i.test(subject) && !/\b(add(?:ed)?|from your bank)\b/i.test(subject)) {
+  // Never a subject that says someone PAID — that's a payment that merely
+  // mentions transferring it on.
+  if (/\btransfer/i.test(subject) && !/\b(add(?:ed)?|from your bank|paid)\b/i.test(subject)) {
     const amountCents = moneyToCents(new RegExp(AMOUNT).exec(subject)?.[0]) ?? moneyToCents(new RegExp(AMOUNT).exec(text)?.[0]);
     if (!amountCents) return { unparsed: "venmo_transfer_no_amount" };
     const destination = valueAfterLabel(text, /\b(?:destination|bank account|transfer(?:red)? to)\b/i);
@@ -138,7 +176,7 @@ export function parseVenmo(email: NormalizedEmail): ParseResult {
 export const venmoParser: Parser = {
   id: "venmo",
   label: "Venmo",
-  version: 1,
+  version: 2,
   senders: [/^venmo@venmo\.com$/i, /@(?:[a-z0-9-]+\.)?venmo\.com$/i],
   dkimDomains: ["venmo.com"],
   accountKey: "forwarded_from",

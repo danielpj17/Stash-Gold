@@ -278,6 +278,7 @@ export async function processEvent(sql: Sql, userId: string, eventId: string): P
         amountCents: alert.amountCents,
         choices: plan.choices,
         description: plan.transactions.find((t) => t.ref === "primary")?.description ?? null,
+        toPerson: parser.id === "venmo",
       });
     } catch (err) {
       console.error("email-sync: push fan-out failed", err instanceof Error ? err.message : err);

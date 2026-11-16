@@ -442,16 +442,13 @@ function merchantName(ctx: DecideContext): string {
   return ctx.merchant?.displayName ?? displayNameFromRaw(ctx.alert.merchantRaw);
 }
 
-function withMemo(base: string, memo?: string): string {
-  return memo ? `${base} — ${memo}` : base;
-}
-
 export function describe(ctx: DecideContext, kind: "expense" | "income"): string {
   const a = ctx.alert;
   if (ctx.parser.id === "venmo" && a.counterparty) {
-    return kind === "income"
-      ? withMemo(`Venmo from ${a.counterparty}`, a.memo)
-      : withMemo(`Venmo to ${a.counterparty}`, a.memo);
+    // The note typed in Venmo IS the description — it's what you'd have logged
+    // by hand. Who it was to/from is already the merchant. No note: say who.
+    if (a.memo) return a.memo;
+    return kind === "income" ? `Venmo from ${a.counterparty}` : `Venmo to ${a.counterparty}`;
   }
   if (kind === "income") {
     return a.kind === "refund" ? `Refund · ${merchantName(ctx)}` : `Deposit · ${merchantName(ctx)}`;

@@ -1,0 +1,26 @@
+{
+  "note": "REAL receipt (2026-11-15), scrubbed by hand: paid from the Venmo balance. The note ('Test') sits between the amount block and 'See transaction', unlabelled; the footer starts 'For any issues…' and must not be read as the note (parser v1 bug).",
+  "email": {
+    "gmailMessageId": "fixturerealdadf4",
+    "from": "Venmo <venmo@venmo.com>",
+    "to": "stash.inbox@example.com",
+    "subject": "You paid Sam Lee $2.00",
+    "date": "2026-11-16T06:55:00Z",
+    "plainBody": "You paid Sam Lee $2.00\nYou paid Sam Lee\n$\n2\n.00\nTest\nSee transaction\nTransaction details\nDate\nNov 15, 2026\nStatus\nCompleted\nTransaction ID\n0A000000000000000\nPayment Method\nVenmo balance\nSent from\n@Person-Handle-00\nFor any issues, including the recipient not receiving funds, please contact us at Help Center at help.venmo.com or call 1-855-812-4430.\nSee our disclosures for more information.\nThis payment will be reviewed for compliance with our User Agreement and if we determine that there is a violation by either party, it may be reversed or your ability to transfer to your bank account may be restricted.\nIf you don't recognize this payment or want to report it as unauthorized, you can file a dispute in the Venmo app or at any time. To file a dispute, go to the Venmo app or contact Venmo Customer support at (855) 812-4430.\nVenmo is a service of PayPal, Inc., a licensed provider of money transfer services. All money transmission is provided by PayPal, Inc. pursuant to PayPal, Inc.'s licenses. (NMLS ID #: 910457)\nPayPal is located at 2211 North First Street, San Jose, CA 95131\nFor security reasons, you cannot unsubscribe from payment emails.\nVenmo RT",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@venmo.com header.s=s1 header.b=AbC; spf=pass smtp.mailfrom=venmo@venmo.com; dmarc=pass (p=REJECT) header.from=venmo.com",
+      "X-Forwarded-For": "daniel@example.com"
+    }
+  },
+  "expect": {
+    "alert": {
+      "kind": "payment_sent",
+      "amountCents": 200,
+      "counterparty": "Sam Lee",
+      "merchantRaw": "Sam Lee",
+      "memo": "Test",
+      "fundingSource": "balance"
+    }
+  }
+}

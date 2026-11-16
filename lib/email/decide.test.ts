@@ -385,7 +385,7 @@ describe("decide: money in (D1, §5.12)", () => {
     expect(plan.action === "create" && plan.transactions[0]).toMatchObject({
       kind: "income",
       account: VENMO_D.id,
-      description: "Venmo from Alex Smith — pizza",
+      description: "pizza",
     });
   });
 
