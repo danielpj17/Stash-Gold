@@ -34,6 +34,20 @@ amount update the first alert). Refund and deposit alerts become Income.
 > **Venmo:** each person forwards their own Venmo receipts. Stash tells the two
 > Venmo accounts apart by whose inbox forwarded the email.
 
+> **Wells Fargo:** the alerts you set up go to whatever address you choose, but
+> Bill Pay ("Your payment(s) were sent"), "You made a payment" and "Online
+> transfer initiated" always go to your account's main email. Forward those
+> with a filter: `from:(billpay@wellsfargo.com OR alerts@notify.wellsfargo.com)`.
+> Statements and other notices that come along are ignored.
+
+> **Discover** alerts now come from Capital One (`capitalone@notification.capitalone.com`,
+> "Discover by Capital One"), so pick **Capital One / Discover** for both cards —
+> the card's last 4 tells them apart.
+
+> **Don't press Forward by hand** to send Stash an alert: a hand-forwarded email
+> comes from your Gmail, not the bank, so Stash can't verify it and marks it
+> *Unauthenticated*. Only a filter's automatic forward keeps the bank's signature.
+
 ## 3. The Apps Script poller
 
 Follow `apps-script/README.md`: paste `poller.gs` and `appsscript.json` into a
@@ -50,6 +64,8 @@ Reconcile → ⋮ → **Accounts** → **alerts** on each account:
 - **Email alerts from** — the bank (Stash only lists banks it can read).
 - **Card last 4** — for cards and bank accounts.
 - **Forwarded from** — for Venmo: the email address of the inbox that forwards it.
+- **Bill Pay comes out of this account** — Wells Fargo only, on the one account
+  your Bill Pay draws from (its emails never say which).
 - **If nobody answers** — keep waiting, or file it as the guess.
 
 Alerts that match no account wait under **Settings → Email sync → Email

@@ -1,0 +1,20 @@
+{
+  "synthetic": true,
+  "note": "A scheduled or AutoPay payment hasn't moved money yet",
+  "email": {
+    "to": "stash.inbox@example.com",
+    "date": "2026-11-16T21:15:00Z",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@notification.capitalone.com header.s=s1 header.b=AbC123; spf=pass (google.com: domain of bounce@notification.capitalone.com designates 192.0.2.3 as permitted sender) smtp.mailfrom=bounce@notification.capitalone.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=capitalone.com",
+      "X-Forwarded-For": "you@example.com"
+    },
+    "gmailMessageId": "fixturec1sch00001",
+    "from": "Capital One | VentureOne <capitalone@notification.capitalone.com>",
+    "subject": "Your AutoPay payment is scheduled for November 18, 2026",
+    "plainBody": "Review the details.\nYour AutoPay payment of $12.34 is scheduled for November 18, 2026.\nVentureOne Credit Card...4444"
+  },
+  "expect": {
+    "ignore": "capitalone_payment_scheduled"
+  }
+}

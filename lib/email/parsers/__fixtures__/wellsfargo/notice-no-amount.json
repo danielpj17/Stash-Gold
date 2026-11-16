@@ -1,0 +1,19 @@
+{
+  "synthetic": true,
+  "note": "Account notices with no money in them (confirm email, FICO, contact details) are ignored",
+  "email": {
+    "to": "stash.inbox@example.com",
+    "plainBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@notify.wellsfargo.com header.s=wfb1 header.b=\"AbC123\"; spf=pass (google.com: domain of alerts@notify.wellsfargo.com designates 192.0.2.1 as permitted sender) smtp.mailfrom=alerts@notify.wellsfargo.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=wellsfargo.com"
+    },
+    "gmailMessageId": "fixturewfnote0001",
+    "from": "Wells Fargo <alerts@notify.wellsfargo.com>",
+    "subject": "Confirm your email address for Wells Fargo",
+    "date": "2026-11-16T06:16:03Z",
+    "htmlBody": "<h1>Confirm your email address</h1><div>Select the button below to confirm this email address for alerts.</div>"
+  },
+  "expect": {
+    "ignore": "wellsfargo_notice"
+  }
+}

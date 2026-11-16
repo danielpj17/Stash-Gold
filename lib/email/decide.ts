@@ -16,8 +16,10 @@ import type { AccountHint, ParsedAlert, ParsedAlertKind } from "@/lib/email/type
  *   1. declined → ignored
  *   2. internal counterparty (D6) → ignored
  *   3. Venmo legs (D4) — BEFORE money-in, so a Venmo cash-out is never Income
- *   4. other transfers (card payments) → ignored, Reconcile handles them
- *   5. money in (D1) → Income
+ *   4. card payments / transfers between your own accounts → a transfer row,
+ *      paired across the two banks' emails and with a hand-logged transfer
+ *   5. money in (D1) → Income — except a Venmo payment from a person, which
+ *      is a transfer from "Other" into that Venmo account
  *   6. purchases → duplicate? follow-up? link a manual entry? else create
  */
 
@@ -29,6 +31,8 @@ export type AccountRef = {
   alertSource: string | null;
   alertLast4: string | null;
   alertForwardedFrom: string | null;
+  /** Receives this source's alerts that name no account (Bill Pay, migration 008). */
+  alertUnnumbered: boolean;
   unattendedAction: "keep_in_review" | "auto_guess";
 };
 
@@ -530,15 +534,24 @@ function sideCompatible(mine: string | null, theirs: string | null): boolean {
   return mine === null || theirs === null || mine === theirs;
 }
 
-/** A transfer row this leg duplicates (or completes), within the Venmo window. */
-function matchingTransfer(ctx: DecideContext, leg: { from: string | null; to: string | null }): CandidateRow[] {
+/**
+ * A transfer row this leg duplicates (or completes): within `windowDays` of
+ * another email (the Venmo window by default), or the manual window of a
+ * hand-logged transfer.
+ */
+function matchingTransfer(
+  ctx: DecideContext,
+  leg: { from: string | null; to: string | null },
+  windowDays?: number,
+): CandidateRow[] {
   const cfg = cfgOf(ctx);
+  const emailWindow = windowDays ?? cfg.venmoCardMatchWindowDays;
   return ctx.candidates.filter(
     (c) =>
       c.kind === "transfer" &&
       c.amountCents === ctx.alert.amountCents &&
       dayDiff(c.occurredAt, ctx.occurredAt, ctx.timeZone) <=
-        Math.max(cfg.venmoCardMatchWindowDays, c.source === "email" ? 0 : cfg.manualMatchWindowDays) &&
+        Math.max(emailWindow, c.source === "email" ? 0 : cfg.manualMatchWindowDays) &&
       sideCompatible(leg.from, c.transferFrom) &&
       sideCompatible(leg.to, c.transferTo) &&
       // At least one side must match exactly, or any two transfers of the
@@ -558,8 +571,52 @@ function fillUnknownSides(row: CandidateRow, leg: { from: string | null; to: str
   return update;
 }
 
-function decideVenmoTransfer(ctx: DecideContext, leg: Leg): Plan {
-  const existing = matchingTransfer(ctx, leg);
+/**
+ * Another email of the SAME type (same alert kind, same merchant key) is a
+ * second, separate transfer — two $500 savings transfers in one week are two
+ * transfers — unless it is the same email again: this very event, an
+ * identical body, or the other person's inbox forwarding the same alert (the
+ * rule findDuplicateAlert uses).
+ */
+function isSeparateSameTypeEmail(c: CandidateRow, ctx: DecideContext): boolean {
+  if (c.emailEventId === null) return false;
+  if (c.eventKind !== ctx.alert.kind || c.eventMerchantKey !== ctx.merchantKey) return false;
+  const sameEmail =
+    c.emailEventId === ctx.event.id ||
+    c.eventBodySha256 === ctx.event.bodySha256 ||
+    (c.eventForwardedFor ?? "") !== (ctx.event.forwardedFor ?? "");
+  return !sameEmail;
+}
+
+type TransferFlavor = "venmo" | "account";
+
+const TRANSFER_REASONS: Record<TransferFlavor, { completed: string; recorded: string; unknown: string; created: string }> = {
+  venmo: {
+    completed: "completed_venmo_side",
+    recorded: "venmo_transfer_already_recorded",
+    unknown: "venmo_transfer_side_unknown",
+    created: "venmo_transfer",
+  },
+  account: {
+    completed: "completed_transfer_side",
+    recorded: "transfer_already_recorded",
+    unknown: "transfer_side_unknown",
+    created: "account_transfer",
+  },
+};
+
+/**
+ * One transfer row per real movement of money. A leg that matches a transfer
+ * already recorded — by a hand entry, or by the other bank's email — links to
+ * it (filling in a side that was unknown) instead of adding a second row.
+ */
+function decideTransfer(ctx: DecideContext, leg: Leg | AccountLeg, flavor: TransferFlavor): Plan {
+  const cfg = cfgOf(ctx);
+  const reasons = TRANSFER_REASONS[flavor];
+  const existing =
+    flavor === "venmo"
+      ? matchingTransfer(ctx, leg)
+      : matchingTransfer(ctx, leg, cfg.transferMatchWindowDays).filter((c) => !isSeparateSameTypeEmail(c, ctx));
   if (existing.length >= 1) {
     const row = existing[0];
     const fill = fillUnknownSides(row, leg);
@@ -575,16 +632,16 @@ function decideVenmoTransfer(ctx: DecideContext, leg: Leg): Plan {
       };
     }
     if (fill) {
-      return { action: "link", status: "linked", reason: "completed_venmo_side", transactionId: row.id, update: fill };
+      return { action: "link", status: "linked", reason: reasons.completed, transactionId: row.id, update: fill };
     }
-    return duplicate(row.id, "venmo_transfer_already_recorded");
+    return duplicate(row.id, reasons.recorded);
   }
 
   const unknownSide = leg.from === null || leg.to === null;
   return {
     action: "create",
     status: "created",
-    reason: unknownSide ? "venmo_transfer_side_unknown" : "venmo_transfer",
+    reason: unknownSide ? reasons.unknown : reasons.created,
     transactions: [
       {
         ref: "primary",
@@ -603,9 +660,45 @@ function decideVenmoTransfer(ctx: DecideContext, leg: Leg): Plan {
       },
     ],
     updates: [],
-    notify: false, // "Which Venmo account?" never pushes
+    notify: false, // "Which account?" never pushes — the other side often fills itself in
     choices: "all",
   };
+}
+
+type AccountLeg = { from: string | null; to: string | null; description: string };
+
+/**
+ * The account an email names by its last four, as the OTHER side of a
+ * transfer. Prefer this parser's own accounts (a Wells Fargo email naming
+ * ••2222 means the Wells Fargo card), then any single account with those
+ * digits. Several, or none: unknown — never a guess.
+ */
+function counterpartByLast4(ctx: DecideContext, hint: AccountHint | "balance" | undefined): AccountRef | null {
+  if (!hint || hint === "balance" || !hint.last4) return null;
+  const hits = ctx.accounts.filter((a) => a.alertLast4 === hint.last4);
+  const own = hits.filter((a) => a.alertSource === ctx.parser.id);
+  if (own.length === 1) return own[0];
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * A card payment or transfer between your own accounts, from a bank or card
+ * alert (`kind: "transfer"`). The alert's account is one side; the other is
+ * the account the email names, or unknown — then it waits for the other
+ * bank's email, a hand-logged transfer, or an answer in To categorize.
+ */
+export function accountTransferLeg(ctx: DecideContext): AccountLeg | null {
+  const a = ctx.alert;
+  if (ctx.parser.id === "venmo" || a.kind !== "transfer") return null;
+  const other = counterpartByLast4(ctx, a.fundingSource)?.id ?? null;
+  const out = a.transferDirection !== "in";
+  const from = out ? ctx.account.id : other;
+  const to = out ? other : ctx.account.id;
+  const toKind = ctx.accounts.find((x) => x.id === to)?.kind;
+  // "payment" / "transfer" in the logged row is what Reconcile's transfer step
+  // looks for, so these reconcile exactly like a hand-logged transfer.
+  const description = toKind === "credit_card" || /\bpayment\b/i.test(a.merchantRaw) ? "Card payment" : "Transfer";
+  return { from, to, description };
 }
 
 /**
@@ -658,6 +751,92 @@ function venmoPaymentExtras(ctx: DecideContext): { transactions: NewTransaction[
       },
     ],
     updates: [],
+  };
+}
+
+// ---- Venmo money received ----------------------------------------------------
+
+/**
+ * The external transfer source for money a person sends you on Venmo — one of
+ * the pickers' EXTERNAL_TRANSFER_SOURCES (services/accountBalancesService.ts),
+ * so it reads exactly like a hand-logged "Other → Venmo" transfer.
+ */
+export const VENMO_RECEIVED_FROM = "Other";
+
+/**
+ * "Alex paid you $20": a transfer from "Other" into that Venmo account, not
+ * Income. Someone paying you back is squaring up, not earning — Daniel's own
+ * convention for these (2026-11-16), which replaces D1 for Venmo. The account
+ * balance moves; the budget doesn't. The description is the note as typed.
+ *
+ * Paired only with the same receipt again or a hand-logged transfer into this
+ * Venmo — never with another person's payment of the same amount.
+ */
+function decideVenmoReceived(ctx: DecideContext): Plan {
+  const cfg = cfgOf(ctx);
+  const a = ctx.alert;
+  const window = cfg.duplicateAlertWindowMinutes * 60_000;
+
+  // The same receipt again: redelivered, or forwarded from the other inbox
+  // (the rule findDuplicateAlert uses for purchases).
+  const again = ctx.candidates.find(
+    (c) =>
+      c.emailEventId !== null &&
+      c.kind === "transfer" &&
+      c.transferTo === ctx.account.id &&
+      c.eventKind === a.kind &&
+      c.amountCents === a.amountCents &&
+      c.eventMerchantKey === ctx.merchantKey &&
+      Math.abs(ms(c.occurredAt) - ms(ctx.occurredAt)) <= window &&
+      c.eventGmailMessageId !== ctx.event.gmailMessageId &&
+      (c.eventBodySha256 === ctx.event.bodySha256 || (c.eventForwardedFor ?? "") !== (ctx.event.forwardedFor ?? "")),
+  );
+  if (again) return duplicate(again.id, "same_alert");
+
+  // Already logged by hand: a transfer into this Venmo of the same amount.
+  const manual = ctx.candidates.filter(
+    (c) =>
+      c.kind === "transfer" &&
+      c.emailEventId === null &&
+      (c.source === "manual" || c.source === "shortcut") &&
+      c.transferTo === ctx.account.id &&
+      c.amountCents === a.amountCents &&
+      dayDiff(c.occurredAt, ctx.occurredAt, ctx.timeZone) <= cfg.manualMatchWindowDays,
+  );
+  if (manual.length === 1) {
+    return {
+      action: "link",
+      status: "linked",
+      reason: "matched_manual_transfer",
+      transactionId: manual[0].id,
+      update: { id: manual[0].id, attachEvent: true },
+    };
+  }
+
+  return {
+    action: "create",
+    status: "created",
+    reason: "venmo_received",
+    transactions: [
+      {
+        ref: "primary",
+        kind: "transfer",
+        amountCents: a.amountCents,
+        category: null,
+        description: describe(ctx, "income"),
+        account: null,
+        transferFrom: VENMO_RECEIVED_FROM,
+        transferTo: ctx.account.id,
+        reviewStatus: "confirmed",
+        categorizedBy: null,
+        isPending: false,
+        attachMerchant: false,
+        attachEvent: true,
+      },
+    ],
+    updates: [],
+    notify: false, // nothing to ask
+    choices: "all",
   };
 }
 
@@ -758,13 +937,19 @@ export function decide(ctx: DecideContext): Plan {
 
   const leg = venmoLeg(ctx);
   if (leg) {
-    return cfg.enableVenmoTransfers ? decideVenmoTransfer(ctx, leg) : ignore("venmo_leg_pending_phase4");
+    return cfg.enableVenmoTransfers ? decideTransfer(ctx, leg, "venmo") : ignore("venmo_leg_pending_phase4");
   }
 
-  // Card payments and other account-to-account moves: Reconcile handles them
-  // as today. Never Income — a card payment misread as a refund would invent it.
-  if (a.kind === "transfer") return ignore("transfer_not_tracked");
+  // Card payments and other account-to-account moves: a transfer row. Never
+  // Income — a card payment misread as a refund would invent it.
+  if (a.kind === "transfer") {
+    const move = cfg.enableAccountTransfers ? accountTransferLeg(ctx) : null;
+    if (!move) return ignore("transfer_not_tracked");
+    if (move.from !== null && move.from === move.to) return ignore("transfer_same_account");
+    return decideTransfer(ctx, move, "account");
+  }
 
+  if (ctx.parser.id === "venmo" && a.kind === "payment_received") return decideVenmoReceived(ctx);
   if (a.kind === "refund" || a.kind === "payment_received") return decideIncome(ctx);
 
   return decideExpense(ctx);

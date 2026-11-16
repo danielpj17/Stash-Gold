@@ -208,6 +208,7 @@ describe("account resolution (§5.4)", () => {
     alertSource: "examplebank",
     alertLast4: "4821",
     alertForwardedFrom: null,
+    alertUnnumbered: false,
     unattendedAction: "keep_in_review",
     ...over,
   });
@@ -237,5 +238,48 @@ describe("account resolution (§5.4)", () => {
       [venmo],
     );
     expect(r.account?.id).toBe("v");
+  });
+});
+
+describe("alerts that name no account (Bill Pay, migration 008)", () => {
+  const acct = (over: Partial<AccountRef>): AccountRef => ({
+    id: "a",
+    name: "A",
+    kind: "checking",
+    isDefault: false,
+    alertSource: "wellsfargo",
+    alertLast4: "1111",
+    alertForwardedFrom: null,
+    alertUnnumbered: false,
+    unattendedAction: "keep_in_review",
+    ...over,
+  });
+  const billPay = {
+    kind: "payment_sent" as const,
+    amountCents: 75000,
+    merchantRaw: "Example Property Co",
+    accountHint: {},
+    occurredAt: null,
+    occurredDate: null,
+    isPending: false,
+  };
+  const wf = { id: "wellsfargo", accountKey: "last4" as const, unnumbered: { label: "Bill Pay" } };
+  const email = { forwardedFor: null, to: null };
+
+  it("goes to the account ticked for them", () => {
+    const r = resolveAccount(wf, billPay, email, [acct({}), acct({ id: "b", alertLast4: "2222", alertUnnumbered: true })]);
+    expect(r).toMatchObject({ account: { id: "b" }, key: { unnumbered: true } });
+  });
+  it("waits under Unknown account when none is ticked — never the only account", () => {
+    const r = resolveAccount(wf, billPay, email, [acct({})]);
+    expect(r).toMatchObject({ account: null, reason: "no_matching_account", key: { unnumbered: true } });
+  });
+  it("a parser without such alerts still needs a last four", () => {
+    const r = resolveAccount({ id: "wellsfargo", accountKey: "last4" }, billPay, email, [acct({ alertUnnumbered: true })]);
+    expect(r).toMatchObject({ account: null, reason: "no_last4" });
+  });
+  it("another bank's ticked account doesn't count", () => {
+    const r = resolveAccount(wf, billPay, email, [acct({ alertSource: "examplebank", alertUnnumbered: true })]);
+    expect(r.account).toBeNull();
   });
 });

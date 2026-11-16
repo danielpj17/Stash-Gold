@@ -36,9 +36,10 @@ export async function GET(_request: NextRequest, context: { params: { id: string
       reviewerName(sql, userId, row.reviewed_by),
       row.email_event_id
         ? (sql`
-            SELECT parser_id FROM email_events WHERE user_id = ${userId} AND id = ${row.email_event_id}::uuid
-          ` as unknown as Promise<Array<{ parser_id: string | null }>>)
-        : Promise.resolve([] as Array<{ parser_id: string | null }>),
+            SELECT parser_id, decision->>'reason' AS reason
+              FROM email_events WHERE user_id = ${userId} AND id = ${row.email_event_id}::uuid
+          ` as unknown as Promise<Array<{ parser_id: string | null; reason: string | null }>>)
+        : Promise.resolve([] as Array<{ parser_id: string | null; reason: string | null }>),
     ]);
 
     return NextResponse.json({
@@ -46,6 +47,9 @@ export async function GET(_request: NextRequest, context: { params: { id: string
       fromEmail: row.email_event_id !== null,
       // A Venmo payment to a person: the screen offers no pre-picked guess.
       person: source[0]?.parser_id === "venmo",
+      // A transfer waiting on "which Venmo?" (decide.ts venmo_* reasons) vs a
+      // card payment / bank transfer waiting on any other account.
+      venmoLeg: (source[0]?.reason ?? "").startsWith("venmo_"),
       reviewedByName: name,
       amountHistory: history.map((h) => ({
         oldAmount: Number(h.old_amount),

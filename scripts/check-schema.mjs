@@ -118,6 +118,7 @@ const EXPECTED_INDEXES = [
   ["household_invites", "idx_household_invites_pending"],
   ["financial_accounts", "idx_financial_accounts_alert_last4", "005-email-sync-account-routing.sql"],
   ["financial_accounts", "idx_financial_accounts_alert_fwd", "005-email-sync-account-routing.sql"],
+  ["financial_accounts", "idx_financial_accounts_alert_unnumbered", "008-email-sync-unnumbered-alerts.sql"],
   // The idempotency key that stops a re-processed email from inserting twice.
   ["transactions", "idx_transactions_email_event", "006-email-sync-merchants-review.sql"],
   ["transaction_amount_changes", "idx_amount_changes_event", "006-email-sync-merchants-review.sql"],
@@ -144,6 +145,7 @@ const EXPECTED_COLUMNS = [
   ["transactions", "duplicate_of", "006-email-sync-merchants-review.sql"],
   ["financial_accounts", "unattended_action", "007-push-notifications.sql"],
   ["transactions", "unattended_due_at", "007-push-notifications.sql"],
+  ["financial_accounts", "alert_unnumbered", "008-email-sync-unnumbered-alerts.sql"],
 ];
 
 async function main() {

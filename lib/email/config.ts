@@ -27,6 +27,12 @@ export const EMAIL_SYNC_CONFIG = {
   csvSuggestMaxIncreasePct: 35,
   /** Pairing a bank/card VENMO line with the Venmo receipt (D4). */
   venmoCardMatchWindowDays: 1,
+  /**
+   * Pairing two emails about one card payment or account-to-account transfer
+   * (the paying bank's and the card's). Wider than Venmo's: a payment is
+   * "sent" one day and "posted" by the card a business day or two later.
+   */
+  transferMatchWindowDays: 3,
   /** Settings turns amber after this long with no heartbeat. */
   heartbeatStaleMinutes: 30,
   /** New Expense shows a banner after this long with no heartbeat. */
@@ -42,6 +48,12 @@ export const EMAIL_SYNC_CONFIG = {
   enableOutOfOrder: true as boolean,
   /** D4: create Venmo transfers. Off = record Venmo legs as ignored. */
   enableVenmoTransfers: true as boolean,
+  /**
+   * Card payments and transfers between your own accounts become transfer
+   * rows. Off = recorded as ignored (`transfer_not_tracked`) and left to
+   * Reconcile, as before.
+   */
+  enableAccountTransfers: true as boolean,
   /** Manual↔email matching tolerates tip / gas-hold amounts, not just equal. */
   enableToleranceLinking: true as boolean,
 } as const;

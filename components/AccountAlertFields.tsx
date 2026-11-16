@@ -8,7 +8,8 @@ import { parserOptions } from "@/lib/email/registry";
  * Email-sync routing for one account (plan §5.4, §5.9), shown inside Manage
  * Accounts. Which reader's alerts land here, and how they're told apart: the
  * card's last four, or — for Venmo, which has no card number — whose inbox
- * forwards them.
+ * forwards them. Some banks also send alerts that name no account at all
+ * (Wells Fargo Bill Pay); one account per bank is ticked to receive those.
  *
  * Changing these touches no reconciliation state; they only decide where
  * future alerts go.
@@ -24,6 +25,7 @@ export default function AccountAlertFields({
 }) {
   const options = parserOptions();
   const [source, setSource] = useState(account.alertSource ?? "");
+  const [unnumbered, setUnnumbered] = useState(account.alertUnnumbered);
   const parser = options.find((o) => o.id === source) ?? null;
   const knownSource = !source || parser !== null;
 
@@ -38,6 +40,8 @@ export default function AccountAlertFields({
           disabled={disabled}
           onChange={(e) => {
             setSource(e.target.value);
+            // A new source never inherits the old bank's Bill Pay role.
+            setUnnumbered(false);
             onPatch({ alertSource: e.target.value || null, ...(e.target.value ? {} : { alertLast4: null, alertForwardedFrom: null }) });
           }}
           className={field}
@@ -84,6 +88,22 @@ export default function AccountAlertFields({
             }}
             className={`${field} w-full`}
           />
+        </label>
+      )}
+
+      {parser?.unnumberedLabel && (
+        <label className="flex items-center gap-2 self-center pb-1.5 text-gray-300">
+          <input
+            type="checkbox"
+            checked={unnumbered}
+            disabled={disabled}
+            onChange={(e) => {
+              setUnnumbered(e.target.checked);
+              onPatch({ alertUnnumbered: e.target.checked });
+            }}
+            className="accent-[#50C878]"
+          />
+          {parser.label} {parser.unnumberedLabel} comes out of this account
         </label>
       )}
 

@@ -1,0 +1,19 @@
+{
+  "synthetic": true,
+  "note": "A statement quotes balances but is not a transaction",
+  "email": {
+    "to": "stash.inbox@example.com",
+    "plainBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@notify.wellsfargo.com header.s=wfb1 header.b=\"AbC123\"; spf=pass (google.com: domain of alerts@notify.wellsfargo.com designates 192.0.2.1 as permitted sender) smtp.mailfrom=alerts@notify.wellsfargo.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=wellsfargo.com"
+    },
+    "gmailMessageId": "fixturewfstmt0001",
+    "from": "Wells Fargo <alerts@notify.wellsfargo.com>",
+    "subject": "Your statement for credit card account ...2222",
+    "date": "2026-11-08T17:09:56Z",
+    "htmlBody": "<h1>Your month in review for credit card account ...2222</h1><div>Statement balance: $1,234.56</div><div>Minimum payment due: $25.00</div><div>Payment due date: 12/01/2026</div>"
+  },
+  "expect": {
+    "ignore": "wellsfargo_statement"
+  }
+}

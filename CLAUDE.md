@@ -265,11 +265,28 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   verdict counts, and it must be a pass for the parser's domain.
 - **Account routing** is `financial_accounts.alert_source` + `alert_last4` (or
   `alert_forwarded_from` for Venmo). Never a fallback to "the only account for
-  this bank"; unmatched alerts wait under Unknown account.
+  this bank"; unmatched alerts wait under Unknown account. An alert that names
+  **no** account at all (Wells Fargo Bill Pay) goes to the one account ticked
+  for it, `alert_unnumbered` (migration 008, parser `unnumbered`) — a stated
+  rule, not a fallback.
 - **Parsers** live in `lib/email/parsers/`, registered in `lib/email/registry.ts`,
   each with fixtures under `__fixtures__/`. Bank parsers are added one at a
   time from real, scrubbed alerts (`npm run email:export`); the Venmo parser's
-  v1 was written before real samples existed.
+  v1 was written before real samples existed. Wells Fargo v1 reads Bill Pay,
+  "You made a payment" and online transfers only; its purchase / withdrawal /
+  deposit alerts are `unparsed` until real samples exist. `capitalone` reads
+  Capital One **and Discover** (Capital One owns it; same sender, same
+  template) — purchases, "payment received", and ignores scheduled payments.
+  A hand-forwarded alert (Forward pressed by hand) is always
+  `unauthenticated`: only a filter forward keeps the bank's DKIM.
+- **Transfers between your own accounts** (card payments, checking → savings):
+  a non-Venmo alert of kind `transfer` becomes ONE transfer row
+  (`decideTransfer`, shared with Venmo legs). The other side is the account
+  the email names by last 4 (this parser's accounts first); unknown → waits as
+  "Which account?" in To categorize, never a guess. It links to a hand-logged
+  transfer and pairs with the other bank's email within
+  `transferMatchWindowDays`; two emails of the *same* type are two transfers
+  unless it's the same email again. Rollback: `enableAccountTransfers`.
 - **Manual entries** go through `insertOrLinkTransaction` (`lib/transactions.ts`)
   in both write routes: when email sync is live, a hand-logged purchase answers
   a waiting alert row instead of doubling it. Reconcile's Quick Add sends
@@ -284,6 +301,10 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   `lib/email/rules.ts`). A Venmo row's description is the note as typed.
 - **Venmo** (D4): a card/bank alert whose merchant is Venmo is never an expense
   — it's a transfer card → Venmo — while the Venmo receipt is the expense.
+  Money a person **sends you** on Venmo is a transfer from `"Other"` (an
+  `EXTERNAL_TRANSFER_SOURCES` label) into that Venmo account, not Income —
+  Daniel's convention for paybacks, replacing D1 for Venmo. Bank refunds and
+  deposits still become Income.
 - **Push** (`lib/push.ts`, `worker/index.ts`): next-pwa compiles
   `worker/index.ts` to `public/worker-<hash>.js`; never hand-edit
   `public/sw.js`. There is no service worker in `next dev`, so push is tested

@@ -1,0 +1,19 @@
+{
+  "synthetic": true,
+  "note": "A money alert v1 doesn't know (no real purchase/withdrawal sample yet) is Couldn't read, never a guess",
+  "email": {
+    "to": "stash.inbox@example.com",
+    "plainBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@notify.wellsfargo.com header.s=wfb1 header.b=\"AbC123\"; spf=pass (google.com: domain of alerts@notify.wellsfargo.com designates 192.0.2.1 as permitted sender) smtp.mailfrom=alerts@notify.wellsfargo.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=wellsfargo.com"
+    },
+    "gmailMessageId": "fixturewfunk00001",
+    "from": "Wells Fargo <alerts@notify.wellsfargo.com>",
+    "subject": "Account update",
+    "date": "2026-11-16T15:00:00Z",
+    "htmlBody": "<div>A withdrawal of $12.34 posted to your account ending in 1111.</div>"
+  },
+  "expect": {
+    "unparsed": true
+  }
+}

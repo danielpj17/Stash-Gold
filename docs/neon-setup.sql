@@ -193,6 +193,9 @@ CREATE TABLE financial_accounts (
   alert_source         TEXT,
   alert_last4          TEXT CHECK (alert_last4 ~ '^[0-9]{4}$'),
   alert_forwarded_from TEXT,
+  -- This account also receives the parser's alerts that name no account at
+  -- all, e.g. Wells Fargo Bill Pay (008). An explicit choice, one per parser.
+  alert_unnumbered     BOOLEAN NOT NULL DEFAULT false,
   -- What happens to an unanswered email purchase after the timeout (007).
   unattended_action    TEXT NOT NULL DEFAULT 'keep_in_review'
                          CHECK (unattended_action IN ('keep_in_review', 'auto_guess'))
@@ -216,6 +219,9 @@ CREATE UNIQUE INDEX idx_financial_accounts_alert_last4
 CREATE UNIQUE INDEX idx_financial_accounts_alert_fwd
   ON financial_accounts (user_id, alert_source, alert_forwarded_from)
   WHERE deleted_at IS NULL AND alert_forwarded_from IS NOT NULL;
+CREATE UNIQUE INDEX idx_financial_accounts_alert_unnumbered
+  ON financial_accounts (user_id, alert_source)
+  WHERE deleted_at IS NULL AND alert_unnumbered;
 
 
 -- ---------------------------------------------------------------------

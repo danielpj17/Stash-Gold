@@ -1,5 +1,7 @@
 import type { NormalizedEmail, Parser } from "@/lib/email/types";
+import { capitalOneParser } from "@/lib/email/parsers/capitalone";
 import { venmoParser } from "@/lib/email/parsers/venmo";
+import { wellsFargoParser } from "@/lib/email/parsers/wellsfargo";
 
 /**
  * Every parser Stash knows. Pure.
@@ -18,7 +20,7 @@ import { venmoParser } from "@/lib/email/parsers/venmo";
  * New parsers always start in shadow mode, because the mode is per scope and
  * live mode is switched on by a person after checking the shadow report.
  */
-export const PARSERS: Parser[] = [venmoParser];
+export const PARSERS: Parser[] = [venmoParser, wellsFargoParser, capitalOneParser];
 
 export function parserById(id: string | null | undefined): Parser | null {
   if (!id) return null;
@@ -30,6 +32,17 @@ export function parserForSender(email: NormalizedEmail): Parser | null {
 }
 
 /** For the account editor's "Alerts from" picker. */
-export function parserOptions(): Array<{ id: string; label: string; accountKey: Parser["accountKey"] }> {
-  return PARSERS.map((p) => ({ id: p.id, label: p.label, accountKey: p.accountKey }));
+export function parserOptions(): Array<{
+  id: string;
+  label: string;
+  accountKey: Parser["accountKey"];
+  /** "Bill Pay" — alerts that name no account, routed by a checkbox. */
+  unnumberedLabel: string | null;
+}> {
+  return PARSERS.map((p) => ({
+    id: p.id,
+    label: p.label,
+    accountKey: p.accountKey,
+    unnumberedLabel: p.unnumbered?.label ?? null,
+  }));
 }

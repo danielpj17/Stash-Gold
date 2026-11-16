@@ -32,6 +32,8 @@ type Detail = {
   fromEmail: boolean;
   /** A Venmo payment to a person — never offered a guess (lib/email/rules.ts). */
   person?: boolean;
+  /** A Venmo leg (bank/card ↔ Venmo): the unknown side is always a Venmo account. */
+  venmoLeg?: boolean;
   reviewedByName: string | null;
   amountHistory: Array<{ oldAmount: number; newAmount: number; reason: string; changedAt: string }>;
 };
@@ -241,7 +243,13 @@ export default function CategorizeItemPage() {
   );
 
   const venmoAccounts = activeAccounts.filter((a) => a.alertSource === "venmo");
-  const sidePicker = venmoAccounts.length > 0 ? venmoAccounts : activeAccounts;
+  // A Venmo leg asks "which Venmo?"; a card payment or bank transfer asks
+  // which of your other accounts — never the side that is already known.
+  const knownSide = item ? (item.transferFrom ?? item.transferTo) : null;
+  const sidePicker =
+    detail?.venmoLeg && venmoAccounts.length > 0
+      ? venmoAccounts
+      : activeAccounts.filter((a) => a.id !== knownSide);
 
   return (
     <DashboardLayout>
@@ -338,7 +346,7 @@ export default function CategorizeItemPage() {
                   </h2>
                   <p className="text-xs text-gray-400">
                     {labelFor(item.transferFrom ?? item.transferTo)} — {item.description}. It fills in by itself
-                    when the matching Venmo email arrives.
+                    when the matching {detail?.venmoLeg ? "Venmo" : "bank or card"} email arrives.
                   </p>
                   <div className="grid gap-2">
                     {sidePicker.map((a) => (

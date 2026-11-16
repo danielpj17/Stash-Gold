@@ -32,6 +32,9 @@ type UnknownGroup = {
   parserLabel: string | null;
   last4: string | null;
   forwardedFrom: string | null;
+  /** Alerts that name no account (Bill Pay). */
+  unnumbered: boolean;
+  unnumberedLabel: string | null;
   reason: string | null;
   count: number;
   latest: string;
@@ -115,7 +118,7 @@ export default function EmailSyncActivityPage() {
 
   const assign = useCallback(
     async (group: UnknownGroup) => {
-      const key = `${group.parserId}|${group.last4}|${group.forwardedFrom}`;
+      const key = `${group.parserId}|${group.last4}|${group.forwardedFrom}|${group.unnumbered}`;
       const accountId = assignTo[key];
       if (!accountId) return;
       setBusy(true);
@@ -128,6 +131,7 @@ export default function EmailSyncActivityPage() {
             parserId: group.parserId,
             last4: group.last4,
             forwardedFrom: group.forwardedFrom,
+            unnumbered: group.unnumbered,
             accountId,
           }),
         });
@@ -242,15 +246,16 @@ export default function EmailSyncActivityPage() {
                 <h2 className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark text-white font-medium">Unknown account</h2>
                 <ul className="divide-y divide-charcoal-dark">
                   {unknown.map((g) => {
-                    const key = `${g.parserId}|${g.last4}|${g.forwardedFrom}`;
+                    const key = `${g.parserId}|${g.last4}|${g.forwardedFrom}|${g.unnumbered}`;
                     return (
                       <li key={key} className="p-3 flex items-center gap-2 flex-wrap text-sm">
                         <span className="text-gray-200 flex-1 min-w-[12rem]">
-                          {g.parserLabel} alerts{" "}
-                          {g.last4 ? `for card ••${g.last4}` : g.forwardedFrom ? `forwarded by ${g.forwardedFrom}` : "(no identifier)"}{" "}
+                          {g.unnumbered
+                            ? `${g.parserLabel} ${g.unnumberedLabel ?? "alerts"} — no account named`
+                            : `${g.parserLabel} alerts ${g.last4 ? `for card ••${g.last4}` : g.forwardedFrom ? `forwarded by ${g.forwardedFrom}` : "(no identifier)"}`}{" "}
                           <span className="text-gray-500">({g.count} email{g.count === 1 ? "" : "s"})</span>
                         </span>
-                        {g.last4 || g.forwardedFrom ? (
+                        {g.last4 || g.forwardedFrom || g.unnumbered ? (
                           <>
                             <select
                               value={assignTo[key] ?? ""}

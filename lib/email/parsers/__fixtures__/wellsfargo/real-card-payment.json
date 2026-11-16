@@ -1,0 +1,29 @@
+{
+  "note": "REAL 'You made a payment' (2026-10-07), scrubbed: checking ••1111 pays the Wells Fargo card ••2222. A transfer, never a refund.",
+  "email": {
+    "to": "stash.inbox@example.com",
+    "plainBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@notify.wellsfargo.com header.s=wfb1 header.b=\"AbC123\"; spf=pass (google.com: domain of alerts@notify.wellsfargo.com designates 192.0.2.1 as permitted sender) smtp.mailfrom=alerts@notify.wellsfargo.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=wellsfargo.com"
+    },
+    "gmailMessageId": "fixturewfpay00001",
+    "from": "Wells Fargo <alerts@notify.wellsfargo.com>",
+    "subject": "You made a payment",
+    "date": "2026-10-08T03:12:18Z",
+    "htmlBody": "\r\n  \r\n  <html xml:lang=\"en\" lang=\"en\"><base href=\"https://static.wellsfargo.com/messagecenter/static/\"/><div id=\"container\" style=\"margin:0px 0px 0px 0px;background-color:#fff\"><body style=\"margin:0px 0px 0px 0px\">\r\n\t\t\t\t\t<table role=\"presentation\" style=\"width:600px;background-color:#D71E28;height: 42px;border-bottom:4px solid #FCC60A\" cellpadding=\"0\" cellspacing=\"0\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\"><tr><td style=\"max-width:600px\"><div align=\"left\" id=\"c26img\" style=\"margin-top: 11px;margin-bottom: 11px;margin-left: 30px; text-align: left\"><a href=\"https://www.wellsfargo.com\"/><img id=\"mastlogo\" src=\"https://static.wellsfargo.com/messagecenter/static/images/masthead_wf_logo.png\" border=\"0\" alt=\"Wells Fargo Home\" width=\"148\" style=\"font-family: Wells Fargo Sans, Arial, Helvetica, sans-serif; font-size: 13px; line-height: 18px; color: #ffffff\" class=\"center-on-narrow\"/></div></td></tr></table><table style=\"width:600px;font-family:arial,helvetica,sans-serif;font-size:12px\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\"><tr><td>\r\n\t\t<h1 xmlns:xhtml=\"http://www.w3.org/1999/xhtml\" style=\"margin:24px 30px 24px 30px;font-size:19px;font-family:arial,helvetica,sans-serif;\">You recently submitted a payment</h1>\r\n\t\r\n\t\r\n\t\t<div xmlns:xhtml=\"http://www.w3.org/1999/xhtml\" id=\"c11text\" style=\"margin: 0 30px 15px 30px;font-family:arial,helvetica,sans-serif;;font-size:12px\">The following payment will be effective as of \r\n\t\t10/07/2026:</div>\r\n\t\r\n\t\t<table style=\"width:580px;font-size:12px;font-family:arial,helvetica,sans-serif;margin-bottom:15px;margin-left:30px;color:#000000\" border=\"0\" cellpadding=\"0\" cellspacing=\"0\"><tr><td style=\"width:138px;padding-left:25px;text-align:left\" scope=\"row\">\r\n                \r\n\t\t\t\t<strong>To account\r\n</strong>\r\n\t\t\t\r\n              </td><td style=\"text-align:left;\">\r\n                Wells Fargo \r\n\t\tXXXX-XXXX-XXXX-2222\r\n              </td></tr><tr><td style=\"width:138px;padding-left:25px;text-align:left\" scope=\"row\">\r\n                \r\n\t\t\t\t<strong>From account\r\n</strong>\r\n\t\t\t\r\n              </td><td style=\"text-align:left;\">\r\n                \r\n\t\t\t\t\r\n\t\tWells Fargo \r\n\t\tXXXX-XX1111\r\n\t\t\t\r\n              </td></tr><tr><td style=\"width:138px;padding-left:25px;text-align:left\" scope=\"row\">\r\n                \r\n\t\t\t\t<strong>Payment amount</strong>\r\n\t\t\t\r\n              </td><td style=\"text-align:left;\">\r\n                \r\n\t\t\t\t\r\n\t\t$123.45\r\n\t\t\t\r\n              </td></tr></table>\r\n\t\t\t\t<div id=\"c11text\" style=\"margin: 0 30px 0px 30px;font-family:arial,helvetica,sans-serif;font-size:12px;\">If you have questions, Wells Fargo Customer Service is available \r\n\t\t24 hours a day, 7 days a week. Wells Fargo Consumer Card Customer Service is available at \r\n\t\t1-866-229-6633.</div><br/>\r\n\r\n\t\t<div xmlns:xhtml=\"http://www.w3.org/1999/xhtml\" id=\"c11text\" style=\"margin: 0 30px 15px 30px;font-family:arial,helvetica,sans-serif;;font-size:12px\">Thank you for banking with Wells Fargo.</div>\r\n\t</td></tr></table><table role=\"presentation\" style=\"width:600px;font-family:arial,helvetica,sans-serif;font-size:12px;border-top:1px solid #B5ADAD;background-color:#F4F0ED\" cellspacing=\"0\" cellpadding=\"0\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\"><tr><td colspan=\"2\"><div id=\"wfFooter\" style=\"margin:10px 30px 16px 30px;vertical-align:top\"><a href=\"https://www.wellsfargo.com\" style=\"font-size:12px;font-family:arial,helvetica,sans-serif;margin-right: 16px;color:#336699\"><strong>wellsfargo.com</strong></a> | <a href=\"https://www.wellsfargo.com/privacy-security/fraud\" style=\"font-size:12px;font-family:arial,helvetica,sans-serif;margin-left: 16px;margin-right: 16px;color:#336699\">Security Center</a> | <a href=\"https://www.wellsfargo.com/help/contact-us/\" style=\"font-size:12px;font-family:arial,helvetica,sans-serif;margin-left: 16px;color:#336699\">Contact Us</a></div>\r\n\t\t\t\t<div id=\"c1\" style=\"margin:16px 30px 16px 30px; font-size: 12px;color: #3B3331\">\r\n\t\t\t<strong>Please do not reply to this automated email.</strong>\r\n\t\t</div>\r\n\t\t\t\t\r\n\t\t<div id=\"c2\" style=\"margin:16px 30px 10px 30px; font-size: 12px; color: #3B3331\">00000000-0000-0000-0000-000000000000 1700&#160;&#160;</div>\r\n\t</td></tr></table><img src=\"https://ort.wellsfargo.com/messaging/open-rate-tracking/v1/pixel-image?uow_id=00000000-0000-0000-0000-000000000000\" height=\"1\" width=\"1\" alt=\"\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\"/>\r\n\t\t\t\t</body></div></html>\r\n"
+  },
+  "expect": {
+    "alert": {
+      "kind": "transfer",
+      "transferDirection": "out",
+      "amountCents": 12345,
+      "accountHint": {
+        "last4": "1111"
+      },
+      "fundingSource": {
+        "last4": "2222"
+      },
+      "occurredDate": "2026-10-07"
+    }
+  }
+}

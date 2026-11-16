@@ -14,6 +14,7 @@ const CARD: AccountRef = {
   alertSource: "examplebank",
   alertLast4: "4821",
   alertForwardedFrom: null,
+  alertUnnumbered: false,
   unattendedAction: "keep_in_review",
 };
 const CHECKING: AccountRef = { ...CARD, id: "acct-checking", name: "Checking", kind: "checking", isDefault: true, alertLast4: "1111" };
@@ -367,25 +368,119 @@ describe("decide: money in (D1, §5.12)", () => {
     expect(plan.notify).toBe(false);
   });
 
-  it("a card payment is never income", () => {
-    const plan = decide(ctx({ alert: alert({ kind: "transfer", merchantRaw: "PAYMENT THANK YOU", isPending: false }) }));
+  it("a card payment is never income: it is a transfer into the card", () => {
+    const plan = decide(
+      ctx({ alert: alert({ kind: "transfer", transferDirection: "in", merchantRaw: "PAYMENT THANK YOU", isPending: false }) }),
+    );
+    expect(plan).toMatchObject({ action: "create", reason: "transfer_side_unknown" });
+    if (plan.action !== "create") return;
+    expect(plan.transactions).toHaveLength(1);
+    expect(plan.transactions[0]).toMatchObject({
+      kind: "transfer",
+      category: null,
+      transferFrom: null,
+      transferTo: CARD.id,
+      reviewStatus: "needs_review",
+      description: "Card payment",
+    });
+    expect(plan.notify).toBe(false);
+  });
+
+  it("with account transfers switched off, a card payment is ignored as before", () => {
+    const plan = decide(
+      ctx({
+        alert: alert({ kind: "transfer", transferDirection: "in", merchantRaw: "PAYMENT THANK YOU", isPending: false }),
+        config: { enableAccountTransfers: false },
+      }),
+    );
     expect(plan).toMatchObject({ action: "ignore", reason: "transfer_not_tracked" });
   });
 
-  it("Venmo 'X paid you' is Income on the Venmo account", () => {
-    const plan = decide(
+  describe("Venmo 'X paid you' is a transfer from Other into that Venmo, not Income", () => {
+    const paid = (over: Partial<ParsedAlert> = {}) =>
+      alert({ kind: "payment_received", merchantRaw: "Alex Smith", counterparty: "Alex Smith", memo: "pizza", accountHint: {}, isPending: false, amountCents: 1500, ...over });
+    const venmoCtx = (over: Partial<DecideContext> = {}) =>
       ctx({
         parser: { id: "venmo", accountKey: "forwarded_from" },
         account: VENMO_D,
         accounts: [CARD, CHECKING, VENMO_D],
         merchant: null,
-        alert: alert({ kind: "payment_received", merchantRaw: "Alex Smith", counterparty: "Alex Smith", memo: "pizza", accountHint: {}, isPending: false, amountCents: 1500 }),
-      }),
-    );
-    expect(plan.action === "create" && plan.transactions[0]).toMatchObject({
-      kind: "income",
-      account: VENMO_D.id,
-      description: "pizza",
+        alert: paid(),
+        ...over,
+      });
+
+    it("creates Other → Venmo, confirmed, described by the note, no question", () => {
+      const plan = decide(venmoCtx());
+      expect(plan).toMatchObject({ action: "create", reason: "venmo_received", notify: false });
+      if (plan.action !== "create") return;
+      expect(plan.transactions).toEqual([
+        expect.objectContaining({
+          kind: "transfer",
+          category: null,
+          account: null,
+          transferFrom: "Other",
+          transferTo: VENMO_D.id,
+          reviewStatus: "confirmed",
+          description: "pizza",
+        }),
+      ]);
+    });
+
+    it("never pairs with another person's payment of the same amount", () => {
+      const sams = row({
+        kind: "transfer",
+        account: null,
+        amountCents: 1500,
+        transferFrom: "Other",
+        transferTo: VENMO_D.id,
+        reviewStatus: "confirmed",
+        eventKind: "payment_received",
+        eventMerchantKey: merchantKey("Sam Lee"),
+      });
+      const plan = decide(venmoCtx({ candidates: [sams] }));
+      expect(plan).toMatchObject({ action: "create", reason: "venmo_received" });
+    });
+
+    it("the same receipt from the other inbox is a duplicate", () => {
+      const first = row({
+        kind: "transfer",
+        account: null,
+        amountCents: 1500,
+        transferFrom: "Other",
+        transferTo: VENMO_D.id,
+        reviewStatus: "confirmed",
+        eventKind: "payment_received",
+        eventMerchantKey: merchantKey("Alex Smith"),
+        eventForwardedFor: "katie@example.com",
+      });
+      expect(decide(venmoCtx({ candidates: [first] }))).toMatchObject({ action: "duplicate", reason: "same_alert" });
+    });
+
+    it("links to a transfer you already logged by hand", () => {
+      const manual = row({
+        id: "tx-manual",
+        kind: "transfer",
+        source: "manual",
+        emailEventId: null,
+        account: null,
+        amountCents: 1500,
+        transferFrom: "Other",
+        transferTo: VENMO_D.id,
+        reviewStatus: "confirmed",
+        eventKind: null,
+        eventMerchantKey: null,
+      });
+      expect(decide(venmoCtx({ candidates: [manual] }))).toMatchObject({
+        action: "link",
+        reason: "matched_manual_transfer",
+        transactionId: "tx-manual",
+      });
+    });
+
+    it("no note: says who it was from", () => {
+      const plan = decide(venmoCtx({ alert: paid({ memo: undefined }) }));
+      if (plan.action !== "create") throw new Error(plan.action);
+      expect(plan.transactions[0].description).toBe("Venmo from Alex Smith");
     });
   });
 
@@ -617,5 +712,170 @@ describe("isGasHold", () => {
   it("knows $1.00 and round $25 steps between $50 and $200", () => {
     expect([100, 5000, 7500, 12500, 20000].every((c) => isGasHold(c))).toBe(true);
     expect([4317, 4999, 25000, 2500, 6000].some((c) => isGasHold(c))).toBe(false);
+  });
+});
+
+describe("card payments and transfers between your own accounts", () => {
+  const WF_CHECKING: AccountRef = {
+    ...CARD,
+    id: "acct-wf-checking",
+    name: "WF Checking",
+    kind: "checking",
+    alertSource: "wellsfargo",
+    alertLast4: "1111",
+    alertUnnumbered: true,
+  };
+  const WF_CARD: AccountRef = { ...WF_CHECKING, id: "acct-wf-card", name: "WF Card", kind: "credit_card", alertLast4: "2222", alertUnnumbered: false };
+  const WF_SAVINGS: AccountRef = { ...WF_CHECKING, id: "acct-wf-savings", name: "WF Savings", kind: "savings", alertLast4: "3333", alertUnnumbered: false };
+  const ACCOUNTS = [WF_CHECKING, WF_CARD, WF_SAVINGS, CARD];
+
+  const payment = (over: Partial<ParsedAlert> = {}) =>
+    alert({
+      kind: "transfer",
+      transferDirection: "out",
+      amountCents: 12345,
+      merchantRaw: "Wells Fargo payment",
+      accountHint: { last4: "1111" },
+      fundingSource: { last4: "2222" },
+      isPending: false,
+      ...over,
+    });
+  const wf = (a: ParsedAlert, over: Partial<DecideContext> = {}) =>
+    ctx({
+      parser: { id: "wellsfargo", accountKey: "last4" },
+      account: WF_CHECKING,
+      accounts: ACCOUNTS,
+      merchant: null,
+      alert: a,
+      ...over,
+    });
+  const transferRow = (over: Partial<CandidateRow> = {}) =>
+    row({
+      id: "tx-transfer",
+      kind: "transfer",
+      amountCents: 12345,
+      account: null,
+      transferFrom: WF_CHECKING.id,
+      transferTo: WF_CARD.id,
+      reviewStatus: "confirmed",
+      isPending: false,
+      merchantId: null,
+      eventKind: "transfer",
+      eventMerchantKey: merchantKey("Wells Fargo payment"),
+      ...over,
+    });
+
+  it("an email naming both accounts creates one complete transfer", () => {
+    const plan = decide(wf(payment()));
+    expect(plan).toMatchObject({ action: "create", reason: "account_transfer", notify: false });
+    if (plan.action !== "create") return;
+    expect(plan.transactions).toEqual([
+      expect.objectContaining({
+        kind: "transfer",
+        amountCents: 12345,
+        category: null,
+        account: null,
+        transferFrom: WF_CHECKING.id,
+        transferTo: WF_CARD.id,
+        reviewStatus: "confirmed",
+        description: "Card payment",
+        attachMerchant: false,
+        attachEvent: true,
+      }),
+    ]);
+  });
+
+  it("checking → savings is described as a transfer", () => {
+    const plan = decide(wf(payment({ merchantRaw: "Wells Fargo online transfer", fundingSource: { last4: "3333" } })));
+    if (plan.action !== "create") throw new Error(plan.action);
+    expect(plan.transactions[0]).toMatchObject({ transferTo: WF_SAVINGS.id, description: "Transfer" });
+  });
+
+  it("links to the transfer you already logged by hand instead of adding a second", () => {
+    const manual = transferRow({ source: "manual", emailEventId: null, eventKind: null, eventMerchantKey: null, occurredAt: hours(-30) });
+    const plan = decide(wf(payment(), { candidates: [manual] }));
+    expect(plan).toMatchObject({
+      action: "link",
+      reason: "matched_manual_transfer",
+      transactionId: manual.id,
+      update: { id: manual.id, attachEvent: true },
+    });
+  });
+
+  it("the card's own 'payment received' after the bank's email is the same transfer", () => {
+    const fromBank = transferRow();
+    const cardSide = alert({
+      kind: "transfer",
+      transferDirection: "in",
+      amountCents: 12345,
+      merchantRaw: "PAYMENT THANK YOU",
+      accountHint: { last4: "2222" },
+      isPending: false,
+    });
+    const plan = decide(wf(cardSide, { account: WF_CARD, candidates: [fromBank], occurredAt: hours(40) }));
+    expect(plan).toMatchObject({ action: "duplicate", reason: "transfer_already_recorded", transactionId: fromBank.id });
+  });
+
+  it("the card's email first leaves 'from' unknown; the bank's email fills it in", () => {
+    const waiting = transferRow({
+      transferFrom: null,
+      reviewStatus: "needs_review",
+      eventMerchantKey: merchantKey("PAYMENT THANK YOU"),
+    });
+    const plan = decide(wf(payment(), { candidates: [waiting], occurredAt: hours(24) }));
+    expect(plan).toMatchObject({
+      action: "link",
+      reason: "completed_transfer_side",
+      transactionId: waiting.id,
+      update: { id: waiting.id, transferFrom: WF_CHECKING.id, reviewStatus: "confirmed" },
+    });
+  });
+
+  it("two emails of the same type are two transfers, not a duplicate", () => {
+    const earlier = transferRow({ occurredAt: hours(-24), eventBodySha256: "sha-earlier" });
+    const plan = decide(wf(payment(), { candidates: [earlier] }));
+    expect(plan).toMatchObject({ action: "create", reason: "account_transfer" });
+  });
+
+  it("…unless it is the same email again", () => {
+    const same = transferRow({ eventBodySha256: "sha-new" });
+    const plan = decide(wf(payment(), { candidates: [same] }));
+    expect(plan).toMatchObject({ action: "duplicate", reason: "transfer_already_recorded" });
+  });
+
+  it("an account Stash doesn't know waits as 'Which account?', never a guess", () => {
+    const plan = decide(wf(payment({ fundingSource: { last4: "9876" } })));
+    expect(plan).toMatchObject({ action: "create", reason: "transfer_side_unknown", notify: false });
+    if (plan.action !== "create") return;
+    expect(plan.transactions[0]).toMatchObject({ transferFrom: WF_CHECKING.id, transferTo: null, reviewStatus: "needs_review" });
+  });
+
+  it("an email naming the same account twice is not a transfer", () => {
+    const plan = decide(wf(payment({ fundingSource: { last4: "1111" } })));
+    expect(plan).toMatchObject({ action: "ignore", reason: "transfer_same_account" });
+  });
+
+  it("prefers this bank's own account when two accounts share a last four", () => {
+    const otherBank: AccountRef = { ...CARD, id: "acct-other-2222", alertSource: "examplebank", alertLast4: "2222" };
+    const plan = decide(wf(payment(), { accounts: [...ACCOUNTS, otherBank] }));
+    if (plan.action !== "create") throw new Error(plan.action);
+    expect(plan.transactions[0]).toMatchObject({ transferTo: WF_CARD.id, reviewStatus: "confirmed" });
+  });
+
+  it("a Bill Pay payment is an ordinary expense, asked like any purchase", () => {
+    const plan = decide(
+      wf(
+        alert({
+          kind: "payment_sent",
+          amountCents: 75000,
+          merchantRaw: "Example Property Co",
+          accountHint: {},
+          isPending: false,
+        }),
+      ),
+    );
+    expect(plan).toMatchObject({ action: "create", reason: "ask", notify: true });
+    if (plan.action !== "create") return;
+    expect(plan.transactions[0]).toMatchObject({ kind: "expense", account: WF_CHECKING.id, isPending: false });
   });
 });

@@ -1,0 +1,29 @@
+{
+  "note": "REAL 'Online transfer initiated' (2026-10-11), scrubbed: checking ••1111 → savings ••3333",
+  "email": {
+    "to": "stash.inbox@example.com",
+    "plainBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@notify.wellsfargo.com header.s=wfb1 header.b=\"AbC123\"; spf=pass (google.com: domain of alerts@notify.wellsfargo.com designates 192.0.2.1 as permitted sender) smtp.mailfrom=alerts@notify.wellsfargo.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=wellsfargo.com"
+    },
+    "gmailMessageId": "fixturewfxfer0001",
+    "from": "\"Wells Fargo Online: Transfers\" <alerts@notify.wellsfargo.com>",
+    "subject": "Wells Fargo Transfers: Online transfer initiated",
+    "date": "2026-10-11T16:15:24Z",
+    "htmlBody": "\r\n  \r\n  <html xml:lang=\"en\" lang=\"en\"><base href=\"https://static.wellsfargo.com/messagecenter/static/\"/><div id=\"container\" style=\"margin:0px 0px 0px 0px;\"><body style=\"MARGIN: 0px 0px 0px 0px;\">\r\n <table role=\"presentation\" style=\"width:600px;background-color:#D71E28;height: 42px;border-bottom:4px solid #FCC60A\" cellpadding=\"0\" cellspacing=\"0\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\"><tr><td style=\"max-width:600px\"><div align=\"left\" id=\"c26img\" style=\"margin-top: 11px;margin-bottom: 11px;margin-left: 30px; text-align: left\"><a href=\"https://www.wellsfargo.com\"/><img id=\"mastlogo\" src=\"https://static.wellsfargo.com/messagecenter/static/images/masthead_wf_logo.png\" border=\"0\" alt=\"Wells Fargo Home\" width=\"148\" style=\"font-family: Wells Fargo Sans, Arial, Helvetica, sans-serif; font-size: 13px; line-height: 18px; color: #ffffff\" class=\"center-on-narrow\"/></div></td></tr></table><table style=\"width:600px;font-family:arial,helvetica,sans-serif;font-size:12px\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\"><tr><td>\r\n\t\t<h1 xmlns:xhtml=\"http://www.w3.org/1999/xhtml\" style=\"margin:24px 30px 24px 30px;font-size:19px;font-family:arial,helvetica,sans-serif;\">\r\n              <strong>Your transfer is being processed.</strong>\r\n            </h1>\r\n\t\r\n\t\r\n\t\t<div xmlns:xhtml=\"http://www.w3.org/1999/xhtml\" id=\"c11text\" style=\"margin: 0 30px 15px 30px;font-family:arial,helvetica,sans-serif;;font-size:12px\">You successfully submitted  the following transfer:</div>\r\n\t\r\n\t<table style=\"width:580px;font-size:12px;font-family:arial,helvetica,sans-serif;margin-bottom:15px;margin-left:30px;color:#000000\" border=\"0\" cellpadding=\"0\" cellspacing=\"0\"><tr><th style=\"width:138px;padding-left:25px;text-align:left\" scope=\"row\">To Account </th><td style=\"text-align:left;\">XXXXXX3333</td></tr><tr><th style=\"width:138px;padding-left:25px;text-align:left\" scope=\"row\">From Account </th><td style=\"text-align:left;\">XXXXXX1111</td></tr><tr><th style=\"width:138px;padding-left:25px;text-align:left\" scope=\"row\">Amount </th><td style=\"text-align:left;\">$1,250.00</td></tr><tr><th style=\"width:138px;padding-left:25px;text-align:left\" scope=\"row\">Date </th><td style=\"text-align:left;\">10/11/2026</td></tr></table>\r\n\t\r\n\r\n\r\n\r\n\t\t\t   <div id=\"c11text\" style=\"margin: 0 30px 0px 30px;font-family:arial,helvetica,sans-serif;font-size:12px;\">If you do not recognize this transaction or need assistance, you can reach us at 1-800-956-4442, 24 hours a day, 7 days a week.</div>\r\n\r\n\t\t<br/>\r\n\t\t</td></tr></table><table role=\"presentation\" style=\"width:600px;font-family:arial,helvetica,sans-serif;font-size:12px;border-top:1px solid #B5ADAD;background-color:#F4F0ED\" cellspacing=\"0\" cellpadding=\"0\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\"><tr><td colspan=\"2\"><div id=\"wfFooter\" style=\"margin:10px 30px 16px 30px;vertical-align:top\"><a href=\"https://www.wellsfargo.com\" style=\"font-size:12px;font-family:arial,helvetica,sans-serif;margin-right: 16px;color:#336699\"><strong>wellsfargo.com</strong></a> | <a href=\"https://www.wellsfargo.com/privacy-security/fraud\" style=\"font-size:12px;font-family:arial,helvetica,sans-serif;margin-left: 16px;margin-right: 16px;color:#336699\">Security Center</a> | <a href=\"https://www.wellsfargo.com/help/contact-us/\" style=\"font-size:12px;font-family:arial,helvetica,sans-serif;margin-left: 16px;color:#336699\">Contact Us</a></div>\r\n\t\t\t\t<div id=\"c1\" style=\"margin:16px 30px 16px 30px; font-size: 12px;color: #3B3331\">\r\n\t\t\t<strong>Please do not reply to this automated email.</strong>\r\n\t\t</div>\r\n\t\t\t\t\r\n\t\t<div id=\"c2\" style=\"margin:16px 30px 10px 30px; font-size: 12px; color: #3B3331\">00000000-0000-0000-0000-000000000000 1700&#160;&#160;</div>\r\n\t</td></tr></table><img src=\"https://ort.wellsfargo.com/messaging/open-rate-tracking/v1/pixel-image?uow_id=00000000-0000-0000-0000-000000000000\" height=\"1\" width=\"1\" alt=\"\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\"/>\r\n\t\t\t\t</body></div></html>\r\n"
+  },
+  "expect": {
+    "alert": {
+      "kind": "transfer",
+      "transferDirection": "out",
+      "amountCents": 125000,
+      "accountHint": {
+        "last4": "1111"
+      },
+      "fundingSource": {
+        "last4": "3333"
+      },
+      "occurredDate": "2026-10-11"
+    }
+  }
+}

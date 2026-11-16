@@ -424,7 +424,8 @@ export async function insertOrLinkTransaction(
   if (match.review_status !== "needs_review") return plain(match.id);
 
   if (input.kind === "transfer") {
-    // A transfer waiting on "Which Venmo account?": the manual entry names it.
+    // A transfer waiting on "Which account?" (a Venmo leg, or a card payment
+    // whose paying account the email didn't name): the manual entry names it.
     const updated = (await sql`
       UPDATE transactions
          SET transfer_from = COALESCE(transfer_from, ${input.transferFrom}),

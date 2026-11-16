@@ -40,6 +40,8 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
     alertSource?: unknown;
     alertLast4?: unknown;
     alertForwardedFrom?: unknown;
+    /** This account pays the source's alerts that name no account (Bill Pay). */
+    alertUnnumbered?: unknown;
     unattendedAction?: unknown;
   };
   try {
@@ -96,7 +98,8 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
     if (
       body.alertSource !== undefined ||
       body.alertLast4 !== undefined ||
-      body.alertForwardedFrom !== undefined
+      body.alertForwardedFrom !== undefined ||
+      body.alertUnnumbered !== undefined
     ) {
       const text = (value: unknown, fallback: string | null) =>
         value === undefined ? fallback : typeof value === "string" && value.trim() ? value.trim() : null;
@@ -109,11 +112,19 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
       if (alertSource !== null && !/^[a-z0-9_]{1,40}$/.test(alertSource)) {
         return NextResponse.json({ error: "Unknown alert source." }, { status: 400 });
       }
+      // The Bill Pay role belongs to one bank: switching the source drops it
+      // unless this same request sets it again.
+      const unnumbered =
+        alertSource !== null &&
+        (typeof body.alertUnnumbered === "boolean"
+          ? body.alertUnnumbered
+          : alertSource === existing.alertSource && existing.alertUnnumbered);
       await sql`
         UPDATE financial_accounts
            SET alert_source = ${alertSource},
                alert_last4 = ${alertSource ? alertLast4 : null},
-               alert_forwarded_from = ${alertSource && forwarded ? forwarded.toLowerCase() : null}
+               alert_forwarded_from = ${alertSource && forwarded ? forwarded.toLowerCase() : null},
+               alert_unnumbered = ${unnumbered}
          WHERE user_id = ${userId} AND id = ${accountId}::uuid
       `;
     }
@@ -218,8 +229,14 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to update account";
     const isConflict = message.toLowerCase().includes("unique");
+    // Several partial unique indexes guard this row; name the one that fired.
+    const conflictMessage = message.includes("alert_unnumbered")
+      ? "Another account already receives those alerts (only one can)."
+      : /alert_last4|alert_fwd/.test(message)
+        ? "Another account already receives those alerts."
+        : "You already have an account with that name.";
     return NextResponse.json(
-      { error: isConflict ? "You already have an account with that name." : message },
+      { error: isConflict ? conflictMessage : message },
       { status: isConflict ? 409 : 502 },
     );
   }

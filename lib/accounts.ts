@@ -36,6 +36,8 @@ export type FinancialAccount = {
   alertSource: string | null;
   alertLast4: string | null;
   alertForwardedFrom: string | null;
+  /** Also receives the source's alerts that name no account — Bill Pay (008). */
+  alertUnnumbered: boolean;
   /** What an unanswered email purchase does after the timeout (migration 007). */
   unattendedAction: "keep_in_review" | "auto_guess";
 };
@@ -84,6 +86,7 @@ type AccountRow = {
   alert_source: string | null;
   alert_last4: string | null;
   alert_forwarded_from: string | null;
+  alert_unnumbered: boolean | null;
   unattended_action: string | null;
   has_header: boolean | null;
   header_row_index: number | null;
@@ -114,6 +117,7 @@ function mapRow(row: AccountRow): FinancialAccount {
     alertSource: row.alert_source ?? null,
     alertLast4: row.alert_last4 ?? null,
     alertForwardedFrom: row.alert_forwarded_from ?? null,
+    alertUnnumbered: row.alert_unnumbered === true,
     unattendedAction: row.unattended_action === "auto_guess" ? "auto_guess" : "keep_in_review",
     csvProfile: hasProfile
       ? {
@@ -139,7 +143,7 @@ const SELECT_ACCOUNTS = (sql: Sql, userId: string) => sql`
   SELECT
     a.id, a.name, a.kind, a.opening_balance, a.is_active, a.is_default,
     a.sort_order, a.deleted_at,
-    a.alert_source, a.alert_last4, a.alert_forwarded_from, a.unattended_action,
+    a.alert_source, a.alert_last4, a.alert_forwarded_from, a.alert_unnumbered, a.unattended_action,
     p.has_header, p.header_row_index, p.date_index, p.amount_index,
     p.description_index, p.debit_index, p.credit_index,
     p.outflow_is_positive, p.derive_date_from_description,

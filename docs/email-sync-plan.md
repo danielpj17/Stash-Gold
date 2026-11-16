@@ -811,8 +811,9 @@ matches:
 |---|---|
 | Counterparty in `internal_counterparties` (D6) | `ignored` |
 | Bank/card alert whose merchant key is `VENMO`, or a Venmo "transfer to bank" email | A Venmo leg (below), not income |
-| A payment *to* a credit card ("payment received, thank you") | `transfer` kind, `ignored`, as today. Reconcile handles card payments the way it always has |
-| Refund or credit, Venmo "X paid you", deposit | `kind = 'income'`, `category = 'Income'`, `review_status = 'confirmed'`, `categorized_by = 'rule'`. No question, no push. Descriptions like "Refund · Amazon" or "Venmo from Alex — pizza" |
+| A payment *to* a credit card ("payment received, thank you") | `transfer` kind. **Since 2026-11-16** a transfer row (see "Account transfers" below); before that `ignored`, left to Reconcile |
+| Venmo "X paid you" / "X completed your request" (**since 2026-11-16**) | A **transfer** from `"Other"` into that Venmo account, confirmed, described by the note. Someone paying you back isn't income — Daniel's convention. Links to a hand-logged transfer; never pairs with another person's payment of the same amount |
+| Refund or credit, deposit | `kind = 'income'`, `category = 'Income'`, `review_status = 'confirmed'`, `categorized_by = 'rule'`. No question, no push. Descriptions like "Refund · Amazon" |
 
 Income rows go through `insertOrLinkTransaction`, so a paycheck already logged
 by hand gets linked, not doubled. In Reconcile they're ordinary Income
@@ -857,6 +858,28 @@ one or two legs as today.
 *expense* is still created, so the budget is right from day one. Only the
 transfer's balance movement waits for Phase 4, and the CSV covers it until
 then.
+
+**Account transfers (added 2026-11-16, Daniel's request).** Card payments and
+moves between your own accounts were "Not doing (now)"; they now follow the
+Venmo-leg model above with the same `decideTransfer`:
+
+| Arrives | Action |
+|---|---|
+| A bank/card alert of kind `transfer` naming both accounts (Wells Fargo "You made a payment", "Online transfer") | One confirmed transfer row. "Card payment" when the `to` account is a credit card, else "Transfer" — both words Reconcile's transfer step already looks for |
+| One that names an account Stash doesn't know (or none, e.g. a card's "payment received") | Created with that side unset, `needs_review`, "Which account?" in To categorize. No push |
+| The other bank's email for the same movement (same amount, ±`transferMatchWindowDays`, one side equal) | `duplicate`, or fills the unknown side and confirms |
+| A hand-logged transfer of the same amount and accounts (±`manualMatchWindowDays`) | `linked`; no second row |
+| A second email of the *same* type (same kind, same merchant key) | A separate transfer — two $500 savings transfers in a week are two — unless it is the same email again (identical body, or the other inbox's copy) |
+| An email naming the same account on both sides | `ignored` (`transfer_same_account`) |
+
+Bank alerts for a card payment that *don't* say "transfer" (a checking
+withdrawal alert reading "CAPITAL ONE MOBILE PMT") are not covered yet: no
+real sample exists, and recognising one needs its own rule.
+
+**Alerts that name no account** (migration 008). Wells Fargo Bill Pay says
+only "your selected account(s)". Such an alert routes to the single account
+ticked "Bill Pay comes out of this account" (`alert_unnumbered`); with none
+ticked it waits under Unknown account, where assigning it ticks the box.
 
 ---
 
@@ -1221,8 +1244,8 @@ otherwise.
 - AI extraction fallback (later; results would always go to review).
 - Android notification action buttons.
 - Refunds as negative expenses: D1 chose Income instead.
-- Non-Venmo transfer alerts (card payments, account-to-account): recorded and
-  ignored, and Reconcile handles them as today.
+- ~~Non-Venmo transfer alerts (card payments, account-to-account)~~ — built
+  2026-11-16, see "Account transfers" in §5.12.
 - User-defined categories.
 - Moving To categorize into Reconcile (D5, "maybe later"): `CategorizeQueue`
   is built to be re-mounted there.

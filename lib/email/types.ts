@@ -110,6 +110,13 @@ export type Parser = {
    * (Venmo) by whose inbox forwarded the alert.
    */
   accountKey: "last4" | "forwarded_from";
+  /**
+   * Some of this source's alerts name no account at all (Wells Fargo Bill
+   * Pay). They route to the ONE account the person ticked for them
+   * (`financial_accounts.alert_unnumbered`, migration 008) — never to a guess.
+   * `label` names that kind of alert in the account editor ("Bill Pay").
+   */
+  unnumbered?: { label: string };
   parse(email: NormalizedEmail): ParseResult;
 };
 

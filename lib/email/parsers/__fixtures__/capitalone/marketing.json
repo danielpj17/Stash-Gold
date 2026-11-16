@@ -1,0 +1,19 @@
+{
+  "synthetic": true,
+  "note": "Offers come from other capitalone.com subdomains",
+  "email": {
+    "to": "stash.inbox@example.com",
+    "date": "2026-11-16T21:15:00Z",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@email.capitalone.com; spf=pass"
+    },
+    "gmailMessageId": "fixturec1mkt00001",
+    "from": "Capital One <credit-card-offers@email.capitalone.com>",
+    "subject": "Special offer: Earn 90,000 bonus miles",
+    "plainBody": "Plus, earn unlimited 2X miles on every purchase, every day. Spend $4,000 in the first 3 months."
+  },
+  "expect": {
+    "ignore": "capitalone_marketing"
+  }
+}

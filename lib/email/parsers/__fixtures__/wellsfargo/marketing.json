@@ -1,0 +1,19 @@
+{
+  "synthetic": true,
+  "note": "Offers come from mail1.wellsfargo.com",
+  "email": {
+    "to": "stash.inbox@example.com",
+    "plainBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@mail1.wellsfargo.com; spf=pass"
+    },
+    "gmailMessageId": "fixturewfmkt00001",
+    "from": "Wells Fargo Bank <wellsfargo@mail1.wellsfargo.com>",
+    "subject": "Check your personal loan rate now",
+    "date": "2026-10-01T13:14:56Z",
+    "htmlBody": "<div>You're pre-selected for a personal loan up to $35,000.</div>"
+  },
+  "expect": {
+    "ignore": "wellsfargo_marketing"
+  }
+}

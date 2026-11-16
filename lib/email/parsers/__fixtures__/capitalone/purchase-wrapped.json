@@ -1,0 +1,27 @@
+{
+  "synthetic": true,
+  "note": "The same sentence wrapped across lines (as a plain-text part would) still reads",
+  "email": {
+    "to": "stash.inbox@example.com",
+    "date": "2026-11-16T21:15:00Z",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@notification.capitalone.com header.s=s1 header.b=AbC123; spf=pass (google.com: domain of bounce@notification.capitalone.com designates 192.0.2.3 as permitted sender) smtp.mailfrom=bounce@notification.capitalone.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=capitalone.com",
+      "X-Forwarded-For": "you@example.com"
+    },
+    "gmailMessageId": "fixturec1wrap0001",
+    "from": "Capital One | VentureOne <capitalone@notification.capitalone.com>",
+    "subject": "A new transaction was charged to your account",
+    "plainBody": "View posted transaction details.\nSign In\nA purchase was charged to your account.\nAbout your VentureOne Credit Card ending in 4444\nAs requested, we’re notifying you that on Nov. 16, 2026, at CAFE RIO 0002\nSPRINGFIELD, a pending authorization or purchase in the amount of $9.87 was\n placed or charged on your VentureOne Credit Card.\nNote: You’ll receive this notification for both purchases and pending authorizations, such as car rentals, hotel reservations and gas purchases, even if an actual transaction hasn’t taken place.\nPlease visit your account to view your pending and posted transactions.\nDownload the Capital One Mobile app.\nAbout This Message\nPlease visit our Set Alerts page to modify your alerts subscription.\nThe site may be unavailable during normal maintenance or due to unforeseen circumstances.\nImportant information from Capital One\nContact us | Privacy | Help prevent fraud\nThis email was sent to you@example.com and contains information directly related to your account with us, other services to which you have subscribed, and/or any application you may have submitted.\nCapital One does not provide, endorse or guarantee any third-party product, service, information or recommendation listed above. The third parties listed are not affiliated with Capital One and are solely responsible for their products and services. All trademarks are the property of their respective owners.\nPlease do not reply to this message, as this email inbox is not monitored. To contact us, visit www.capitalone.com/help-center/contact-us.\nProducts and services are offered by Capital One, N.A.\n© 2026 Capital One. Capital One is a federally registered service mark."
+  },
+  "expect": {
+    "alert": {
+      "kind": "purchase",
+      "amountCents": 987,
+      "merchantRaw": "CAFE RIO 0002 SPRINGFIELD",
+      "accountHint": {
+        "last4": "4444"
+      }
+    }
+  }
+}
