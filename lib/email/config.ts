@@ -54,7 +54,6 @@ export const EMAIL_SYNC_CONFIG = {
  * EXPENSE_CATEGORIES.
  */
 export const STARTER_GUESSES: Record<string, string> = {
-  MAVERIK: "Gas",
   CHEVRON: "Gas",
   SHELL: "Gas",
   HARMONS: "Groceries",
