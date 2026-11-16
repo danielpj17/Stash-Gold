@@ -712,7 +712,9 @@ function decideExpense(ctx: DecideContext): Plan {
   const manual = manualCandidates(ctx, "expense");
   if (manual.length === 1) return linkManual(ctx, manual[0], "expense");
 
-  const category = decideCategory(ctx.merchant, ctx.merchantKey);
+  // A Venmo payment is to a PERSON: never guessed, always asked, unless you
+  // said "Always file <name> this way" (rules.ts).
+  const category = decideCategory(ctx.merchant, ctx.merchantKey, { person: ctx.parser.id === "venmo" });
   const extras = venmoPaymentExtras(ctx);
   return {
     action: "create",

@@ -12,6 +12,12 @@ import { STARTER_GUESSES } from "@/lib/email/config";
  * D2: a provisional guess COUNTS in its category's bar, drawn as an
  * "unconfirmed" share, until a person answers. A guess never creates a rule —
  * only an explicit "Always file it this way" does.
+ *
+ * PEOPLE (Venmo counterparties, `{ person: true }`) are never guessed: paying
+ * the same friend is a different thing every time. No default, no starter
+ * guess, and an answer is not remembered as one. Only the explicit choices
+ * apply — "Always file <name> this way" (auto) and a shortlist. (Daniel,
+ * 2026-11-16.)
  */
 
 export type MerchantMode = "auto" | "ask_shortlist" | "ask_all";
@@ -45,13 +51,17 @@ export function starterGuess(key: string): string | null {
   return null;
 }
 
-export function decideCategory(merchant: MerchantRule | null, key: string): CategoryDecision {
+export function decideCategory(
+  merchant: MerchantRule | null,
+  key: string,
+  opts: { person?: boolean } = {},
+): CategoryDecision {
   if (merchant?.mode === "auto" && isExpenseCategory(merchant.category)) {
     return { reviewStatus: "confirmed", category: merchant.category, categorizedBy: "rule", choices: "all" };
   }
 
   if (merchant?.mode === "ask_shortlist" && merchant.shortlist.length > 0) {
-    const guess = isExpenseCategory(merchant.defaultCategory) ? merchant.defaultCategory : null;
+    const guess = !opts.person && isExpenseCategory(merchant.defaultCategory) ? merchant.defaultCategory : null;
     return {
       reviewStatus: "needs_review",
       category: guess,
@@ -60,9 +70,10 @@ export function decideCategory(merchant: MerchantRule | null, key: string): Cate
     };
   }
 
-  const guess =
-    (merchant && isExpenseCategory(merchant.defaultCategory) ? merchant.defaultCategory : null) ??
-    starterGuess(key);
+  const guess = opts.person
+    ? null
+    : ((merchant && isExpenseCategory(merchant.defaultCategory) ? merchant.defaultCategory : null) ??
+      starterGuess(key));
   return {
     reviewStatus: "needs_review",
     category: guess,
@@ -78,9 +89,11 @@ export function decideCategory(merchant: MerchantRule | null, key: string): Cate
 export function ruleAfterAnswer(
   merchant: MerchantRule,
   answer: { category: string; always?: boolean; addToShortlist?: boolean },
+  opts: { person?: boolean } = {},
 ): Pick<MerchantRule, "mode" | "category" | "shortlist" | "defaultCategory"> | null {
   if (!isExpenseCategory(answer.category)) return null;
-  const defaultCategory = merchant.defaultCategory ?? answer.category;
+  // A person's answer is never remembered as their default (see top of file).
+  const defaultCategory = opts.person ? merchant.defaultCategory : merchant.defaultCategory ?? answer.category;
   if (answer.always) {
     return { mode: "auto", category: answer.category, shortlist: merchant.shortlist, defaultCategory };
   }
@@ -90,7 +103,7 @@ export function ruleAfterAnswer(
       : [...merchant.shortlist, answer.category];
     return { mode: "ask_shortlist", category: merchant.category, shortlist, defaultCategory };
   }
-  if (merchant.defaultCategory === null) {
+  if (merchant.defaultCategory === null && !opts.person) {
     return { mode: merchant.mode, category: merchant.category, shortlist: merchant.shortlist, defaultCategory };
   }
   return null;

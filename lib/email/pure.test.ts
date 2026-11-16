@@ -91,6 +91,36 @@ describe("rules", () => {
       shortlist: ["Dates"],
     });
   });
+  it("people (Venmo) are never guessed and never get a remembered default", () => {
+    const person = { person: true };
+    // No default saved from an ordinary answer…
+    expect(ruleAfterAnswer(m, { category: "Dates" }, person)).toBeNull();
+    // …but the explicit choices still work, still without a default.
+    expect(ruleAfterAnswer(m, { category: "Gifts", always: true }, person)).toMatchObject({
+      mode: "auto",
+      category: "Gifts",
+      defaultCategory: null,
+    });
+    expect(ruleAfterAnswer(m, { category: "Gifts", addToShortlist: true }, person)).toMatchObject({
+      mode: "ask_shortlist",
+      shortlist: ["Gifts"],
+      defaultCategory: null,
+    });
+    // An old default and a starter-guess-looking name are both ignored.
+    expect(decideCategory({ ...m, defaultCategory: "Gas" }, "SHELL", person)).toMatchObject({
+      reviewStatus: "needs_review",
+      category: null,
+      categorizedBy: null,
+      choices: "all",
+    });
+    expect(decideCategory({ ...m, mode: "ask_shortlist", shortlist: ["Gifts"], defaultCategory: "Gifts" }, "X", person))
+      .toMatchObject({ category: null, choices: ["Gifts"] });
+    // "Always file <name> this way" still files automatically.
+    expect(decideCategory({ ...m, mode: "auto", category: "Gifts" }, "X", person)).toMatchObject({
+      reviewStatus: "confirmed",
+      category: "Gifts",
+    });
+  });
   it("rejects categories that don't exist", () => {
     expect(ruleAfterAnswer(m, { category: "Snacks", always: true })).toBeNull();
     expect(decideCategory({ ...m, mode: "auto", category: "Snacks" }, "X").reviewStatus).toBe("needs_review");

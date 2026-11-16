@@ -30,6 +30,8 @@ type Item = {
 type Detail = {
   item: Item;
   fromEmail: boolean;
+  /** A Venmo payment to a person — never offered a guess (lib/email/rules.ts). */
+  person?: boolean;
   reviewedByName: string | null;
   amountHistory: Array<{ oldAmount: number; newAmount: number; reason: string; changedAt: string }>;
 };
@@ -83,9 +85,9 @@ export default function CategorizeItemPage() {
   const primaryChoices = useMemo(() => {
     if (!item) return [];
     if (merchant?.mode === "ask_shortlist" && merchant.shortlist.length > 0) return merchant.shortlist;
-    const guess = item.category ?? merchant?.defaultCategory ?? null;
+    const guess = item.category ?? (detail?.person ? null : merchant?.defaultCategory ?? null);
     return guess ? [guess] : [];
-  }, [item, merchant]);
+  }, [item, merchant, detail?.person]);
 
   const descriptionChanged = item !== null && description.trim() !== (item.description ?? "").trim();
   /** Sent with any save, only when edited — an untouched field never rewrites the row. */

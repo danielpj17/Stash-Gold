@@ -278,6 +278,10 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   in `category`, so it counts in its budget bar, drawn as an "unconfirmed"
   share. `isUnconfirmed(row)` (`services/transactionsApi.ts`) is the one test.
   Rows with no guess appear on the dashboard's "Awaiting category" line.
+  **Venmo payments are to people and are never guessed** — no default, no
+  starter guess, and an answer isn't remembered as one. Only an explicit
+  "Always file <name> this way" or a shortlist applies (`{ person: true }` in
+  `lib/email/rules.ts`). A Venmo row's description is the note as typed.
 - **Venmo** (D4): a card/bank alert whose merchant is Venmo is never an expense
   — it's a transfer card → Venmo — while the Venmo receipt is the expense.
 - **Push** (`lib/push.ts`, `worker/index.ts`): next-pwa compiles

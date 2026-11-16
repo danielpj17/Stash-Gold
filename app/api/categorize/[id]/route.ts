@@ -26,7 +26,7 @@ export async function GET(_request: NextRequest, context: { params: { id: string
     const row = rows[0];
     if (!row) return NextResponse.json({ error: "Transaction not found" }, { status: 404 });
 
-    const [history, name] = await Promise.all([
+    const [history, name, source] = await Promise.all([
       sql`
         SELECT old_amount, new_amount, reason, changed_at
           FROM transaction_amount_changes
@@ -34,11 +34,18 @@ export async function GET(_request: NextRequest, context: { params: { id: string
          ORDER BY changed_at ASC
       ` as unknown as Promise<Array<{ old_amount: string; new_amount: string; reason: string; changed_at: string }>>,
       reviewerName(sql, userId, row.reviewed_by),
+      row.email_event_id
+        ? (sql`
+            SELECT parser_id FROM email_events WHERE user_id = ${userId} AND id = ${row.email_event_id}::uuid
+          ` as unknown as Promise<Array<{ parser_id: string | null }>>)
+        : Promise.resolve([] as Array<{ parser_id: string | null }>),
     ]);
 
     return NextResponse.json({
       item: mapQueueRow(row),
       fromEmail: row.email_event_id !== null,
+      // A Venmo payment to a person: the screen offers no pre-picked guess.
+      person: source[0]?.parser_id === "venmo",
       reviewedByName: name,
       amountHistory: history.map((h) => ({
         oldAmount: Number(h.old_amount),
@@ -100,8 +107,10 @@ export async function POST(request: NextRequest, context: { params: { id: string
              updated_at = now()
        WHERE user_id = ${userId} AND id = ${id}
          AND review_status = 'needs_review' AND kind <> 'transfer'
-      RETURNING merchant_id
-    `) as Array<{ merchant_id: string | null }>;
+      RETURNING merchant_id,
+                COALESCE((SELECT e.parser_id = 'venmo' FROM email_events e
+                           WHERE e.user_id = transactions.user_id AND e.id = transactions.email_event_id), false) AS from_venmo
+    `) as Array<{ merchant_id: string | null; from_venmo: boolean }>;
 
     if (updated.length === 0) {
       const current = (await sql`
@@ -129,11 +138,12 @@ export async function POST(request: NextRequest, context: { params: { id: string
           FROM merchants WHERE user_id = ${userId} AND id = ${merchantId}::uuid
       `) as Array<Parameters<typeof mapMerchant>[0]>;
       if (merchants[0]) {
-        rule = ruleAfterAnswer(mapMerchant(merchants[0]), {
-          category,
-          always: body.always === true,
-          addToShortlist: body.addToShortlist === true,
-        });
+        rule = ruleAfterAnswer(
+          mapMerchant(merchants[0]),
+          { category, always: body.always === true, addToShortlist: body.addToShortlist === true },
+          // A Venmo person's answer is never remembered as a default guess.
+          { person: updated[0].from_venmo === true },
+        );
         if (rule) {
           await sql`
             UPDATE merchants

@@ -329,6 +329,8 @@ type EmailCandidate = {
   merchant_id: string | null;
   merchant_name: string | null;
   claimed: boolean;
+  /** The alert was a Venmo receipt: a PERSON, never given a default guess. */
+  from_venmo: boolean;
 };
 
 /**
@@ -374,6 +376,8 @@ export async function insertOrLinkTransaction(
       SELECT t.id, t.kind, t.occurred_at, t.amount, t.account, t.transfer_from, t.transfer_to,
              t.review_status, t.is_pending, t.description, t.merchant_id,
              m.display_name AS merchant_name,
+             COALESCE((SELECT e.parser_id = 'venmo' FROM email_events e
+                        WHERE e.user_id = t.user_id AND e.id = t.email_event_id), false) AS from_venmo,
              (
                EXISTS (SELECT 1 FROM reconciliation_claim_links c
                         WHERE c.user_id = t.user_id AND c.sheet_name = 'Expenses' AND c.sheet_row_id = t.id)
@@ -459,11 +463,13 @@ export async function insertOrLinkTransaction(
        WHERE user_id = ${userId} AND id = ${match.id} AND review_status = 'needs_review'
       RETURNING id
     `,
-    // An answer becomes the merchant's default when it has none (plan §5.5).
+    // An answer becomes the merchant's default when it has none (plan §5.5) —
+    // except a Venmo person, who is never guessed (lib/email/rules.ts).
     sql`
       UPDATE merchants
          SET default_category = COALESCE(default_category, ${category})
-       WHERE user_id = ${userId} AND id = ${match.merchant_id}::uuid AND ${input.kind === "expense"}::boolean
+       WHERE user_id = ${userId} AND id = ${match.merchant_id}::uuid
+         AND ${input.kind === "expense" && !match.from_venmo}::boolean
     `,
   ]);
   if (!Array.isArray(updated) || updated.length === 0) return plain();

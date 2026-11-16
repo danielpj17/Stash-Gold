@@ -451,6 +451,18 @@ describe("decide: Venmo legs (D4)", () => {
     expect(plan.notify).toBe(false);
   });
 
+  it("a Venmo payment is never guessed, even when the person has an old default", () => {
+    const friend: MerchantRule = { id: "m-alex", displayName: "Alex Smith", mode: "ask_all", category: null, shortlist: [], defaultCategory: "Gas" };
+    const plan = decide(venmoCtx({ alert: paid(), merchant: friend }));
+    expect(plan.action === "create" && plan.transactions[0]).toMatchObject({
+      kind: "expense",
+      reviewStatus: "needs_review",
+      category: null,
+    });
+    const always = decide(venmoCtx({ alert: paid(), merchant: { ...friend, mode: "auto", category: "Gifts" } }));
+    expect(always.action === "create" && always.transactions[0]).toMatchObject({ reviewStatus: "confirmed", category: "Gifts" });
+  });
+
   it("Phase 3 guard: with transfers switched off, a VENMO card line is ignored", () => {
     const plan = decide(ctx({ alert: cardVenmo, merchant: null, config: { enableVenmoTransfers: false } }));
     expect(plan).toMatchObject({ action: "ignore", reason: "venmo_leg_pending_phase4" });

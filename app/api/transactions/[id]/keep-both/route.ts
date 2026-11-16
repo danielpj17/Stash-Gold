@@ -37,17 +37,17 @@ export async function POST(request: NextRequest, context: { params: { id: string
 
   try {
     const rows = (await sql`
-      SELECT t.id, t.kind, t.merchant_id, e.parsed->>'merchantRaw' AS merchant_raw
+      SELECT t.id, t.kind, t.merchant_id, e.parsed->>'merchantRaw' AS merchant_raw, e.parser_id
         FROM transactions t
         LEFT JOIN email_events e ON e.user_id = t.user_id AND e.id = t.email_event_id
        WHERE t.user_id = ${userId} AND t.id = ${id} AND t.source = 'email' AND t.kind <> 'transfer'
-    `) as Array<{ id: string; kind: string; merchant_id: string | null; merchant_raw: string | null }>;
+    `) as Array<{ id: string; kind: string; merchant_id: string | null; merchant_raw: string | null; parser_id: string | null }>;
     const emailRow = rows[0];
     if (!emailRow) return NextResponse.json({ error: "Card-alert transaction not found" }, { status: 404 });
 
     const key = merchantKey(emailRow.merchant_raw ?? "");
     const merchant = await loadMerchantByKey(sql, userId, key);
-    const guess = decideCategory(merchant, key);
+    const guess = decideCategory(merchant, key, { person: emailRow.parser_id === "venmo" });
     const isIncome = emailRow.kind === "income";
     const previousDescription =
       typeof body.previousDescription === "string" ? body.previousDescription.slice(0, 500) : null;
