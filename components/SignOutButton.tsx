@@ -6,15 +6,40 @@ import { LogOut, Loader2 } from "lucide-react";
 import { purgeClientCaches } from "@/lib/clientCache";
 
 /**
+ * Stop this device getting the signed-out person's pushes (email sync, plan
+ * §5.9). Deletes only this person's own row, by this browser's endpoint —
+ * which must happen BEFORE the session ends, since the route needs it.
+ * Best-effort: a failure here must never block signing out.
+ */
+async function unsubscribeThisDevice(): Promise<void> {
+  try {
+    if (!("serviceWorker" in navigator)) return;
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = await reg?.pushManager.getSubscription();
+    if (!sub) return;
+    await fetch("/api/push/subscriptions", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: sub.endpoint }),
+    }).catch(() => undefined);
+    await sub.unsubscribe().catch(() => undefined);
+  } catch {
+    /* no service worker (dev) or push unsupported */
+  }
+}
+
+/**
  * Signing out has to clear the browser too, not just the cookie: cached API
  * responses and per-user localStorage would otherwise still be sitting there
- * when the next person signs in on the same device.
+ * when the next person signs in on the same device — and a push subscription
+ * would keep delivering their notifications.
  */
 export default function SignOutButton({ collapsed = false }: { collapsed?: boolean }) {
   const [busy, setBusy] = useState(false);
 
   async function handleSignOut() {
     setBusy(true);
+    await unsubscribeThisDevice();
     await purgeClientCaches();
     await signOut({ callbackUrl: "/signin" });
   }

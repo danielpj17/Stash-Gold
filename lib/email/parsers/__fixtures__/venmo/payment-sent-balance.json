@@ -1,0 +1,25 @@
+{
+  "synthetic": true,
+  "note": "paid from the Venmo balance: only the expense",
+  "email": {
+    "gmailMessageId": "18c0000000000001",
+    "from": "Venmo <venmo@venmo.com>",
+    "to": "stash.inbox@example.com",
+    "subject": "You paid Jordan Lee's $12.50 request",
+    "date": "2026-11-15T19:05:00Z",
+    "plainBody": "You completed Jordan Lee's request\n$12.50\nNote: tacos\nPayment method: Venmo balance\nPayment ID: 0000000000000000000\nThis is an automated message from Venmo. Please don't reply.",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@venmo.com header.s=s1 header.b=AbC; spf=pass smtp.mailfrom=venmo@venmo.com; dmarc=pass (p=REJECT) header.from=venmo.com",
+      "X-Forwarded-For": "daniel@example.com"
+    }
+  },
+  "expect": {
+    "alert": {
+      "kind": "payment_sent",
+      "amountCents": 1250,
+      "counterparty": "Jordan Lee",
+      "fundingSource": "balance"
+    }
+  }
+}

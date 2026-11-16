@@ -13,6 +13,7 @@ import {
   deleteTransaction,
   getExpenses,
   getTransfers,
+  isUnconfirmed,
   submitExpense,
   updateExpense,
   updateTransfer,
@@ -35,6 +36,8 @@ import Link from "next/link";
 import { useAccounts } from "@/contexts/AccountsContext";
 import CsvMappingModal from "@/components/CsvMappingModal";
 import ManageAccountsModal from "@/components/ManageAccountsModal";
+import UnconfirmedChip from "@/components/UnconfirmedChip";
+import { pendingAmountSuggestions, type PendingSuggestion } from "@/lib/email/csvSuggest";
 import { RECONCILIATION_RESET_CONFIRM } from "@/lib/reconciliationReset";
 import { backdropDismissProps, handleModalEnterKey, modalDragHandleProps } from "@/lib/modalBehavior";
 
@@ -163,6 +166,15 @@ type UserInputtedEntry = {
    */
   transferLegsClaimed?: number;
   transferLegsExpected?: number;
+  /**
+   * Email sync (display only). `unconfirmed`: the category is a guess no
+   * person chose (D2) — rendered as a chip that opens /categorize/[id].
+   * `fromAlert`: the row came from a card/bank alert, which the home list's
+   * "From alerts" chip filters on.
+   */
+  rowId?: string;
+  unconfirmed?: boolean;
+  fromAlert?: boolean;
 };
 
 type AnchorModalState = {
@@ -853,6 +865,8 @@ export default function ReconcilePage() {
   });
   const [splitSearchQuery, setSplitSearchQuery] = useState("");
   const [homeSearchQuery, setHomeSearchQuery] = useState("");
+  /** "From alerts": email rows with no statement line yet — possible duplicates or cancelled holds. */
+  const [homeFromAlertsOnly, setHomeFromAlertsOnly] = useState(false);
   const [homeAccountFilter, setHomeAccountFilter] = useState<AccountOption | typeof ALL_ACCOUNTS_OPTION>(
     ALL_ACCOUNTS_OPTION,
   );
@@ -1895,6 +1909,9 @@ export default function ReconcilePage() {
         accountLabel,
         expenseType: row.expenseType || undefined,
         description: row.description || undefined,
+        rowId: rowId || undefined,
+        unconfirmed: isUnconfirmed(row),
+        fromAlert: row.source === "email",
       };
     });
 
@@ -2029,8 +2046,9 @@ export default function ReconcilePage() {
         return false;
       });
     }
+    if (homeFromAlertsOnly) rows = rows.filter(({ entry }) => entry.fromAlert === true);
     return rows;
-  }, [homeAccountFilter, homeRowsWithSuggestedBank, homeSearchQuery, labelFor]);
+  }, [homeAccountFilter, homeFromAlertsOnly, homeRowsWithSuggestedBank, homeSearchQuery, labelFor]);
 
   const allHomeMatchedMatches = useMemo(() => {
     const list: MatchResult[] = [];
@@ -3754,6 +3772,91 @@ export default function ReconcilePage() {
     [refreshBankHashesWithNeonClaim, rematchAllStoredAccounts],
   );
 
+  /**
+   * Expense row ids already claimed by a bank line. The pending-amount
+   * suggestion must never offer one: its claim's amount is fixed.
+   */
+  const claimedExpenseRowIds = useMemo(() => {
+    const ids = new Set<string>();
+    claimedRowKeys.forEach((key) => {
+      if (key.startsWith("Expenses:")) ids.add(key.slice("Expenses:".length));
+    });
+    return ids;
+  }, [claimedRowKeys]);
+
+  /**
+   * "Correct to $X & link" (email sync, plan §5.8). Lives OUTSIDE findMatches
+   * and is only ever offered on a "no candidate" line, never applied
+   * automatically and never part of bulk approve — auto-matching is unchanged.
+   * It is a PATCH (logged in the amount history with reason 'csv') followed by
+   * the ordinary claim through handleApprove.
+   */
+  const [correctingId, setCorrectingId] = useState<string | null>(null);
+  const applyPendingCorrection = useCallback(
+    async (match: MatchResult, suggestion: PendingSuggestion) => {
+      setActionError("");
+      setCorrectingId(suggestion.rowId);
+      try {
+        const updated = await updateExpense(suggestion.rowId, {
+          amount: suggestion.bankAmount,
+          amountReason: "csv",
+        });
+        setSheetExpenses((prev) =>
+          prev.map((row) => ((row.rowId ?? "").trim() === suggestion.rowId ? updated : row)),
+        );
+        const entry = userInputtedEntries.find((e) => e.id === claimKey("Expenses", suggestion.rowId));
+        await handleApprove(
+          match,
+          entry
+            ? { ...entry, amount: suggestion.bankAmount }
+            : ({
+                id: claimKey("Expenses", suggestion.rowId),
+                source: "Expenses",
+                dateValue: match.bankTransaction.date,
+                title: suggestion.description,
+                amountDateLine: "",
+                detailLine: "",
+                subtitle: "",
+                amount: suggestion.bankAmount,
+                isCompleted: false,
+              } as UserInputtedEntry),
+        );
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : "Couldn't correct and link this entry.");
+      } finally {
+        setCorrectingId(null);
+      }
+    },
+    [handleApprove, userInputtedEntries],
+  );
+
+  const renderNoCandidate = (match: MatchResult) => {
+    const tx = match.bankTransaction;
+    const [suggestion] = pendingAmountSuggestions(
+      { amount: tx.amount, date: tx.date, accountName: tx.accountName, description: tx.description },
+      sheetExpenses,
+      claimedExpenseRowIds,
+    );
+    if (!suggestion) return <p className="text-xs text-gray-500">No candidate match</p>;
+    return (
+      <div className="text-xs space-y-1">
+        <p className="text-gray-400">
+          Pending card alert {fmtMoney(suggestion.loggedAmount)} · {suggestion.description || "—"}
+          {suggestion.merchantMatches ? "" : " (different name)"}
+        </p>
+        <button
+          type="button"
+          disabled={correctingId === suggestion.rowId}
+          onClick={() => void applyPendingCorrection(match, suggestion)}
+          className="px-2 py-0.5 rounded-md border border-[#50C878]/40 text-[#50C878] hover:bg-[#50C878]/10 transition-colors disabled:opacity-50"
+          title="Set the logged amount to the statement's (tip or final gas amount) and link them"
+        >
+          {correctingId === suggestion.rowId ? "Correcting…" : `Correct to ${fmtMoney(suggestion.bankAmount)} & link`}
+        </button>
+      </div>
+    );
+  };
+
   const openDismissModal = useCallback((match: MatchResult) => {
     setDismissModal({
       open: true,
@@ -4075,6 +4178,9 @@ export default function ReconcilePage() {
         // from a bank line, so tx.accountName is both always present and
         // definitionally the account the money moved in.
         account: tx.accountName || undefined,
+        // Always a new row (never absorbed into a card-alert row): the claim
+        // below links exactly this row to exactly this bank line.
+        source: "csv",
       });
       setSheetExpenses((prev) => [...prev, createdRow]);
 
@@ -5054,6 +5160,22 @@ export default function ReconcilePage() {
               >
                 Set balance
               </button>
+              {(() => {
+                // Post-upload summary for alert-created entries (plan §5.8).
+                const alertRows = sheetExpenses.filter((r) => r.account === activeTab && r.source === "email");
+                if (alertRows.length === 0) return null;
+                const isClaimed = (r: (typeof alertRows)[number]) => claimedExpenseRowIds.has((r.rowId ?? "").trim());
+                const matched = alertRows.filter(isClaimed).length;
+                const corrected = alertRows.filter((r) => r.originalAmount !== null && r.originalAmount !== undefined).length;
+                const guesses = sheetExpenses.filter((r) => r.account === activeTab && r.categorizedBy === "guess").length;
+                return (
+                  <p className="basis-full text-xs text-gray-500">
+                    From card alerts: {matched} matched · {corrected} amount{corrected === 1 ? "" : "s"} corrected ·{" "}
+                    {alertRows.length - matched} not on a statement yet · {guesses} unchecked guess
+                    {guesses === 1 ? "" : "es"}
+                  </p>
+                );
+              })()}
               {/* A wrong outflow_is_positive inverts every statement row in
                   this balance. The claims are the evidence: lines matched to
                   logged expenses should read as money out. */}
@@ -5210,6 +5332,19 @@ export default function ReconcilePage() {
                       aria-label="Filter by account"
                     />
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setHomeFromAlertsOnly((v) => !v)}
+                    aria-pressed={homeFromAlertsOnly}
+                    title="Entries created from card alerts that no statement line has matched yet — possible duplicates or cancelled holds"
+                    className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
+                      homeFromAlertsOnly
+                        ? "bg-[#50C878]/15 border-[#50C878]/50 text-[#50C878]"
+                        : "border-charcoal-dark text-gray-300 hover:text-white"
+                    }`}
+                  >
+                    From alerts
+                  </button>
                 </div>
               </div>
               <div className="p-3 text-sm">
@@ -5259,7 +5394,10 @@ export default function ReconcilePage() {
                                 {entry.title}
                               </p>
                               <p className="text-xs text-gray-400 mt-0.5">{entry.amountDateLine}</p>
-                              <p className="text-xs text-gray-400 mt-0.5">{entry.detailLine}</p>
+                              <p className="text-xs text-gray-400 mt-0.5">
+                                {entry.detailLine}
+                                {entry.unconfirmed && <UnconfirmedChip transactionId={entry.rowId} className="ml-1.5" />}
+                              </p>
                             </div>
                             <div className="min-w-0">
                               <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1 md:hidden">
@@ -5584,7 +5722,10 @@ export default function ReconcilePage() {
                               {entry.title}
                             </p>
                             <p className="text-xs text-gray-400 mt-0.5">{entry.amountDateLine}</p>
-                            <p className="text-xs text-gray-400 mt-0.5">{entry.detailLine}</p>
+                            <p className="text-xs text-gray-400 mt-0.5">
+                              {entry.detailLine}
+                              {entry.unconfirmed && <UnconfirmedChip transactionId={entry.rowId} className="ml-1.5" />}
+                            </p>
                           </div>
                           <div className="min-w-0">
                             <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1 md:hidden">
@@ -5900,7 +6041,7 @@ export default function ReconcilePage() {
                               ) : match.unmatchedCategory === "internal_transfer" ? (
                                 <p className="text-xs text-sky-400/80">Internal transfer — log in Transfers</p>
                               ) : (
-                                <p className="text-xs text-gray-500">No candidate match</p>
+                                renderNoCandidate(match)
                               )}
                             </div>
                             <div className="shrink-0 flex items-center gap-1">

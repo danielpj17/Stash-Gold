@@ -1,0 +1,772 @@
+import { EMAIL_SYNC_CONFIG } from "@/lib/email/config";
+import { displayNameFromRaw, isVenmoKey } from "@/lib/email/merchantKey";
+import { localDate } from "@/lib/email/occurredAt";
+import { decideCategory, type MerchantRule } from "@/lib/email/rules";
+import type { AccountHint, ParsedAlert, ParsedAlertKind } from "@/lib/email/types";
+
+/**
+ * decide() — what should this alert do? PURE. (Plan §3 step 8.)
+ *
+ * It takes the parsed alert plus everything `context.ts` loaded and returns a
+ * PLAN. `apply.ts` turns a plan into one atomic `sql.transaction`. Keeping the
+ * decision pure is what makes shadow mode ("store the plan, skip apply"), the
+ * unit tests of every merge/dedupe rule, and the re-parse dry run possible.
+ *
+ * Order matters and mirrors the plan:
+ *   1. declined → ignored
+ *   2. internal counterparty (D6) → ignored
+ *   3. Venmo legs (D4) — BEFORE money-in, so a Venmo cash-out is never Income
+ *   4. other transfers (card payments) → ignored, Reconcile handles them
+ *   5. money in (D1) → Income
+ *   6. purchases → duplicate? follow-up? link a manual entry? else create
+ */
+
+export type AccountRef = {
+  id: string;
+  name: string;
+  kind: string;
+  isDefault: boolean;
+  alertSource: string | null;
+  alertLast4: string | null;
+  alertForwardedFrom: string | null;
+  unattendedAction: "keep_in_review" | "auto_guess";
+};
+
+export type CandidateRow = {
+  id: string;
+  kind: "expense" | "income" | "transfer";
+  occurredAt: string;
+  createdAt: string;
+  amountCents: number;
+  originalAmountCents: number | null;
+  category: string | null;
+  reviewStatus: "needs_review" | "confirmed";
+  source: "manual" | "shortcut" | "email" | "csv";
+  account: string | null;
+  transferFrom: string | null;
+  transferTo: string | null;
+  isPending: boolean;
+  merchantId: string | null;
+  emailEventId: string | null;
+  autoMerged: boolean;
+  /** Claimed in reconciliation — its amount is fixed (C21). */
+  claimed: boolean;
+  // From the email event that created/linked this row, when there is one.
+  eventGmailMessageId: string | null;
+  eventBodySha256: string | null;
+  eventForwardedFor: string | null;
+  eventKind: ParsedAlertKind | null;
+  eventMerchantKey: string | null;
+};
+
+export type DecideContext = {
+  mode: "shadow" | "live";
+  timeZone: string;
+  /** Lowercased Venmo names that mean "us" (D6). */
+  internalCounterparties: string[];
+  parser: { id: string; accountKey: "last4" | "forwarded_from" };
+  event: {
+    id: string;
+    gmailMessageId: string;
+    bodySha256: string;
+    forwardedFor: string | null;
+    receivedAt: string;
+  };
+  alert: ParsedAlert;
+  occurredAt: string;
+  merchantKey: string;
+  merchant: MerchantRule | null;
+  /** The account this alert is about. The pipeline stops at unknown_account first. */
+  account: AccountRef;
+  /** All live accounts in the scope. */
+  accounts: AccountRef[];
+  defaultAccountId: string | null;
+  /** Rows near `occurredAt` that any rule might pair with. */
+  candidates: CandidateRow[];
+  config?: Partial<typeof EMAIL_SYNC_CONFIG>;
+};
+
+/** Which new row a plan field refers to; apply.ts assigns the real ids. */
+export type NewRowRef = "primary" | "venmo_transfer";
+
+export type NewTransaction = {
+  ref: NewRowRef;
+  kind: "expense" | "income" | "transfer";
+  amountCents: number;
+  category: string | null;
+  description: string;
+  account: string | null;
+  transferFrom: string | null;
+  transferTo: string | null;
+  reviewStatus: "needs_review" | "confirmed";
+  categorizedBy: "user" | "rule" | "guess" | null;
+  isPending: boolean;
+  /** Attach the alert's merchant (expenses only). */
+  attachMerchant: boolean;
+  /** Carry this event's id (the C14 idempotency key). Only the primary row. */
+  attachEvent: boolean;
+};
+
+export type RowUpdate = {
+  id: string;
+  account?: string;
+  transferFrom?: string;
+  transferTo?: string;
+  isPending?: boolean;
+  reviewStatus?: "confirmed";
+  attachEvent?: boolean;
+  attachMerchant?: boolean;
+};
+
+export type Plan =
+  | { action: "ignore"; status: "ignored"; reason: string }
+  | { action: "duplicate"; status: "duplicate"; transactionId: string; reason: string }
+  | {
+      action: "create";
+      status: "created";
+      reason: string;
+      transactions: NewTransaction[];
+      updates: RowUpdate[];
+      /** Phase 5: push the people subscribed to this account. */
+      notify: boolean;
+      choices: string[] | "all";
+    }
+  | { action: "link"; status: "linked"; reason: string; transactionId: string; update: RowUpdate }
+  | {
+      action: "followup";
+      status: "followup";
+      reason: string;
+      transactionId: string;
+      oldAmountCents: number;
+      newAmountCents: number;
+      changeReason: "posted" | "tip" | "gas_final";
+      autoMerged: boolean;
+      isPending: boolean;
+    }
+  | { action: "followup_ignored"; status: "followup_ignored_reconciled"; reason: string; transactionId: string }
+  | { action: "ambiguous"; status: "ambiguous"; reason: string; candidateIds: string[] };
+
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 86_400_000;
+
+function cfgOf(ctx: DecideContext) {
+  return { ...EMAIL_SYNC_CONFIG, ...(ctx.config ?? {}) };
+}
+
+function ms(iso: string): number {
+  return new Date(iso).getTime();
+}
+
+function dayDiff(a: string, b: string, timeZone: string): number {
+  const da = Date.parse(`${localDate(a, timeZone)}T00:00:00Z`);
+  const db = Date.parse(`${localDate(b, timeZone)}T00:00:00Z`);
+  return Math.round(Math.abs(da - db) / DAY_MS);
+}
+
+function normName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function ignore(reason: string): Plan {
+  return { action: "ignore", status: "ignored", reason };
+}
+
+function duplicate(transactionId: string, reason: string): Plan {
+  return { action: "duplicate", status: "duplicate", transactionId, reason };
+}
+
+export function isGasHold(amountCents: number, cfg = EMAIL_SYNC_CONFIG): boolean {
+  if (cfg.gasHoldExactAmounts.some((a) => Math.round(a * 100) === amountCents)) return true;
+  const dollars = amountCents / 100;
+  const [lo, hi] = cfg.gasHoldRoundRange;
+  return amountCents % 2500 === 0 && dollars >= lo && dollars <= hi;
+}
+
+/** What a candidate row files as, for the tip/gas rules. */
+function filesAs(row: CandidateRow, ctx: DecideContext): string | null {
+  if (row.category) return row.category;
+  const m = ctx.merchant;
+  if (!m) return null;
+  return m.mode === "auto" ? m.category : m.defaultCategory;
+}
+
+function sameMerchant(row: CandidateRow, ctx: DecideContext): boolean {
+  if (ctx.merchant && row.merchantId) return row.merchantId === ctx.merchant.id;
+  return row.eventMerchantKey !== null && row.eventMerchantKey === ctx.merchantKey;
+}
+
+// ---- 6a. duplicate alerts --------------------------------------------------
+
+/**
+ * The same alert seen twice: a Gmail redelivery (identical body) or both
+ * spouses' inboxes forwarding the joint card's alert (different forwarder).
+ */
+export function findDuplicateAlert(
+  ctx: DecideContext,
+  kind: "expense" | "income",
+): CandidateRow | null {
+  const cfg = cfgOf(ctx);
+  const a = ctx.alert;
+  const window = cfg.duplicateAlertWindowMinutes * 60_000;
+  const matches = ctx.candidates.filter(
+    (c) =>
+      c.emailEventId !== null &&
+      c.kind === kind &&
+      c.account === ctx.account.id &&
+      c.eventKind === a.kind &&
+      (c.amountCents === a.amountCents || c.originalAmountCents === a.amountCents) &&
+      c.eventMerchantKey === ctx.merchantKey &&
+      Math.abs(ms(c.occurredAt) - ms(ctx.occurredAt)) <= window &&
+      c.eventGmailMessageId !== ctx.event.gmailMessageId &&
+      (c.eventBodySha256 === ctx.event.bodySha256 ||
+        (c.eventForwardedFor ?? "") !== (ctx.event.forwardedFor ?? "")),
+  );
+  return matches[0] ?? null;
+}
+
+// ---- 6b/6d. follow-ups ----------------------------------------------------
+
+/** Pending email rows this alert could be updating (plan §5.6 "Candidates"). */
+export function pendingCandidates(ctx: DecideContext): CandidateRow[] {
+  const cfg = cfgOf(ctx);
+  const occ = ms(ctx.occurredAt);
+  return ctx.candidates.filter(
+    (c) =>
+      c.kind === "expense" &&
+      c.isPending &&
+      c.emailEventId !== null &&
+      c.emailEventId !== ctx.event.id &&
+      c.account === ctx.account.id &&
+      sameMerchant(c, ctx) &&
+      ms(c.occurredAt) >= occ - cfg.followupWindowDays * DAY_MS &&
+      ms(c.occurredAt) <= occ + DAY_MS,
+  );
+}
+
+function labelFor(
+  row: CandidateRow,
+  newCents: number,
+  ctx: DecideContext,
+): "posted" | "tip" | "gas_final" {
+  const cfg = cfgOf(ctx);
+  const files = filesAs(row, ctx);
+  if (files === cfg.gasCategory && isGasHold(row.amountCents, cfg) && !isGasHold(newCents, cfg)) {
+    return "gas_final";
+  }
+  if (
+    files !== null &&
+    (cfg.tipCategories as readonly string[]).includes(files) &&
+    newCents > row.amountCents &&
+    newCents <= Math.round(row.amountCents * (1 + cfg.tipMaxIncreasePct / 100))
+  ) {
+    return "tip";
+  }
+  return "posted";
+}
+
+function explicitFollowup(ctx: DecideContext): Plan | null {
+  const a = ctx.alert;
+  if (a.kind !== "posted" && a.kind !== "amount_changed") return null;
+  const all = pendingCandidates(ctx);
+  const open = all.filter((c) => !c.claimed);
+  if (open.length === 1) {
+    const row = open[0];
+    return {
+      action: "followup",
+      status: "followup",
+      reason: row.amountCents === a.amountCents ? "posted_same_amount" : "posted_new_amount",
+      transactionId: row.id,
+      oldAmountCents: row.amountCents,
+      newAmountCents: a.amountCents,
+      changeReason: labelFor(row, a.amountCents, ctx),
+      autoMerged: false,
+      isPending: false,
+    };
+  }
+  if (open.length > 1) {
+    // Creating anything would double one of them; a person picks.
+    return {
+      action: "ambiguous",
+      status: "ambiguous",
+      reason: "which_purchase_did_this_update",
+      candidateIds: open.map((c) => c.id),
+    };
+  }
+  const claimed = all.find((c) => c.claimed);
+  if (claimed) {
+    return {
+      action: "followup_ignored",
+      status: "followup_ignored_reconciled",
+      reason: "row_already_reconciled",
+      transactionId: claimed.id,
+    };
+  }
+  return null; // first sighting: some banks only send posted alerts
+}
+
+/** Phase 4: an authorization arriving after the posted row it belongs to. */
+function outOfOrder(ctx: DecideContext): Plan | null {
+  const cfg = cfgOf(ctx);
+  const a = ctx.alert;
+  if (!cfg.enableOutOfOrder || a.kind !== "purchase" || !a.isPending) return null;
+  const occ = ms(ctx.occurredAt);
+  const rows = ctx.candidates.filter(
+    (c) =>
+      c.kind === "expense" &&
+      c.emailEventId !== null &&
+      !c.isPending &&
+      (c.eventKind === "posted" || c.eventKind === "amount_changed") &&
+      c.account === ctx.account.id &&
+      sameMerchant(c, ctx) &&
+      ms(c.occurredAt) >= occ - DAY_MS &&
+      ms(c.occurredAt) <= occ + cfg.followupWindowDays * DAY_MS &&
+      (c.amountCents === a.amountCents ||
+        labelFor({ ...c, amountCents: a.amountCents }, c.amountCents, ctx) !== "posted"),
+  );
+  return rows.length === 1 ? duplicate(rows[0].id, "authorization_after_posted") : null;
+}
+
+/** Phase 4 / D3: tip and gas-hold merges without a posted alert. */
+function heuristicFollowup(ctx: DecideContext): Plan | null {
+  const cfg = cfgOf(ctx);
+  const a = ctx.alert;
+  if (a.kind !== "purchase") return null;
+  const open = pendingCandidates(ctx).filter((c) => !c.claimed && ms(c.occurredAt) <= ms(ctx.occurredAt));
+  if (open.length !== 1) return null; // exactly one candidate, or a separate purchase
+  const row = open[0];
+  const files = filesAs(row, ctx);
+  const newCents = a.amountCents;
+
+  if (
+    cfg.enableGasHoldHeuristic &&
+    files === cfg.gasCategory &&
+    isGasHold(row.amountCents, cfg) &&
+    !isGasHold(newCents, cfg) // C20: a second $1.00 hold is a second fill-up
+  ) {
+    return {
+      action: "followup",
+      status: "followup",
+      reason: "gas_hold_final",
+      transactionId: row.id,
+      oldAmountCents: row.amountCents,
+      newAmountCents: newCents,
+      changeReason: "gas_final",
+      autoMerged: true,
+      isPending: a.isPending,
+    };
+  }
+
+  const gapHours = (ms(ctx.occurredAt) - ms(row.occurredAt)) / 3_600_000;
+  if (
+    cfg.enableTipHeuristic &&
+    files !== null &&
+    (cfg.tipCategories as readonly string[]).includes(files) &&
+    newCents > row.amountCents &&
+    newCents <= Math.round(row.amountCents * (1 + cfg.tipMaxIncreasePct / 100)) &&
+    gapHours >= cfg.tipMinGapHours
+  ) {
+    return {
+      action: "followup",
+      status: "followup",
+      reason: "tip_added",
+      transactionId: row.id,
+      oldAmountCents: row.amountCents,
+      newAmountCents: newCents,
+      changeReason: "tip",
+      autoMerged: true,
+      isPending: a.isPending,
+    };
+  }
+  return null;
+}
+
+// ---- 6c. manual entries ----------------------------------------------------
+
+/**
+ * Could a hand-logged amount be this alert? Equal, or (Phase 4) the manual
+ * entry is the final amount of a tipped / held alert.
+ */
+export function amountsCompatible(
+  manualCents: number,
+  alertCents: number,
+  manualCategory: string | null,
+  alertIsPending: boolean,
+  cfg = EMAIL_SYNC_CONFIG,
+): boolean {
+  if (manualCents === alertCents) return true;
+  if (!cfg.enableToleranceLinking || !alertIsPending) return false;
+  if (manualCategory === cfg.gasCategory && isGasHold(alertCents, cfg)) return true;
+  return (
+    manualCategory !== null &&
+    (cfg.tipCategories as readonly string[]).includes(manualCategory) &&
+    manualCents > alertCents &&
+    manualCents <= Math.round(alertCents * (1 + cfg.tipMaxIncreasePct / 100))
+  );
+}
+
+/** C18: the account must match, or the manual row is on the default account. */
+export function manualCandidates(ctx: DecideContext, kind: "expense" | "income"): CandidateRow[] {
+  const cfg = cfgOf(ctx);
+  const a = ctx.alert;
+  return ctx.candidates.filter(
+    (c) =>
+      c.kind === kind &&
+      (c.source === "manual" || c.source === "shortcut") &&
+      c.emailEventId === null &&
+      !c.claimed &&
+      (c.account === ctx.account.id || c.account === null || c.account === ctx.defaultAccountId) &&
+      dayDiff(c.occurredAt, ctx.occurredAt, ctx.timeZone) <= cfg.manualMatchWindowDays &&
+      (kind === "income"
+        ? c.amountCents === a.amountCents
+        : amountsCompatible(c.amountCents, a.amountCents, c.category, a.isPending, cfg)),
+  );
+}
+
+function linkManual(ctx: DecideContext, row: CandidateRow, kind: "expense" | "income"): Plan {
+  const update: RowUpdate = {
+    id: row.id,
+    attachEvent: true,
+    attachMerchant: kind === "expense",
+    isPending: kind === "expense" ? ctx.alert.isPending && ctx.alert.kind === "purchase" : false,
+  };
+  // The alert knows the real account; a row on the default only got there
+  // because New Expense has no account picker. This also fixes balances.
+  if (row.account !== ctx.account.id) update.account = ctx.account.id;
+  return { action: "link", status: "linked", reason: "matched_manual_entry", transactionId: row.id, update };
+}
+
+// ---- descriptions ------------------------------------------------------------
+
+function merchantName(ctx: DecideContext): string {
+  return ctx.merchant?.displayName ?? displayNameFromRaw(ctx.alert.merchantRaw);
+}
+
+function withMemo(base: string, memo?: string): string {
+  return memo ? `${base} — ${memo}` : base;
+}
+
+export function describe(ctx: DecideContext, kind: "expense" | "income"): string {
+  const a = ctx.alert;
+  if (ctx.parser.id === "venmo" && a.counterparty) {
+    return kind === "income"
+      ? withMemo(`Venmo from ${a.counterparty}`, a.memo)
+      : withMemo(`Venmo to ${a.counterparty}`, a.memo);
+  }
+  if (kind === "income") {
+    return a.kind === "refund" ? `Refund · ${merchantName(ctx)}` : `Deposit · ${merchantName(ctx)}`;
+  }
+  return merchantName(ctx);
+}
+
+// ---- 3. Venmo legs (D4) -------------------------------------------------------
+
+type Leg = {
+  from: string | null;
+  to: string | null;
+  /** Which side is the Venmo account (resolved or not). */
+  venmoSide: "from" | "to";
+  description: string;
+};
+
+function venmoAccounts(ctx: DecideContext): AccountRef[] {
+  return ctx.accounts.filter((a) => a.alertSource === "venmo");
+}
+
+function accountByLast4(ctx: DecideContext, hint: AccountHint | "balance" | undefined): AccountRef | null {
+  if (!hint || hint === "balance" || !hint.last4) return null;
+  const hits = ctx.accounts.filter((a) => a.alertLast4 === hint.last4);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * Which Venmo account does a bank/card VENMO line belong to? One account:
+ * that one. Several: the one whose receipt of the same amount (±1 day)
+ * already arrived. Otherwise unknown — "Which Venmo account?" (plan §5.12).
+ * No Venmo account at all: the external label "Venmo", so the bank side still
+ * moves and nothing waits for an answer that can't come.
+ */
+function resolveVenmoSide(ctx: DecideContext, direction: "out" | "in"): string | null {
+  const cfg = cfgOf(ctx);
+  const venmos = venmoAccounts(ctx);
+  if (venmos.length === 0) return "Venmo";
+  if (venmos.length === 1) return venmos[0].id;
+  const ids = new Set(venmos.map((v) => v.id));
+  const wantKind: ParsedAlertKind = direction === "out" ? "payment_sent" : "transfer";
+  const paired = ctx.candidates.filter(
+    (c) =>
+      c.emailEventId !== null &&
+      c.eventKind === wantKind &&
+      c.amountCents === ctx.alert.amountCents &&
+      dayDiff(c.occurredAt, ctx.occurredAt, ctx.timeZone) <= cfg.venmoCardMatchWindowDays &&
+      ((c.account !== null && ids.has(c.account)) ||
+        (c.transferFrom !== null && ids.has(c.transferFrom))),
+  );
+  const accounts = new Set(paired.map((c) => (c.account && ids.has(c.account) ? c.account : c.transferFrom)));
+  return accounts.size === 1 ? ([...accounts][0] as string) : null;
+}
+
+/** Is this alert a Venmo leg, and if so which way does the money go? */
+export function venmoLeg(ctx: DecideContext): Leg | null {
+  const a = ctx.alert;
+  const moneyIn = a.kind === "refund" || a.kind === "payment_received";
+
+  // A bank/card alert whose merchant is Venmo: never an expense or income.
+  if (ctx.parser.id !== "venmo" && isVenmoKey(ctx.merchantKey)) {
+    if (a.kind === "declined") return null;
+    return moneyIn
+      ? { from: resolveVenmoSide(ctx, "in"), to: ctx.account.id, venmoSide: "from", description: "Venmo cash-out" }
+      : { from: ctx.account.id, to: resolveVenmoSide(ctx, "out"), venmoSide: "to", description: "Venmo transfer" };
+  }
+
+  // A Venmo email about moving money to or from a bank.
+  if (ctx.parser.id === "venmo" && a.kind === "transfer") {
+    const bank = accountByLast4(ctx, a.fundingSource)?.id ?? null;
+    return a.transferDirection === "in"
+      ? { from: bank, to: ctx.account.id, venmoSide: "to", description: "Venmo top-up" }
+      : { from: ctx.account.id, to: bank, venmoSide: "from", description: "Venmo cash-out" };
+  }
+  return null;
+}
+
+function sideCompatible(mine: string | null, theirs: string | null): boolean {
+  return mine === null || theirs === null || mine === theirs;
+}
+
+/** A transfer row this leg duplicates (or completes), within the Venmo window. */
+function matchingTransfer(ctx: DecideContext, leg: { from: string | null; to: string | null }): CandidateRow[] {
+  const cfg = cfgOf(ctx);
+  return ctx.candidates.filter(
+    (c) =>
+      c.kind === "transfer" &&
+      c.amountCents === ctx.alert.amountCents &&
+      dayDiff(c.occurredAt, ctx.occurredAt, ctx.timeZone) <=
+        Math.max(cfg.venmoCardMatchWindowDays, c.source === "email" ? 0 : cfg.manualMatchWindowDays) &&
+      sideCompatible(leg.from, c.transferFrom) &&
+      sideCompatible(leg.to, c.transferTo) &&
+      // At least one side must match exactly, or any two transfers of the
+      // same amount would pair.
+      ((leg.from !== null && leg.from === c.transferFrom) || (leg.to !== null && leg.to === c.transferTo)),
+  );
+}
+
+function fillUnknownSides(row: CandidateRow, leg: { from: string | null; to: string | null }): RowUpdate | null {
+  const update: RowUpdate = { id: row.id };
+  if (row.transferFrom === null && leg.from !== null) update.transferFrom = leg.from;
+  if (row.transferTo === null && leg.to !== null) update.transferTo = leg.to;
+  if (update.transferFrom === undefined && update.transferTo === undefined) return null;
+  const stillMissing =
+    (row.transferFrom === null && leg.from === null) || (row.transferTo === null && leg.to === null);
+  if (!stillMissing && row.reviewStatus === "needs_review") update.reviewStatus = "confirmed";
+  return update;
+}
+
+function decideVenmoTransfer(ctx: DecideContext, leg: Leg): Plan {
+  const existing = matchingTransfer(ctx, leg);
+  if (existing.length >= 1) {
+    const row = existing[0];
+    const fill = fillUnknownSides(row, leg);
+    const manual = row.emailEventId === null && (row.source === "manual" || row.source === "shortcut");
+    if (manual) {
+      // Manual transfer vs email transfer: link; no second transfer.
+      return {
+        action: "link",
+        status: "linked",
+        reason: "matched_manual_transfer",
+        transactionId: row.id,
+        update: { ...(fill ?? { id: row.id }), attachEvent: true },
+      };
+    }
+    if (fill) {
+      return { action: "link", status: "linked", reason: "completed_venmo_side", transactionId: row.id, update: fill };
+    }
+    return duplicate(row.id, "venmo_transfer_already_recorded");
+  }
+
+  const unknownSide = leg.from === null || leg.to === null;
+  return {
+    action: "create",
+    status: "created",
+    reason: unknownSide ? "venmo_transfer_side_unknown" : "venmo_transfer",
+    transactions: [
+      {
+        ref: "primary",
+        kind: "transfer",
+        amountCents: ctx.alert.amountCents,
+        category: null,
+        description: leg.description,
+        account: null,
+        transferFrom: leg.from,
+        transferTo: leg.to,
+        reviewStatus: unknownSide ? "needs_review" : "confirmed",
+        categorizedBy: null,
+        isPending: false,
+        attachMerchant: false,
+        attachEvent: true,
+      },
+    ],
+    updates: [],
+    notify: false, // "Which Venmo account?" never pushes
+    choices: "all",
+  };
+}
+
+/**
+ * A Venmo "You paid" receipt: the expense on Venmo, plus — when it names an
+ * external card/bank — the transfer card → Venmo, unless the card's own alert
+ * already recorded it. Also completes a transfer waiting on "which Venmo?".
+ */
+function venmoPaymentExtras(ctx: DecideContext): { transactions: NewTransaction[]; updates: RowUpdate[] } {
+  const cfg = cfgOf(ctx);
+  const a = ctx.alert;
+  const empty = { transactions: [], updates: [] };
+  if (!cfg.enableVenmoTransfers || ctx.parser.id !== "venmo" || a.kind !== "payment_sent") return empty;
+
+  // A bank alert that arrived first and is waiting for its Venmo side.
+  const waiting = ctx.candidates.filter(
+    (c) =>
+      c.kind === "transfer" &&
+      c.reviewStatus === "needs_review" &&
+      c.transferTo === null &&
+      c.transferFrom !== null &&
+      c.amountCents === a.amountCents &&
+      dayDiff(c.occurredAt, ctx.occurredAt, ctx.timeZone) <= cfg.venmoCardMatchWindowDays,
+  );
+  if (waiting.length >= 1) {
+    return {
+      transactions: [],
+      updates: [{ id: waiting[0].id, transferTo: ctx.account.id, reviewStatus: "confirmed" }],
+    };
+  }
+
+  const funding = accountByLast4(ctx, a.fundingSource);
+  if (!funding) return empty; // paid from the Venmo balance, or a card Stash doesn't track
+  if (matchingTransfer(ctx, { from: funding.id, to: ctx.account.id }).length > 0) return empty;
+  return {
+    transactions: [
+      {
+        ref: "venmo_transfer",
+        kind: "transfer",
+        amountCents: a.amountCents,
+        category: null,
+        description: "Venmo transfer",
+        account: null,
+        transferFrom: funding.id,
+        transferTo: ctx.account.id,
+        reviewStatus: "confirmed",
+        categorizedBy: null,
+        isPending: false,
+        attachMerchant: false,
+        attachEvent: false,
+      },
+    ],
+    updates: [],
+  };
+}
+
+// ---- entry point --------------------------------------------------------------
+
+function decideIncome(ctx: DecideContext): Plan {
+  const dup = findDuplicateAlert(ctx, "income");
+  if (dup) return duplicate(dup.id, "same_alert");
+  const manual = manualCandidates(ctx, "income");
+  if (manual.length === 1) return linkManual(ctx, manual[0], "income");
+  return {
+    action: "create",
+    status: "created",
+    reason: ctx.alert.kind === "refund" ? "refund_as_income" : "money_in_as_income",
+    transactions: [
+      {
+        ref: "primary",
+        kind: "income",
+        amountCents: ctx.alert.amountCents,
+        category: "Income",
+        description: describe(ctx, "income"),
+        account: ctx.account.id,
+        transferFrom: null,
+        transferTo: null,
+        reviewStatus: "confirmed",
+        categorizedBy: "rule",
+        isPending: false,
+        attachMerchant: false,
+        attachEvent: true,
+      },
+    ],
+    updates: [],
+    notify: false, // D1: no question, no push
+    choices: "all",
+  };
+}
+
+function decideExpense(ctx: DecideContext): Plan {
+  const a = ctx.alert;
+  const dup = findDuplicateAlert(ctx, "expense");
+  if (dup) return duplicate(dup.id, "same_alert");
+
+  const explicit = explicitFollowup(ctx);
+  if (explicit) return explicit;
+
+  const late = outOfOrder(ctx);
+  if (late) return late;
+
+  const merged = heuristicFollowup(ctx);
+  if (merged) return merged;
+
+  const manual = manualCandidates(ctx, "expense");
+  if (manual.length === 1) return linkManual(ctx, manual[0], "expense");
+
+  const category = decideCategory(ctx.merchant, ctx.merchantKey);
+  const extras = venmoPaymentExtras(ctx);
+  return {
+    action: "create",
+    status: "created",
+    reason: category.reviewStatus === "confirmed" ? "auto_rule" : category.category ? "ask_with_guess" : "ask",
+    transactions: [
+      {
+        ref: "primary",
+        kind: "expense",
+        amountCents: a.amountCents,
+        category: category.category,
+        description: describe(ctx, "expense"),
+        account: ctx.account.id,
+        transferFrom: null,
+        transferTo: null,
+        reviewStatus: category.reviewStatus,
+        categorizedBy: category.categorizedBy,
+        // Only an authorization can be updated later. A posted alert with no
+        // candidate is a first sighting and is final.
+        isPending: a.kind === "purchase" && a.isPending,
+        attachMerchant: true,
+        attachEvent: true,
+      },
+      ...extras.transactions,
+    ],
+    updates: extras.updates,
+    notify: category.reviewStatus === "needs_review",
+    choices: category.choices,
+  };
+}
+
+export function decide(ctx: DecideContext): Plan {
+  const cfg = cfgOf(ctx);
+  const a = ctx.alert;
+
+  if (a.kind === "declined") return ignore("declined");
+
+  if (a.counterparty && ctx.internalCounterparties.includes(normName(a.counterparty))) {
+    return ignore("internal_counterparty");
+  }
+
+  const leg = venmoLeg(ctx);
+  if (leg) {
+    return cfg.enableVenmoTransfers ? decideVenmoTransfer(ctx, leg) : ignore("venmo_leg_pending_phase4");
+  }
+
+  // Card payments and other account-to-account moves: Reconcile handles them
+  // as today. Never Income — a card payment misread as a refund would invent it.
+  if (a.kind === "transfer") return ignore("transfer_not_tracked");
+
+  if (a.kind === "refund" || a.kind === "payment_received") return decideIncome(ctx);
+
+  return decideExpense(ctx);
+}

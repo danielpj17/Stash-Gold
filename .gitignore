@@ -13,3 +13,7 @@ yarn-debug.log*
 yarn-error.log*
 .DS_Store
 Thumbs.db
+
+# Unscrubbed email fixtures (scripts/export-email-fixture.ts). Real bank email:
+# never commit these.
+lib/email/parsers/__fixtures__/**/*.raw.json

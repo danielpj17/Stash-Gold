@@ -1,0 +1,20 @@
+{
+  "synthetic": true,
+  "note": "an unknown sender lands in Couldn't read",
+  "email": {
+    "gmailMessageId": "18c0000000000001",
+    "from": "Some Bank <alerts@somebank.example>",
+    "to": "stash.inbox@example.com",
+    "subject": "Your statement is ready",
+    "date": "2026-11-15T19:05:00Z",
+    "plainBody": "Your statement is ready.",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@venmo.com header.s=s1 header.b=AbC; spf=pass smtp.mailfrom=venmo@venmo.com; dmarc=pass (p=REJECT) header.from=venmo.com",
+      "X-Forwarded-For": "daniel@example.com"
+    }
+  },
+  "expect": {
+    "noParser": true
+  }
+}

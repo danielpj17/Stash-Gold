@@ -25,10 +25,13 @@ function resolveDate(raw: unknown): string | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
+/** Why an amount changed, for transaction_amount_changes. 'csv' = Reconcile's "Correct to $X & link". */
+const AMOUNT_REASONS = new Set(["manual", "csv"]);
+
 export async function PATCH(request: NextRequest, context: { params: { id: string } }) {
   const ctx = await requireUser();
   if (isErrorResponse(ctx)) return ctx;
-  const { sql, userId } = ctx;
+  const { sql, userId, actorId } = ctx;
 
   const id = String(context.params.id ?? "").trim();
   if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
@@ -70,10 +73,24 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
 
     if (typeof body.expenseType === "string" && body.expenseType.trim()) {
       const category = body.expenseType.trim();
+      // Choosing a category by hand is an answer (plan §5.5 "Change"): a row
+      // that was waiting in To categorize, or carried a guess, becomes
+      // confirmed and loses its "unconfirmed" marker. Rows a person already
+      // categorized are left exactly as they were apart from the category.
       await sql`
         UPDATE transactions
            SET category = ${category},
                kind = ${category.toLowerCase() === "income" ? "income" : "expense"},
+               categorized_by = CASE
+                 WHEN review_status = 'needs_review' OR categorized_by IN ('guess', 'rule') THEN 'user'
+                 ELSE categorized_by END,
+               reviewed_by = CASE
+                 WHEN review_status = 'needs_review' OR categorized_by IN ('guess', 'rule')
+                 THEN ${actorId}::uuid ELSE reviewed_by END,
+               reviewed_at = CASE
+                 WHEN review_status = 'needs_review' OR categorized_by IN ('guess', 'rule')
+                 THEN now() ELSE reviewed_at END,
+               review_status = 'confirmed',
                updated_at = now()
          WHERE user_id = ${userId} AND id = ${id} AND kind <> 'transfer'
       `;
@@ -84,9 +101,54 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
       if (!Number.isFinite(amount) || amount <= 0) {
         return NextResponse.json({ error: "amount must be a positive number" }, { status: 400 });
       }
+      const reason =
+        typeof body.amountReason === "string" && AMOUNT_REASONS.has(body.amountReason)
+          ? body.amountReason
+          : "manual";
+      // The amount history row is written first, while `amount` still holds
+      // the old value, and only when it actually changes.
+      await sql.transaction([
+        sql`
+          INSERT INTO transaction_amount_changes
+            (user_id, transaction_id, old_amount, new_amount, reason, changed_by)
+          SELECT ${userId}::uuid, t.id, t.amount, ${amount}::numeric, ${reason}, ${actorId}::uuid
+            FROM transactions t
+           WHERE t.user_id = ${userId} AND t.id = ${id} AND t.amount <> ${amount}::numeric
+        `,
+        sql`
+          UPDATE transactions
+             SET amount = ${amount}, updated_at = now()
+           WHERE user_id = ${userId} AND id = ${id}
+        `,
+      ]);
+    }
+
+    // A transfer's sides — how "Which Venmo account?" is answered. An empty
+    // value is ignored rather than clearing a side.
+    if (existing[0].kind === "transfer") {
+      const from = typeof body.transferFrom === "string" ? body.transferFrom.trim() : "";
+      const to = typeof body.transferTo === "string" ? body.transferTo.trim() : "";
+      if (from || to) {
+        await sql`
+          UPDATE transactions
+             SET transfer_from = COALESCE(${from || null}, transfer_from),
+                 transfer_to = COALESCE(${to || null}, transfer_to),
+                 updated_at = now()
+           WHERE user_id = ${userId} AND id = ${id}
+        `;
+        await sql`
+          UPDATE transactions
+             SET review_status = 'confirmed', reviewed_by = ${actorId}::uuid, reviewed_at = now()
+           WHERE user_id = ${userId} AND id = ${id} AND review_status = 'needs_review'
+             AND transfer_from IS NOT NULL AND transfer_to IS NOT NULL
+        `;
+      }
+    }
+
+    // Dismiss a "Possible duplicate" flag: both rows are real.
+    if (body.clearDuplicate === true) {
       await sql`
-        UPDATE transactions
-           SET amount = ${amount}, updated_at = now()
+        UPDATE transactions SET duplicate_of = NULL, updated_at = now()
          WHERE user_id = ${userId} AND id = ${id}
       `;
     }
@@ -137,6 +199,11 @@ export async function DELETE(_request: NextRequest, context: { params: { id: str
     if (rows.length === 0) {
       return NextResponse.json({ error: "Transaction not found" }, { status: 404 });
     }
+    // Deleting one of a "Possible duplicate" pair resolves the flag on the other.
+    await sql`
+      UPDATE transactions SET duplicate_of = NULL
+       WHERE user_id = ${userId} AND duplicate_of = ${id}
+    `;
     return NextResponse.json({ success: true, id });
   } catch (err) {
     return NextResponse.json(

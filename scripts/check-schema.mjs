@@ -54,7 +54,22 @@ const USER_SCOPED = [
   "reconciliation_activity_log",
   "manual_assets",
   "manual_liabilities",
+  // Email sync (docs/email-sync-plan.md). Scope-keyed like everything above.
+  "email_sync_settings",
+  "email_events",
+  "merchants",
+  "merchant_aliases",
+  "transaction_amount_changes",
 ];
+
+/**
+ * Tables whose `user_id` is the ACTOR (the person), not the household scope —
+ * the user_tokens precedent. A device and a notification preference belong to
+ * one person; scoping them on the household would let each spouse revoke the
+ * other's phone. They still carry user_id first in every PK/UNIQUE, so the
+ * same structural checks apply; only the meaning of the column differs.
+ */
+const ACTOR_SCOPED = ["push_subscriptions", "notification_prefs"];
 
 /** Auth.js adapter tables — owned by the library, not user-scoped themselves. */
 const AUTH_TABLES = ["users", "accounts", "sessions", "verification_token"];
@@ -85,6 +100,12 @@ const EXPECTED_CONSTRAINTS = [
   ["reconciliation_merchant_memory", ["user_id", "fingerprint", "bank_account_name"]],
   ["manual_assets", ["user_id", "id"]],
   ["manual_liabilities", ["user_id", "id"]],
+  ["email_sync_settings", ["user_id"]],
+  ["email_events", ["user_id", "gmail_message_id"]],
+  ["merchants", ["user_id", "id"]],
+  ["merchant_aliases", ["user_id", "normalized_key"]],
+  ["push_subscriptions", ["user_id", "endpoint"]],
+  ["notification_prefs", ["user_id", "account_id"]],
   // financial_accounts' name uniqueness is a PARTIAL index (live rows only),
   // which doesn't appear in information_schema — checked separately below.
 ];
@@ -95,6 +116,11 @@ const EXPECTED_INDEXES = [
   ["financial_accounts", "idx_financial_accounts_name"],
   ["financial_accounts", "idx_financial_accounts_one_default"],
   ["household_invites", "idx_household_invites_pending"],
+  ["financial_accounts", "idx_financial_accounts_alert_last4", "005-email-sync-account-routing.sql"],
+  ["financial_accounts", "idx_financial_accounts_alert_fwd", "005-email-sync-account-routing.sql"],
+  // The idempotency key that stops a re-processed email from inserting twice.
+  ["transactions", "idx_transactions_email_event", "006-email-sync-merchants-review.sql"],
+  ["transaction_amount_changes", "idx_amount_changes_event", "006-email-sync-merchants-review.sql"],
 ];
 
 /**
@@ -106,6 +132,18 @@ const EXPECTED_COLUMNS = [
   ["financial_accounts", "deleted_at", "001-default-account-and-soft-delete.sql"],
   ["users", "data_owner_id", "002-household-sharing.sql"],
   ["transactions", "entered_by", "002-household-sharing.sql"],
+  ["user_tokens", "purpose", "004-email-sync-ingest.sql"],
+  ["financial_accounts", "alert_source", "005-email-sync-account-routing.sql"],
+  ["financial_accounts", "alert_last4", "005-email-sync-account-routing.sql"],
+  ["financial_accounts", "alert_forwarded_from", "005-email-sync-account-routing.sql"],
+  ["transactions", "source", "006-email-sync-merchants-review.sql"],
+  ["transactions", "review_status", "006-email-sync-merchants-review.sql"],
+  ["transactions", "categorized_by", "006-email-sync-merchants-review.sql"],
+  ["transactions", "merchant_id", "006-email-sync-merchants-review.sql"],
+  ["transactions", "email_event_id", "006-email-sync-merchants-review.sql"],
+  ["transactions", "duplicate_of", "006-email-sync-merchants-review.sql"],
+  ["financial_accounts", "unattended_action", "007-push-notifications.sql"],
+  ["transactions", "unattended_due_at", "007-push-notifications.sql"],
 ];
 
 async function main() {
@@ -132,8 +170,15 @@ async function main() {
   // EXPECTED_COLUMNS does — a bare "missing table" leaves the fix to guesswork.
   const TABLE_MIGRATIONS = {
     reconciliation_rejected_matches: "003-rejected-matches.sql",
+    email_sync_settings: "004-email-sync-ingest.sql",
+    email_events: "004-email-sync-ingest.sql",
+    merchants: "006-email-sync-merchants-review.sql",
+    merchant_aliases: "006-email-sync-merchants-review.sql",
+    transaction_amount_changes: "006-email-sync-merchants-review.sql",
+    push_subscriptions: "007-push-notifications.sql",
+    notification_prefs: "007-push-notifications.sql",
   };
-  for (const t of [...AUTH_TABLES, ...USER_SCOPED, ...OTHER_TABLES]) {
+  for (const t of [...AUTH_TABLES, ...USER_SCOPED, ...ACTOR_SCOPED, ...OTHER_TABLES]) {
     if (tables.has(t)) continue;
     const migration = TABLE_MIGRATIONS[t];
     problems.push(
@@ -147,7 +192,7 @@ async function main() {
     WHERE table_schema = 'public' AND column_name = 'user_id'
   `;
   const withUserId = new Set(columnRows.map((r) => r.table_name));
-  for (const t of USER_SCOPED) {
+  for (const t of [...USER_SCOPED, ...ACTOR_SCOPED]) {
     if (tables.has(t) && !withUserId.has(t)) {
       problems.push(`table ${t} has no user_id column`);
     }
@@ -215,9 +260,11 @@ async function main() {
     SELECT tablename, indexname FROM pg_indexes WHERE schemaname = 'public'
   `;
   const haveIndexes = new Set(indexRows.map((r) => `${r.tablename}::${r.indexname}`));
-  for (const [table, index] of EXPECTED_INDEXES) {
+  for (const [table, index, migration] of EXPECTED_INDEXES) {
     if (tables.has(table) && !haveIndexes.has(`${table}::${index}`)) {
-      problems.push(`${table}: missing index ${index} — run docs/migrations/`);
+      problems.push(
+        `${table}: missing index ${index} — run docs/migrations/${migration ?? ""}`,
+      );
     }
   }
 
@@ -228,7 +275,8 @@ async function main() {
     process.exit(1);
   }
 
-  const verified = USER_SCOPED.length + AUTH_TABLES.length + OTHER_TABLES.length;
+  const verified =
+    USER_SCOPED.length + ACTOR_SCOPED.length + AUTH_TABLES.length + OTHER_TABLES.length;
   console.log(`Schema check passed — ${verified} tables verified.`);
 }
 

@@ -29,7 +29,59 @@ export type SheetRow = {
    * nothing at all rather than guessing one. Display only.
    */
   enteredByName?: string;
+  // ---- Email sync (additive; absent on servers without migration 006) -----
+  /** 'manual' | 'shortcut' | 'email' | 'csv'. */
+  source?: string;
+  /** 'needs_review' = waiting in To categorize. */
+  reviewStatus?: "needs_review" | "confirmed";
+  /** 'guess' = no person chose this category. See `isUnconfirmed`. */
+  categorizedBy?: "user" | "rule" | "guess" | null;
+  /** An authorization a posted alert may still update. */
+  isPending?: boolean;
+  /** Set once a follow-up changed the amount ("updated from $X"). */
+  originalAmount?: number | null;
+  /** A heuristic follow-up merged two alerts; "Split back into two" undoes it. */
+  autoMerged?: boolean;
+  /** "Possible duplicate" of this row id. */
+  duplicateOf?: string | null;
 };
+
+/**
+ * D2: a row whose category no person chose. It still counts in its category
+ * (the bar moves now) but every display marks it "unconfirmed" and links to
+ * /categorize/[id].
+ */
+export function isUnconfirmed(row: Pick<SheetRow, "reviewStatus" | "categorizedBy">): boolean {
+  return row.reviewStatus === "needs_review" || row.categorizedBy === "guess";
+}
+
+function readOptionalString(raw: Record<string, unknown>, key: string): string | undefined {
+  const value = raw[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readOptionalNumber(raw: Record<string, unknown>, key: string): number | null | undefined {
+  const value = raw[key];
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** The additive email-sync fields, read without disturbing the legacy aliases. */
+function readEmailSyncFields(raw: Record<string, unknown>): Partial<SheetRow> {
+  const review = raw.reviewStatus;
+  const by = raw.categorizedBy;
+  return {
+    source: readOptionalString(raw, "source"),
+    reviewStatus: review === "needs_review" || review === "confirmed" ? review : undefined,
+    categorizedBy: by === "user" || by === "rule" || by === "guess" ? by : by === null ? null : undefined,
+    isPending: typeof raw.isPending === "boolean" ? raw.isPending : undefined,
+    originalAmount: readOptionalNumber(raw, "originalAmount"),
+    autoMerged: typeof raw.autoMerged === "boolean" ? raw.autoMerged : undefined,
+    duplicateOf: typeof raw.duplicateOf === "string" ? raw.duplicateOf : raw.duplicateOf === null ? null : undefined,
+  };
+}
 
 function getRawValue(raw: Record<string, unknown>, keys: string[]): unknown {
   for (const key of keys) {
@@ -70,6 +122,7 @@ function normalizeRow(raw: Record<string, unknown>): SheetRow {
     account: account.trim() || undefined,
     rowId: rowId || undefined,
     enteredByName: readEnteredByName(raw),
+    ...readEmailSyncFields(raw),
   };
 }
 
@@ -148,13 +201,28 @@ export async function getExpenses(month?: string): Promise<SheetRow[]> {
  * Returns the created row, including its `rowId` — additive, so existing
  * callers that ignore the result are unaffected.
  */
-export async function submitExpense(payload: {
+/** Set when the entry answered a card alert instead of adding a row (plan §5.7). */
+export type MatchedEmail = {
+  transactionId: string;
+  previousDescription: string;
+  merchantName: string | null;
+};
+
+export type ExpensePayload = {
   expenseType: string;
   amount: number;
   description: string;
   date?: string;
   account?: string;
-}): Promise<SheetRow> {
+  /** Reconcile's Quick Add: always a new row, never absorbed into an email row. */
+  source?: "csv";
+  /** Skip email dedupe for this one entry ("Keep both"). */
+  keepSeparate?: boolean;
+};
+
+export async function submitExpense(
+  payload: ExpensePayload,
+): Promise<SheetRow & { matchedEmail?: MatchedEmail | null; possibleDuplicateOf?: string | null }> {
   const res = await fetch(TRANSACTIONS_API, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -164,7 +232,38 @@ export async function submitExpense(payload: {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || `Failed to submit: ${res.status}`);
   }
-  return normalizeRow((await res.json()) as Record<string, unknown>);
+  const json = (await res.json()) as Record<string, unknown>;
+  const matched = json.matchedEmail;
+  return {
+    ...normalizeRow(json),
+    matchedEmail:
+      matched && typeof matched === "object" && typeof (matched as MatchedEmail).transactionId === "string"
+        ? (matched as MatchedEmail)
+        : null,
+    possibleDuplicateOf: typeof json.possibleDuplicateOf === "string" ? json.possibleDuplicateOf : null,
+  };
+}
+
+/**
+ * Undo an absorb: put the card-alert row back in To categorize and save the
+ * manual entry as its own row.
+ */
+export async function keepBothTransactions(
+  emailRowId: string,
+  payload: ExpensePayload,
+  previousDescription: string,
+): Promise<{ emailRow: SheetRow; row: SheetRow }> {
+  const res = await fetch(`${TRANSACTIONS_API}/${encodeURIComponent(emailRowId)}/keep-both`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, previousDescription }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `Failed to keep both: ${res.status}`);
+  }
+  const json = (await res.json()) as { emailRow: Record<string, unknown>; row: Record<string, unknown> };
+  return { emailRow: normalizeRow(json.emailRow), row: normalizeRow(json.row) };
 }
 
 /**
@@ -178,6 +277,8 @@ export type TransactionPatch = {
   /** YYYY-MM-DD. Anchored at midday UTC server-side. */
   date?: string;
   amount?: number;
+  /** Why the amount changed, for the amount history. Reconcile's correction sends 'csv'. */
+  amountReason?: "manual" | "csv";
   expenseType?: string;
   description?: string;
 };
@@ -244,6 +345,10 @@ export type TransferRow = {
   month: string;
   /** See SheetRow.enteredByName. */
   enteredByName?: string;
+  source?: string;
+  /** 'needs_review' = an email transfer waiting on "Which Venmo account?". */
+  reviewStatus?: "needs_review" | "confirmed";
+  duplicateOf?: string | null;
 };
 
 function normalizeTransferRow(raw: Record<string, unknown>): TransferRow {
@@ -279,6 +384,10 @@ function normalizeTransferRow(raw: Record<string, unknown>): TransferRow {
     })(),
     month: String(getRawValue(raw, ["Month", "month"]) ?? ""),
     enteredByName: readEnteredByName(raw),
+    source: readOptionalString(raw, "source"),
+    reviewStatus:
+      raw.reviewStatus === "needs_review" || raw.reviewStatus === "confirmed" ? raw.reviewStatus : undefined,
+    duplicateOf: typeof raw.duplicateOf === "string" ? raw.duplicateOf : undefined,
   };
 }
 

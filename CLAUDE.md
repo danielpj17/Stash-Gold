@@ -11,9 +11,17 @@ npm run start    # Run production build
 node scripts/check-schema.mjs   # Verify the DB matches docs/neon-setup.sql
 ```
 
-No test suite — feature verification is manual via browser. `npm run lint` is
-present but there is **no ESLint config checked in**, so `next lint` just
-prompts for setup; `next build` is the real typecheck gate.
+```bash
+npm test                         # Vitest: pure email-sync modules (parsers, merchantKey, decide…)
+npm run email:post -- <fixture>  # POST a fixture email to /api/ingest/email (needs STASH_TOKEN)
+npm run email:export -- <gmail_message_id>   # scrub a real alert into a parser fixture
+npm run email:reparse -- --parser <id> [--apply]  # dry-run current parsers over stored events
+```
+
+`npm test` covers only the pure email-sync modules (`lib/email/**/*.test.ts`);
+everything else is verified manually in the browser. `npm run lint` is present
+but there is **no ESLint config checked in**, so `next lint` just prompts for
+setup; `next build` is the real typecheck gate.
 
 **`AUTH_URL` is pinned to `http://localhost:3000`.** If port 3000 is taken,
 `next dev` silently falls back to 3001 and magic-link callbacks break. Stopping
@@ -90,6 +98,19 @@ silent and expensive.
 6. **Deleting an account is a soft delete.** Reconciliation rows reference
    accounts by id; hard-deleting would either orphan that history or force a
    cascade that throws away months of matching. See "Accounts" below.
+7. **`merchantKey` (`lib/email/merchantKey.ts`) is near-frozen.**
+   `merchant_aliases` is keyed by its output, so changing what it returns makes
+   every known merchant look new and re-asks everything. A change must bump
+   `MERCHANT_KEY_VERSION` and ship `scripts/rekey-merchant-aliases.mjs`
+   (recompute from `example_raw` + `email_events.parsed->>'merchantRaw'`) in the
+   same commit. It is separate from `cleanBankDescription` and
+   `generateMerchantFingerprint`, which stay frozen for reconciliation.
+8. **Email ingest rules.** `/api/ingest/email` never 5xxs on a parse (a parser
+   bug becomes `unparsed`; a 5xx would make the poller retry it every minute
+   for a week). No route ever logs a request body or selects
+   `raw_text`/`raw_html` — bank email stays in the database. Follow-up alerts
+   never change the amount of a row claimed in reconciliation. See "Email
+   sync" below.
 
 ### Data Flow
 
@@ -107,7 +128,16 @@ silent and expensive.
 - `/api/ingest` — iOS Shortcut writes, **bearer token only**, no session
 - `/api/ingest/accounts` — the account list for the Shortcut's picker, so it can
   send a real `financial_accounts.id` instead of baking UUIDs in. Also
-  **bearer-only**; these two are the whole bearer surface. Scopes on `userId`
+  **bearer-only**. Scopes on `userId`
+- `/api/ingest/email`, `/api/ingest/email/heartbeat` — the Gmail poller.
+  **Bearer-only**, and only with a `purpose = 'email'` token. These four routes
+  are the whole bearer surface: `requireUser(req, { bearerPurpose })` puts the
+  purpose in `identityFromBearer`'s WHERE, so a Shortcut token can't post email
+  and an email key can't log transactions through `/api/ingest`
+- `/api/email-sync/*`, `/api/categorize`, `/api/merchants` — email-sync
+  status, the To categorize queue and merchant rules. Session only, `userId`
+- `/api/push/*`, `/api/notifications/prefs` — devices and per-account
+  notification opt-ins. Session only, scope on **`actorId`** (see below)
 - `/api/tokens` — ingest token management, **session only**, never bearer.
   Scopes on `actorId`, not `userId` — see "Household sharing"
 - `/api/household` — who shares this Stash; invite, rename yourself, remove.
@@ -160,10 +190,14 @@ this touched no reconciliation code and no `WHERE` clause.
 - **The Shortcut needed no changes.** `user_tokens.user_id` is the *actor*, and
   `identityFromBearer` joins through to `data_owner_id` for the scope. Each
   person's own token therefore attributes correctly by itself.
-- **`/api/tokens` is the one route that scopes on `actorId`.** Tokens belong to
-  a person, not a household. Scoping it on `userId` would let each spouse revoke
-  the other's Shortcut *and* would destroy attribution. There is a large comment
-  saying so; don't "fix" it.
+- **`/api/tokens` scopes on `actorId`.** Tokens belong to a person, not a
+  household. Scoping it on `userId` would let each spouse revoke the other's
+  Shortcut *and* would destroy attribution. There is a large comment saying so;
+  don't "fix" it. **`/api/push/subscriptions` and `/api/notifications/prefs`
+  follow the same rule** — `push_subscriptions.user_id` and
+  `notification_prefs.user_id` hold the actor, because a phone belongs to a
+  person. The push fan-out reaches the household through a `users` join, so
+  someone removed from the household stops getting pushes with no other change.
 - **Invites are email-bound.** The token alone is never sufficient — acceptance
   also requires being signed in as the invited address, so a forwarded email
   can't be redeemed by whoever receives it.
@@ -187,9 +221,12 @@ section of `/settings`. See "Settings" below for how that page is reached.
 
 ### Settings
 
-`/settings` holds **sharing** and **sign-out**, and nothing else. (Accounts live
-under Reconcile; an older, broader `/settings` was deleted before the multi-user
-migration — this is not a revival of it.)
+`/settings` holds **sharing**, **email sync**, **notifications** and
+**sign-out**, and nothing else. Email sync and Notifications were added
+deliberately with email transaction sync (`docs/email-sync-plan.md` C22);
+merchant rules got their own page (`/rules`). (Accounts live under Reconcile;
+an older, broader `/settings` was deleted before the multi-user migration —
+this is not a revival of it.)
 
 How it is reached is load-bearing, not cosmetic:
 
@@ -203,7 +240,51 @@ How it is reached is load-bearing, not cosmetic:
 
 Sign-out appears both here and in the sidebar deliberately: the sidebar is the
 desktop habit and doesn't exist in the PWA. Both render `SignOutButton`, so the
-client-cache purge can't be implemented in one and forgotten in the other.
+client-cache purge — and unsubscribing this device's push subscription — can't
+be implemented in one and forgotten in the other.
+
+### Email sync
+
+Bank, card and Venmo alert emails land in a dedicated Gmail inbox; an Apps
+Script (`apps-script/`) posts each one to `/api/ingest/email`. Plan of record
+and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
+
+- **Store, then process.** Every email is written to `email_events` first.
+  `received` is the only non-terminal status — a retry of a `received` event
+  re-processes it, and the partial unique index
+  `(user_id, email_event_id)` on `transactions` stops a re-process from
+  double-inserting.
+- **Pipeline = pure `decide()` + side-effecting `apply()`**
+  (`lib/email/decide.ts`, `lib/email/apply.ts`, orchestrated by
+  `lib/email/pipeline.ts`). `decide` owns every dedupe / follow-up / money-in /
+  Venmo rule and is unit-tested; `apply` writes one `sql.transaction`.
+- **Shadow mode** (`email_sync_settings.mode`, default) runs `decide` and stores
+  the plan without writing. Each event remembers `mode_at_receipt`, so
+  switching to live never backfills mail that arrived during shadow.
+- **DKIM gate** (`lib/email/dkim.ts`): only Gmail's own Authentication-Results
+  verdict counts, and it must be a pass for the parser's domain.
+- **Account routing** is `financial_accounts.alert_source` + `alert_last4` (or
+  `alert_forwarded_from` for Venmo). Never a fallback to "the only account for
+  this bank"; unmatched alerts wait under Unknown account.
+- **Parsers** live in `lib/email/parsers/`, registered in `lib/email/registry.ts`,
+  each with fixtures under `__fixtures__/`. Bank parsers are added one at a
+  time from real, scrubbed alerts (`npm run email:export`); the Venmo parser's
+  v1 was written before real samples existed.
+- **Manual entries** go through `insertOrLinkTransaction` (`lib/transactions.ts`)
+  in both write routes: when email sync is live, a hand-logged purchase answers
+  a waiting alert row instead of doubling it. Reconcile's Quick Add sends
+  `source: "csv"` and is always a plain insert.
+- **Categories** (D2): a `needs_review` email row carries its provisional guess
+  in `category`, so it counts in its budget bar, drawn as an "unconfirmed"
+  share. `isUnconfirmed(row)` (`services/transactionsApi.ts`) is the one test.
+  Rows with no guess appear on the dashboard's "Awaiting category" line.
+- **Venmo** (D4): a card/bank alert whose merchant is Venmo is never an expense
+  — it's a transfer card → Venmo — while the Venmo receipt is the expense.
+- **Push** (`lib/push.ts`, `worker/index.ts`): next-pwa compiles
+  `worker/index.ts` to `public/worker-<hash>.js`; never hand-edit
+  `public/sw.js`. There is no service worker in `next dev`, so push is tested
+  on a deployed build. The unattended settle (`lib/email/unattended.ts`) runs
+  from the poller heartbeat and on every queue read — there is no cron.
 
 ### State Management
 
@@ -373,6 +454,17 @@ statement row moves a balance (see "Balances").
 | `app/api/reconciliation/rejected-matches/route.ts` | Disconnected pairs — see "Rejected matches" |
 | `docs/reconciliation-guide.md` | User-facing guide (in-app at `/guide/reconcile`) |
 | `docs/ios-shortcut-setup.md` | One-time authoring of the shareable Shortcut |
+| `docs/email-sync-plan.md` | Email transaction sync — plan of record and rationale (conflicts C1–C27, decisions D1–D6) |
+| `docs/email-sync-setup.md`, `apps-script/` | Email sync setup checklist and the Gmail poller (in-app at `/guide/email-sync`) |
+| `lib/email/pipeline.ts` | One stored email through route → DKIM → parse → account → decide → apply → notify |
+| `lib/email/decide.ts` | PURE: every dedupe, follow-up, money-in (D1) and Venmo (D4) rule. Unit-tested |
+| `lib/email/apply.ts` | A plan → one `sql.transaction` |
+| `lib/email/merchantKey.ts` | Near-frozen merchant normalizer (invariant 7) |
+| `lib/email/parsers/`, `lib/email/registry.ts` | Per-sender parsers + fixtures; `_template.ts` for new banks |
+| `lib/email/csvSuggest.ts` | Reconcile's "Correct to $X & link" — outside `findMatches` |
+| `lib/push.ts`, `worker/index.ts` | Web push fan-out and the service-worker push handlers |
+| `app/categorize/`, `components/CategorizeQueue.tsx` | To categorize — the queue is self-contained so it can move into Reconcile (D5) |
+| `app/rules/page.tsx` | Merchant rules |
 
 `HANDOFF.md` describes the **pre-migration single-user app** and is retained
 only as history — it carries a staleness banner. Do not treat it as current.
@@ -385,8 +477,8 @@ only as history — it carries a staleness banner. Do not treat it as current.
 - Category names normalize through `budgetCategoryMigration.ts`
 
 Expense **categories** are still hardcoded in `lib/constants.ts` — budget
-storage, the migration helper and `CATEGORY_COLORS` are all keyed to those 15
-strings. User-defined categories would be a coherent follow-up.
+storage, the migration helper and `CATEGORY_COLORS` are all keyed to those 16
+strings. Email-sync merchant rules store the same names as text. User-defined categories would be a coherent follow-up.
 
 ### Transactions
 

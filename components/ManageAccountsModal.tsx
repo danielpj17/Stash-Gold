@@ -10,7 +10,9 @@ import {
   Archive,
   ArchiveRestore,
   GripVertical,
+  Mail,
 } from "lucide-react";
+import AccountAlertFields from "@/components/AccountAlertFields";
 import GlassDropdown from "@/components/GlassDropdown";
 import NumberField from "@/components/NumberField";
 import { useAccounts } from "@/contexts/AccountsContext";
@@ -53,6 +55,8 @@ export default function ManageAccountsModal({
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  /** Which account's email-alert routing row is expanded. */
+  const [alertsOpen, setAlertsOpen] = useState<string | null>(null);
 
   const apply = useCallback(
     (data: { accounts?: FinancialAccount[] }) => {
@@ -421,6 +425,27 @@ export default function ManageAccountsModal({
                   </span>
                 )}
 
+                <button
+                  type="button"
+                  onClick={() => setAlertsOpen(alertsOpen === account.id ? null : account.id)}
+                  title={
+                    account.alertSource
+                      ? "Email alerts are routed to this account"
+                      : "Route bank / card / Venmo alert emails to this account"
+                  }
+                  aria-expanded={alertsOpen === account.id}
+                  className={`text-xs px-2 py-1 rounded shrink-0 flex items-center gap-1 transition hover:brightness-125 ${
+                    account.alertSource ? "bg-[#50C878]/15 text-[#50C878]" : "bg-[#353535] text-gray-400"
+                  }`}
+                >
+                  <Mail className="w-3 h-3" />
+                  {account.alertSource
+                    ? account.alertLast4
+                      ? `••${account.alertLast4}`
+                      : "alerts"
+                    : "alerts"}
+                </button>
+
                 <div className="flex items-center gap-1 ml-auto shrink-0">
                   <button
                     type="button"
@@ -469,6 +494,14 @@ export default function ManageAccountsModal({
                     )}
                   </button>
                 </div>
+
+                {alertsOpen === account.id && (
+                  <AccountAlertFields
+                    account={account}
+                    disabled={busyId === account.id}
+                    onPatch={(body) => void patch(account, body)}
+                  />
+                )}
               </li>
             ))}
           </ul>
@@ -481,7 +514,9 @@ export default function ManageAccountsModal({
           hides an account from pickers. Starting balance is what the account held before your
           first logged transaction — confirming a statement balance overrides it from that date
           onward. The order you set here is the order accounts appear everywhere else, including
-          the transfer pickers and the iOS Shortcut.
+          the transfer pickers and the iOS Shortcut. <b>Alerts</b> routes bank, card and Venmo alert
+          emails to an account (Settings → Email sync); an alert that matches no account waits under
+          Unknown account rather than guessing.
         </p>
       </div>
     </div>

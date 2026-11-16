@@ -4,11 +4,17 @@ import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { ArrowLeft } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
+import EmailSyncPanel from "@/components/EmailSyncPanel";
 import HouseholdPanel from "@/components/HouseholdPanel";
+import NotificationsPanel from "@/components/NotificationsPanel";
 import SignOutButton from "@/components/SignOutButton";
 
 /**
- * Settings — sharing and sign-out.
+ * Settings — sharing, email sync, notifications and sign-out.
+ *
+ * Email sync and Notifications were added deliberately with the email
+ * transaction sync work (plan C22); /CLAUDE.md records the change. Merchant
+ * rules get their own page (/rules), linked from the Email sync section.
  *
  * Reached from the gear on New Expense, which is deliberate rather than a nav
  * entry: `Sidebar` is `standalone:hidden` and `BottomNav` has five fixed icons
@@ -58,6 +64,30 @@ export default function SettingsPage() {
           </div>
           <div className="p-4">
             <HouseholdPanel />
+          </div>
+        </section>
+
+        <section id="email-sync" className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden scroll-mt-20">
+          <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark">
+            <h2 className="text-white font-medium">Email sync</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Turn bank, card and Venmo alert emails into transactions automatically.
+            </p>
+          </div>
+          <div className="p-4">
+            <EmailSyncPanel />
+          </div>
+        </section>
+
+        <section id="notifications" className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden scroll-mt-20">
+          <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark">
+            <h2 className="text-white font-medium">Notifications</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Get asked to categorize card-alert purchases on your phone. Yours alone — your partner sets their own.
+            </p>
+          </div>
+          <div className="p-4">
+            <NotificationsPanel />
           </div>
         </section>
 

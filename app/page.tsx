@@ -4,13 +4,15 @@ import { useEffect, useState, useMemo, useCallback } from "react";
 import Link from "next/link";
 import { X, Save, PlusCircle, Loader2, Plus } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
+import CategorizeBanner from "@/components/CategorizeBanner";
+import UnconfirmedChip from "@/components/UnconfirmedChip";
 import MonthDropdown from "@/components/MonthDropdown";
 import GlassDropdown from "@/components/GlassDropdown";
 import { useSession } from "next-auth/react";
 import { useMonth } from "@/contexts/MonthContext";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { useExpensesData } from "@/contexts/ExpensesDataContext";
-import { rowMatchesMonth, transferMatchesMonth, submitTransfer } from "@/services/transactionsApi";
+import { isUnconfirmed, rowMatchesMonth, transferMatchesMonth, submitTransfer } from "@/services/transactionsApi";
 import type { SheetRow } from "@/services/transactionsApi";
 import { useAccounts } from "@/contexts/AccountsContext";
 import { CACHE_KEYS, readScopedCache, writeScopedCache } from "@/lib/clientCache";
@@ -106,19 +108,47 @@ function resolveBudgetForMonth(
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-function buildExpenseTotals(rows: SheetRow[]): { category: string; total: number }[] {
+/**
+ * Per-category totals. `unconfirmed` is the part of `total` whose category no
+ * person chose (email sync, plan D2): it COUNTS in the bar — the budget moves
+ * now — and is drawn as a lighter hatched share so the guess is never silent.
+ */
+function buildExpenseTotals(rows: SheetRow[]): { category: string; total: number; unconfirmed: number }[] {
   const byCategory: Record<string, number> = {};
-  EXPENSE_CATEGORIES.forEach((cat) => (byCategory[cat] = 0));
+  const unconfirmed: Record<string, number> = {};
+  EXPENSE_CATEGORIES.forEach((cat) => {
+    byCategory[cat] = 0;
+    unconfirmed[cat] = 0;
+  });
   rows.forEach((r) => {
     const cat = normalizeExpenseCategoryType(r.expenseType);
     if (cat !== "Income" && byCategory[cat] !== undefined) {
       byCategory[cat] += r.amount;
+      if (isUnconfirmed(r)) unconfirmed[cat] += r.amount;
     }
   });
   return EXPENSE_CATEGORIES.map((cat) => ({
     category: cat,
     total: byCategory[cat] ?? 0,
+    unconfirmed: unconfirmed[cat] ?? 0,
   }));
+}
+
+/**
+ * Email purchases waiting for a category with NO guess at all. They're real
+ * spending, so they count in the total, on their own "Awaiting category" line
+ * rather than in any bar. (Rows with a guess sit in the guessed bar instead.)
+ */
+function buildAwaitingTotal(rows: SheetRow[]): { total: number; count: number } {
+  let total = 0;
+  let count = 0;
+  rows.forEach((r) => {
+    if (r.reviewStatus === "needs_review" && !r.expenseType.trim()) {
+      total += r.amount;
+      count += 1;
+    }
+  });
+  return { total, count };
 }
 
 function lerpColor(a: [number, number, number], b: [number, number, number], t: number): string {
@@ -429,7 +459,10 @@ export default function BudgetPage() {
   /* ---------- derived data ---------- */
 
   const expenseData = useMemo(() => buildExpenseTotals(rows), [rows]);
-  const expenseTotal = expenseData.reduce((s, r) => s + r.total, 0);
+  const awaiting = useMemo(() => buildAwaitingTotal(rows), [rows]);
+  // Total = every category bar (unconfirmed shares included) + the Awaiting
+  // line, so the header always equals what's drawn below it.
+  const expenseTotal = expenseData.reduce((s, r) => s + r.total, 0) + awaiting.total;
   const totalBudget = EXPENSE_CATEGORIES.reduce((s, cat) => s + (budgetGoals[cat] ?? 0), 0);
   const incomeTransactions = useMemo(() => {
     return rows
@@ -659,6 +692,8 @@ export default function BudgetPage() {
           </div>
         </div>
 
+        <CategorizeBanner />
+
         {(budgetError || error) && (
           <div className="rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 px-4 py-2 text-sm">
             {budgetError ?? error}
@@ -709,6 +744,10 @@ export default function BudgetPage() {
                     const overBudget = isOverBudget(row.total, budget);
                     const barColor = overBudget ? OVER_BUDGET_COLOR : getProgressColor(pct);
                     const barWidth = Math.min(pct, 100);
+                    // The unconfirmed share is drawn at the END of the bar, so
+                    // the solid part is what a person actually filed.
+                    const unconfirmedWidth =
+                      row.total > 0 ? Math.min(barWidth, (row.unconfirmed / row.total) * barWidth) : 0;
 
                     return (
                       <button
@@ -723,22 +762,47 @@ export default function BudgetPage() {
                         <span className="w-[68px] shrink-0 text-right text-gray-200 tabular-nums text-xs">
                           {fmtDollars(row.total)}
                         </span>
-                        <span className="flex-1 min-w-0 mx-1" />
+                        <span className="flex-1 min-w-0 mx-1 text-[10px] text-yellow-200/80 truncate">
+                          {row.unconfirmed > 0 ? `incl. ${fmtDollars(row.unconfirmed)} unconfirmed` : ""}
+                        </span>
                         <span className="w-[72px] shrink-0 text-right text-gray-400 tabular-nums text-xs">
                           {fmtDollars(budget)}
                         </span>
                         <span className="absolute inset-x-2 bottom-1 h-0.5 rounded-full bg-[#1a1a1a] overflow-hidden">
-                          <span
-                            className="block h-full rounded-full transition-all duration-500"
-                            style={{
-                              width: `${barWidth}%`,
-                              backgroundColor: barColor,
-                            }}
-                          />
+                          <span className="flex h-full" style={{ width: `${barWidth}%` }}>
+                            <span
+                              className="block h-full rounded-l-full transition-all duration-500"
+                              style={{
+                                width: `${barWidth > 0 ? ((barWidth - unconfirmedWidth) / barWidth) * 100 : 0}%`,
+                                backgroundColor: barColor,
+                              }}
+                            />
+                            {unconfirmedWidth > 0 && (
+                              <span
+                                className="block h-full rounded-r-full transition-all duration-500 opacity-60"
+                                title="Includes purchases whose category is Stash's guess"
+                                style={{
+                                  width: `${(unconfirmedWidth / barWidth) * 100}%`,
+                                  backgroundImage: `repeating-linear-gradient(135deg, ${barColor} 0 3px, transparent 3px 5px)`,
+                                }}
+                              />
+                            )}
+                          </span>
                         </span>
                       </button>
                     );
                   })}
+                  {awaiting.count > 0 && (
+                    <Link
+                      href="/categorize"
+                      className="w-full flex items-center gap-2 px-2 py-[7px] text-sm text-yellow-100 bg-yellow-400/5 hover:bg-yellow-400/10 transition-colors"
+                    >
+                      <span className="flex-1 min-w-0 truncate">
+                        Awaiting category · {awaiting.count} purchase{awaiting.count === 1 ? "" : "s"}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-xs">{fmtDollars(awaiting.total)}</span>
+                    </Link>
+                  )}
                 </div>
               </div>
             </div>
@@ -1260,6 +1324,7 @@ export default function BudgetPage() {
                         <span className="min-w-0 flex-1">
                           <span className="text-gray-200">{row.description.trim() || "\u2014"}</span>
                           <span className="text-gray-500 text-xs ml-2 shrink-0">{formatDateMMDDYY(row.timestamp)}</span>
+                          {isUnconfirmed(row) && <UnconfirmedChip transactionId={row.rowId} className="ml-2" />}
                         </span>
                         <span className="text-right shrink-0">{fmtDollars(row.amount)}</span>
                       </div>

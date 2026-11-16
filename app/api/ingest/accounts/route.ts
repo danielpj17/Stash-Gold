@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic";
  * Token-only, matching the ingest POST: a stolen session cookie can't reach it.
  */
 export async function GET(request: NextRequest) {
-  const ctx = await requireUser(request, { allowBearer: true });
+  const ctx = await requireUser(request, { bearerPurpose: "shortcut" });
   if (isErrorResponse(ctx)) return ctx;
   const { sql, userId, via } = ctx;
 

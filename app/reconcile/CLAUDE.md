@@ -386,6 +386,20 @@ The account-detail review section exposes this via filter chips: **Needs expense
 
 **Note:** `unmatchedCategory` is only present on freshly-matched rows. Rows cached before this field existed need a **Re-match from sheet** to populate it.
 
+### Pending-amount suggestion (email sync) — deliberately NOT part of findMatches
+
+Card-alert rows (`source = 'email'`) are ordinary logged entries to the matcher, and because they carry the right account and a real date, the existing same-account exact branch auto-matches them more often than hand-logged rows. Nothing in `findMatches` changed for them.
+
+The one gap is amount tolerance: an authorization alert is often pre-tip ($14.82) or a gas-pump hold ($1.00) while the statement shows the final amount, and `findMatches` (and `/claims`' "links sum to the bank amount" rule) need exact amounts. So for a `no_candidate` line, the page runs `pendingAmountSuggestions` (`lib/email/csvSuggest.ts`, pure) and may show **"Pending card alert $14.82 · McDonald's — Correct to $17.50 & link"**. Accepting it is a `PATCH /api/transactions/[id] { amount, amountReason: 'csv' }` (logged in `transaction_amount_changes`) followed by the ordinary `handleApprove(match, userEntry)` claim.
+
+It lives outside `findMatches` on purpose: it is only ever **offered**, never auto-applied, and never part of bulk approve, so auto-match behaviour — and therefore every user's review queue — is byte-identical to before. Candidates: unclaimed `isPending` email rows on the same account, ±3 days, bank amount = logged ×1.00–1.35 (Eating Out / Dates) or the logged amount is a gas hold.
+
+Also from email sync, all display-only:
+- The home list's **From alerts** chip filters to email rows with no statement line yet (possible duplicates or cancelled holds).
+- An **unconfirmed** chip follows the detail line of any row whose category no person chose (D2), linking to `/categorize/[id]`.
+- The account header shows a "From card alerts: N matched · N amounts corrected · N not on a statement yet · N unchecked guesses" line.
+- **Quick Add posts `source: "csv"`**, which makes `/api/transactions` skip the email dedupe and always insert a new row: Quick Add claims the row it gets back, and absorbing into an email row would hand back a different row (and amount) than the claim expects.
+
 ### Description Similarity (Jaccard)
 
 ```

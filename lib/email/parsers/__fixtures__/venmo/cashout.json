@@ -1,0 +1,27 @@
+{
+  "synthetic": true,
+  "note": "cash-out to a bank is a transfer, never Income (D4)",
+  "email": {
+    "gmailMessageId": "18c0000000000001",
+    "from": "Venmo <venmo@venmo.com>",
+    "to": "stash.inbox@example.com",
+    "subject": "Your bank transfer has been initiated",
+    "date": "2026-11-15T19:05:00Z",
+    "plainBody": "You transferred $100.00 to your bank.\nTransferred to: Checking ••1111\nIt should arrive in 1-3 business days.\nPayment ID: 0000000000000000000\nThis is an automated message from Venmo. Please don't reply.",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@venmo.com header.s=s1 header.b=AbC; spf=pass smtp.mailfrom=venmo@venmo.com; dmarc=pass (p=REJECT) header.from=venmo.com",
+      "X-Forwarded-For": "daniel@example.com"
+    }
+  },
+  "expect": {
+    "alert": {
+      "kind": "transfer",
+      "transferDirection": "out",
+      "amountCents": 10000,
+      "fundingSource": {
+        "last4": "1111"
+      }
+    }
+  }
+}

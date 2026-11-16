@@ -46,6 +46,20 @@ export function generateIngestToken(): { raw: string; hash: string; prefix: stri
 }
 
 /**
+ * What a bearer token is allowed to do. `identityFromBearer` puts the purpose
+ * in its WHERE, so a token used on the wrong surface simply doesn't resolve —
+ * it isn't even recorded as used. A leaked Gmail-poller key therefore can't
+ * log arbitrary transactions through /api/ingest, and a Shortcut token can't
+ * post email.
+ */
+export const TOKEN_PURPOSES = ["shortcut", "email"] as const;
+export type TokenPurpose = (typeof TOKEN_PURPOSES)[number];
+
+export function isTokenPurpose(value: unknown): value is TokenPurpose {
+  return typeof value === "string" && (TOKEN_PURPOSES as readonly string[]).includes(value);
+}
+
+/**
  * Resolve an ingest token to both ids in one round trip.
  *
  * `user_tokens.user_id` is the ACTOR — tokens belong to a person, so each
@@ -56,6 +70,7 @@ export function generateIngestToken(): { raw: string; hash: string; prefix: stri
 async function identityFromBearer(
   req: NextRequest,
   sql: Sql,
+  purpose: TokenPurpose,
 ): Promise<{ userId: string; actorId: string } | null> {
   const header = (req.headers.get("authorization") ?? "").trim();
   const match = /^Bearer\s+(\S+)$/i.exec(header);
@@ -68,6 +83,7 @@ async function identityFromBearer(
       FROM users u
      WHERE t.token_hash = ${hashIngestToken(match[1])}
        AND t.revoked_at IS NULL
+       AND t.purpose = ${purpose}
        AND u.id = t.user_id
     RETURNING t.user_id AS actor_id,
               COALESCE(u.data_owner_id, u.id) AS owner_id
@@ -95,15 +111,24 @@ async function identityFromBearer(
  */
 export async function requireUser(
   req?: NextRequest,
-  opts: { allowBearer?: boolean } = {},
+  opts: {
+    /**
+     * Accept a bearer token as well as a session. Only routes under
+     * app/api/ingest/ pass this, so that one directory answers "what can a
+     * stolen token do?".
+     */
+    allowBearer?: boolean;
+    /** Which kind of token. Defaults to the Shortcut's. */
+    bearerPurpose?: TokenPurpose;
+  } = {},
 ): Promise<ApiUser | NextResponse> {
   if (!process.env.DATABASE_URL) {
     return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 503 });
   }
   const sql = getSql();
 
-  if (opts.allowBearer && req) {
-    const identity = await identityFromBearer(req, sql);
+  if ((opts.allowBearer || opts.bearerPurpose) && req) {
+    const identity = await identityFromBearer(req, sql, opts.bearerPurpose ?? "shortcut");
     if (identity) return { sql, ...identity, via: "token" };
   }
 

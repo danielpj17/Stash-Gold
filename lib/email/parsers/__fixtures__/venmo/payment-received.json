@@ -1,0 +1,24 @@
+{
+  "synthetic": true,
+  "note": "X paid you → Income (D1)",
+  "email": {
+    "gmailMessageId": "18c0000000000001",
+    "from": "Venmo <venmo@venmo.com>",
+    "to": "stash.inbox@example.com",
+    "subject": "Alex Smith paid you $15.00",
+    "date": "2026-11-15T19:05:00Z",
+    "plainBody": "Alex Smith paid you\n$15.00\nNote: movie tickets\nPayment ID: 0000000000000000000\nThis is an automated message from Venmo. Please don't reply.",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@venmo.com header.s=s1 header.b=AbC; spf=pass smtp.mailfrom=venmo@venmo.com; dmarc=pass (p=REJECT) header.from=venmo.com",
+      "X-Forwarded-For": "daniel@example.com"
+    }
+  },
+  "expect": {
+    "alert": {
+      "kind": "payment_received",
+      "amountCents": 1500,
+      "counterparty": "Alex Smith"
+    }
+  }
+}

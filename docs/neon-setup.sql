@@ -104,6 +104,10 @@ CREATE TABLE user_tokens (
   name         TEXT NOT NULL DEFAULT 'iOS Shortcut',
   token_hash   TEXT NOT NULL UNIQUE,   -- sha256 hex of the raw token
   prefix       TEXT NOT NULL,          -- first 13 chars, for display only
+  -- What the token may do. identityFromBearer puts this in its WHERE, so a
+  -- leaked email key can't log transactions through /api/ingest and a
+  -- Shortcut token can't post email. (Migration 004.)
+  purpose      TEXT NOT NULL DEFAULT 'shortcut' CHECK (purpose IN ('shortcut', 'email')),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_used_at TIMESTAMPTZ,
   revoked_at   TIMESTAMPTZ
@@ -181,7 +185,17 @@ CREATE TABLE financial_accounts (
   is_default      BOOLEAN NOT NULL DEFAULT false,
   sort_order      INTEGER NOT NULL DEFAULT 0,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  deleted_at      TIMESTAMPTZ
+  deleted_at      TIMESTAMPTZ,
+  -- Email sync routing (migration 005). The alert's parser id plus the card's
+  -- last four pick exactly one live account; Venmo, which has no last four, is
+  -- told apart by whose inbox forwarded it. No fallback to "the only account
+  -- for this bank" — a replacement card would silently post to the wrong one.
+  alert_source         TEXT,
+  alert_last4          TEXT CHECK (alert_last4 ~ '^[0-9]{4}$'),
+  alert_forwarded_from TEXT,
+  -- What happens to an unanswered email purchase after the timeout (007).
+  unattended_action    TEXT NOT NULL DEFAULT 'keep_in_review'
+                         CHECK (unattended_action IN ('keep_in_review', 'auto_guess'))
 );
 CREATE INDEX idx_financial_accounts_user ON financial_accounts(user_id, sort_order);
 -- Names are unique among LIVE accounts only. A plain UNIQUE (user_id, name)
@@ -194,6 +208,14 @@ CREATE UNIQUE INDEX idx_financial_accounts_name
 CREATE UNIQUE INDEX idx_financial_accounts_one_default
   ON financial_accounts (user_id)
   WHERE is_default AND deleted_at IS NULL;
+-- Alert routing is unique among LIVE accounts only, so a soft-deleted card
+-- doesn't reserve its digits (same reasoning as idx_financial_accounts_name).
+CREATE UNIQUE INDEX idx_financial_accounts_alert_last4
+  ON financial_accounts (user_id, alert_source, alert_last4)
+  WHERE deleted_at IS NULL AND alert_last4 IS NOT NULL;
+CREATE UNIQUE INDEX idx_financial_accounts_alert_fwd
+  ON financial_accounts (user_id, alert_source, alert_forwarded_from)
+  WHERE deleted_at IS NULL AND alert_forwarded_from IS NOT NULL;
 
 
 -- ---------------------------------------------------------------------
@@ -270,12 +292,72 @@ CREATE TABLE transactions (
   transfer_from TEXT,
   transfer_to   TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- ---- Email sync (migration 006). Every default reproduces a pre-sync row.
+  source          TEXT NOT NULL DEFAULT 'manual'
+                    CHECK (source IN ('manual', 'shortcut', 'email', 'csv')),
+  review_status   TEXT NOT NULL DEFAULT 'confirmed'
+                    CHECK (review_status IN ('needs_review', 'confirmed')),
+  -- Where the CURRENT category came from. 'guess' + needs_review = provisional
+  -- (it counts in its bar, marked unconfirmed); 'guess' + confirmed = auto-filed
+  -- by the unattended rule. NULL = a person typed it.
+  categorized_by  TEXT CHECK (categorized_by IN ('user', 'rule', 'guess')),
+  reviewed_by     UUID REFERENCES users(id) ON DELETE SET NULL,  -- actor; display only
+  reviewed_at     TIMESTAMPTZ,
+  is_pending      BOOLEAN NOT NULL DEFAULT false,
+  original_amount NUMERIC(14,2),
+  merchant_id     UUID,          -- no FK; merchant merges repoint it in one transaction
+  email_event_id  UUID,
+  auto_merged     BOOLEAN NOT NULL DEFAULT false,
+  duplicate_of    TEXT,          -- "Possible duplicate" flag; display only
+  -- ---- Push (migration 007)
+  notified_at           TIMESTAMPTZ,
+  unattended_due_at     TIMESTAMPTZ,
+  unattended_settled_at TIMESTAMPTZ,
+  -- A CONFIRMED expense/income always has a category. A needs_review row holds
+  -- its guess in `category`, or NULL when Stash has no guess at all.
+  CONSTRAINT transactions_confirmed_has_category CHECK (
+    kind = 'transfer' OR review_status = 'needs_review' OR category IS NOT NULL
+  )
 );
 -- created_at is the append-order proxy the reads sort on (Sheets returned
 -- rows in append order and some client code assumes newest-last).
 CREATE INDEX idx_transactions_user_kind ON transactions(user_id, kind, created_at);
 CREATE INDEX idx_transactions_user_time ON transactions(user_id, occurred_at);
+-- The idempotency key for re-processing an email: one event creates or links ONE row.
+CREATE UNIQUE INDEX idx_transactions_email_event
+  ON transactions (user_id, email_event_id) WHERE email_event_id IS NOT NULL;
+CREATE INDEX idx_transactions_needs_review
+  ON transactions (user_id, created_at) WHERE review_status = 'needs_review';
+CREATE INDEX idx_transactions_pending
+  ON transactions (user_id, account, occurred_at) WHERE is_pending;
+CREATE INDEX idx_transactions_merchant
+  ON transactions (user_id, merchant_id) WHERE merchant_id IS NOT NULL;
+CREATE INDEX idx_transactions_unattended_due
+  ON transactions (user_id, unattended_due_at)
+  WHERE review_status = 'needs_review' AND unattended_settled_at IS NULL;
+
+-- A row's amount history: pending → posted, tips, gas holds, CSV corrections.
+-- Deliberately not reconciliation_activity_log, which records reconciliation
+-- actions and whose undo only understands claims.
+CREATE TABLE transaction_amount_changes (
+  user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id             UUID NOT NULL DEFAULT gen_random_uuid(),
+  transaction_id TEXT NOT NULL,
+  old_amount     NUMERIC(14,2) NOT NULL,
+  new_amount     NUMERIC(14,2) NOT NULL,
+  reason         TEXT NOT NULL CHECK (reason IN ('posted', 'tip', 'gas_final', 'csv', 'manual', 'split_back')),
+  email_event_id UUID,
+  changed_by     UUID REFERENCES users(id) ON DELETE SET NULL,  -- NULL = automatic
+  changed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, id)
+);
+CREATE INDEX idx_amount_changes_tx
+  ON transaction_amount_changes (user_id, transaction_id, changed_at);
+-- A retried follow-up can't apply twice.
+CREATE UNIQUE INDEX idx_amount_changes_event
+  ON transaction_amount_changes (user_id, transaction_id, email_event_id)
+  WHERE email_event_id IS NOT NULL;
 
 
 -- ---------------------------------------------------------------------
@@ -473,6 +555,136 @@ CREATE INDEX idx_activity_log_occurred
   ON reconciliation_activity_log(user_id, occurred_at DESC);
 CREATE INDEX idx_activity_log_csv
   ON reconciliation_activity_log(user_id, csv_upload_id);
+
+
+-- ---------------------------------------------------------------------
+-- Email transaction sync — see docs/email-sync-plan.md.
+--
+-- Bank/card/Venmo alert emails land in a dedicated Gmail inbox; an Apps
+-- Script posts each one to /api/ingest/email with a purpose='email' token.
+-- ---------------------------------------------------------------------
+
+-- One row per data SCOPE (the owner's id). A missing row = all defaults.
+CREATE TABLE email_sync_settings (
+  user_id                 UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  mode                    TEXT NOT NULL DEFAULT 'shadow' CHECK (mode IN ('shadow', 'live')),
+  answer_timeout_hours    INTEGER NOT NULL DEFAULT 24 CHECK (answer_timeout_hours BETWEEN 1 AND 168),
+  internal_counterparties TEXT[] NOT NULL DEFAULT '{}',   -- Venmo names that mean "us"; lowercased
+  last_heartbeat_at       TIMESTAMPTZ,
+  last_heartbeat_error    TEXT,
+  last_poll_at            TIMESTAMPTZ,
+  last_ingest_at          TIMESTAMPTZ,
+  poller_version          TEXT,
+  last_poller_failure_at  TIMESTAMPTZ,
+  updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Every forwarded email, stored BEFORE processing. `received` is the only
+-- non-terminal status: a retry of a `received` event re-processes it, so a
+-- request that dies half-way can't lose a purchase.
+--
+-- Raw bodies never leave the server: no route selects raw_text / raw_html.
+CREATE TABLE email_events (
+  user_id            UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id                 UUID NOT NULL DEFAULT gen_random_uuid(),
+  gmail_message_id   TEXT NOT NULL,
+  rfc822_message_id  TEXT,
+  from_address       TEXT NOT NULL,
+  to_address         TEXT,
+  forwarded_for      TEXT,
+  subject            TEXT,
+  received_at        TIMESTAMPTZ NOT NULL,
+  auth_results       TEXT,
+  arc_auth_results   TEXT,
+  raw_text           TEXT,
+  raw_html           TEXT,
+  body_sha256        TEXT NOT NULL,
+  truncated          BOOLEAN NOT NULL DEFAULT false,
+  -- Mode when the email ARRIVED; a later re-read never upgrades it to live.
+  mode_at_receipt    TEXT NOT NULL DEFAULT 'shadow' CHECK (mode_at_receipt IN ('shadow', 'live')),
+  status             TEXT NOT NULL DEFAULT 'received' CHECK (status IN (
+                       'received', 'created', 'linked', 'followup', 'duplicate',
+                       'ignored', 'unparsed', 'unknown_account', 'unauthenticated',
+                       'followup_ignored_reconciled', 'ambiguous', 'shadow')),
+  status_reason      TEXT,
+  parser_id          TEXT,
+  parser_version     INTEGER,
+  parsed             JSONB,
+  decision           JSONB,
+  error              TEXT,
+  transaction_id     TEXT,          -- no FK, same reasoning as claim links
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  processed_at       TIMESTAMPTZ,
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, gmail_message_id)
+);
+CREATE INDEX idx_email_events_status ON email_events (user_id, status, received_at DESC);
+CREATE INDEX idx_email_events_created ON email_events (user_id, created_at DESC);
+ALTER TABLE email_events ALTER COLUMN raw_html SET COMPRESSION lz4;
+ALTER TABLE email_events ALTER COLUMN raw_text SET COMPRESSION lz4;
+
+-- Per-merchant filing rules for email transactions. Separate from
+-- reconciliation_merchant_memory on purpose: that table feeds findMatches'
+-- auto-claim, so email rules written there would change which bank lines
+-- auto-claim. One merchant, one rule (folded in).
+CREATE TABLE merchants (
+  user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id               UUID NOT NULL DEFAULT gen_random_uuid(),
+  display_name     TEXT NOT NULL,
+  mode             TEXT NOT NULL DEFAULT 'ask_all'
+                     CHECK (mode IN ('auto', 'ask_shortlist', 'ask_all')),
+  category         TEXT,
+  shortlist        TEXT[] NOT NULL DEFAULT '{}',
+  default_category TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at     TIMESTAMPTZ,
+  PRIMARY KEY (user_id, id),
+  CHECK (mode <> 'auto' OR category IS NOT NULL),
+  CHECK (mode <> 'ask_shortlist' OR cardinality(shortlist) >= 1)
+);
+
+-- Exact normalized keys from lib/email/merchantKey.ts. That function is
+-- near-frozen: changing it re-asks every known merchant unless the change
+-- bumps MERCHANT_KEY_VERSION and ships a re-key script in the same commit.
+CREATE TABLE merchant_aliases (
+  user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  normalized_key TEXT NOT NULL,
+  key_version    INTEGER NOT NULL,
+  merchant_id    UUID NOT NULL,
+  example_raw    TEXT NOT NULL,
+  last_seen_at   TIMESTAMPTZ,
+  PRIMARY KEY (user_id, normalized_key),
+  FOREIGN KEY (user_id, merchant_id) REFERENCES merchants (user_id, id) ON DELETE CASCADE
+);
+CREATE INDEX idx_merchant_aliases_merchant ON merchant_aliases (user_id, merchant_id);
+
+-- Web push. `user_id` in these two tables is the ACTOR, not the household
+-- scope — exactly like user_tokens. A phone belongs to a person: scoping on
+-- the household would let each spouse revoke the other's devices. The fan-out
+-- query joins through users to reach the scope, so someone who leaves the
+-- household stops getting pushes automatically.
+CREATE TABLE push_subscriptions (
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id              UUID NOT NULL DEFAULT gen_random_uuid(),
+  endpoint        TEXT NOT NULL,
+  p256dh          TEXT NOT NULL,
+  auth            TEXT NOT NULL,
+  device_label    TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_success_at TIMESTAMPTZ,
+  last_failure_at TIMESTAMPTZ,
+  failure_count   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, endpoint)
+);
+
+CREATE TABLE notification_prefs (
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_id UUID NOT NULL REFERENCES financial_accounts(id) ON DELETE CASCADE,
+  enabled    BOOLEAN NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, account_id)
+);
 
 
 -- ---------------------------------------------------------------------

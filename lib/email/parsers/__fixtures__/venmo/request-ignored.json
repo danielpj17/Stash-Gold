@@ -1,0 +1,20 @@
+{
+  "synthetic": true,
+  "note": "a request is not money",
+  "email": {
+    "gmailMessageId": "18c0000000000001",
+    "from": "Venmo <venmo@venmo.com>",
+    "to": "stash.inbox@example.com",
+    "subject": "Alex Smith requested $20.00",
+    "date": "2026-11-15T19:05:00Z",
+    "plainBody": "Alex Smith requests $20.00\nNote: dinner\nPayment ID: 0000000000000000000\nThis is an automated message from Venmo. Please don't reply.",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@venmo.com header.s=s1 header.b=AbC; spf=pass smtp.mailfrom=venmo@venmo.com; dmarc=pass (p=REJECT) header.from=venmo.com",
+      "X-Forwarded-For": "daniel@example.com"
+    }
+  },
+  "expect": {
+    "ignore": "venmo_request"
+  }
+}

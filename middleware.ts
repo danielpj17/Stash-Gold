@@ -41,12 +41,13 @@ export function middleware(req: NextRequest) {
 }
 
 /**
- * PWA assets MUST stay public. If sw.js, the workbox bundles, or the manifest
- * ever 302 to /signin, the service worker silently fails to register and the
- * installed app breaks.
+ * PWA assets MUST stay public. If sw.js, the workbox bundles, the custom
+ * push worker (`worker-<hash>.js`, built from worker/index.ts) or the manifest
+ * ever 302 to /signin, the service worker silently fails to register or
+ * import and the installed app breaks.
  */
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.svg|icons/|manifest|sw\\.js|workbox-|swe-worker-).*)",
+    "/((?!_next/static|_next/image|favicon.svg|icons/|manifest|sw\\.js|workbox-|swe-worker-|worker-).*)",
   ],
 };

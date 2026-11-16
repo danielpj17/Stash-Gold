@@ -1,0 +1,28 @@
+{
+  "synthetic": true,
+  "note": "You paid someone, funded by a card (D4: expense + transfer)",
+  "email": {
+    "gmailMessageId": "18c0000000000001",
+    "from": "Venmo <venmo@venmo.com>",
+    "to": "stash.inbox@example.com",
+    "subject": "You paid Alex Smith $20.00",
+    "date": "2026-11-15T19:05:00Z",
+    "plainBody": "You paid Alex Smith\n$20.00\nNote: pizza night\nPayment method: Visa Debit ••4821\nPayment ID: 0000000000000000000\nThis is an automated message from Venmo. Please don't reply.",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@venmo.com header.s=s1 header.b=AbC; spf=pass smtp.mailfrom=venmo@venmo.com; dmarc=pass (p=REJECT) header.from=venmo.com",
+      "X-Forwarded-For": "daniel@example.com"
+    }
+  },
+  "expect": {
+    "alert": {
+      "kind": "payment_sent",
+      "amountCents": 2000,
+      "counterparty": "Alex Smith",
+      "memo": "pizza night",
+      "fundingSource": {
+        "last4": "4821"
+      }
+    }
+  }
+}

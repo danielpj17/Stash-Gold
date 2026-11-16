@@ -1,8 +1,21 @@
 import { randomUUID } from "crypto";
 import { getDefaultAccountId } from "@/lib/accounts";
 import type { Sql } from "@/lib/db";
+import { EMAIL_SYNC_CONFIG } from "@/lib/email/config";
+import { loadScopeTimezone } from "@/lib/email/context";
+import { amountsCompatible } from "@/lib/email/decide";
+import { localDate } from "@/lib/email/occurredAt";
+import { isEmailSyncLive } from "@/lib/email/settings";
 
 export type TransactionKind = "expense" | "income" | "transfer";
+
+/**
+ * Who created a row. 'email' rows come only from lib/email/apply.ts; the web
+ * form writes 'manual' and the iOS Shortcut 'shortcut'. The Shortcut's
+ * per-minute rate guard counts only its own rows, so an email burst after an
+ * outage can't 429 it.
+ */
+export type TransactionSource = "manual" | "shortcut" | "csv";
 
 export type TransactionInput = {
   kind: TransactionKind;
@@ -166,8 +179,24 @@ const ENTERED_BY_FIELD = `
        THEN NULLIF(eb.name, '')
   END                                                              AS "enteredByName"`;
 
+/**
+ * Email-sync fields (plan §5.8). ADDITIVE: existing consumers and the match
+ * cache JSON ignore them. `reviewStatus` + `categorizedBy` are what every
+ * category display uses for the "unconfirmed" marker (D2): a row whose
+ * category no person chose is `needs_review`, or `categorizedBy = 'guess'`.
+ */
+const EMAIL_SYNC_FIELDS = `
+  t.source                                                         AS "source",
+  t.review_status                                                  AS "reviewStatus",
+  t.categorized_by                                                 AS "categorizedBy",
+  t.is_pending                                                     AS "isPending",
+  t.original_amount                                                AS "originalAmount",
+  t.auto_merged                                                    AS "autoMerged",
+  t.duplicate_of                                                   AS "duplicateOf",`;
+
 /** Columns aliased to the exact camelCase field names the client expects. */
 export const EXPENSE_SELECT_FIELDS = `
+${EMAIL_SYNC_FIELDS}
   t.id                                                             AS "rowId",
   to_char(t.occurred_at AT TIME ZONE 'UTC',
           'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')                         AS "timestamp",
@@ -181,6 +210,9 @@ ${ENTERED_BY_FIELD}
 `;
 
 export const TRANSFER_SELECT_FIELDS = `
+  t.source                                                         AS "source",
+  t.review_status                                                  AS "reviewStatus",
+  t.duplicate_of                                                   AS "duplicateOf",
   t.id                                                             AS "transferRowId",
   to_char(t.occurred_at AT TIME ZONE 'UTC',
           'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')                         AS "timestamp",
@@ -221,6 +253,7 @@ export async function insertTransaction(
   userId: string,
   input: TransactionInput,
   actorId: string,
+  opts: { source?: TransactionSource; duplicateOf?: string | null } = {},
 ): Promise<TransactionRow> {
   const id = randomUUID();
 
@@ -233,17 +266,28 @@ export async function insertTransaction(
   await sql`
     INSERT INTO transactions (
       id, user_id, entered_by, kind, occurred_at, amount,
-      category, description, account, transfer_from, transfer_to
+      category, description, account, transfer_from, transfer_to,
+      source, duplicate_of
     )
     VALUES (
       ${id}, ${userId}::uuid, ${actorId}::uuid,
       ${input.kind}, ${input.occurredAt}::timestamptz, ${input.amount},
       ${input.category}, ${input.description}, ${account},
-      ${input.transferFrom}, ${input.transferTo}
+      ${input.transferFrom}, ${input.transferTo},
+      ${opts.source ?? "manual"}, ${opts.duplicateOf ?? null}
     )
   `;
 
-  const fields = input.kind === "transfer" ? TRANSFER_SELECT_FIELDS : EXPENSE_SELECT_FIELDS;
+  return selectTransactionRow(sql, userId, id, input.kind);
+}
+
+export async function selectTransactionRow(
+  sql: Sql,
+  userId: string,
+  id: string,
+  kind: TransactionKind,
+): Promise<TransactionRow> {
+  const fields = kind === "transfer" ? TRANSFER_SELECT_FIELDS : EXPENSE_SELECT_FIELDS;
   const rows = (await sql(
     `SELECT ${fields}
      FROM transactions t
@@ -253,4 +297,184 @@ export async function insertTransaction(
   )) as TransactionRow[];
 
   return stripDateIfDisabled(rows[0] ?? { rowId: id });
+}
+
+/** What the client needs to offer "Keep both instead?" after an absorb. */
+export type AbsorbedEmail = {
+  transactionId: string;
+  /** The email row's description before the manual entry's replaced it. */
+  previousDescription: string;
+  merchantName: string | null;
+};
+
+export type InsertOrLinkResult = {
+  row: TransactionRow;
+  /** The manual entry answered a waiting email row instead of adding one (plan §5.7). */
+  absorbed: AbsorbedEmail | null;
+  /** Saved, but an already-confirmed email row looks like the same purchase. */
+  possibleDuplicateOf: string | null;
+};
+
+type EmailCandidate = {
+  id: string;
+  kind: string;
+  occurred_at: string | Date;
+  amount: string | number;
+  account: string | null;
+  transfer_from: string | null;
+  transfer_to: string | null;
+  review_status: string;
+  is_pending: boolean;
+  description: string;
+  merchant_id: string | null;
+  merchant_name: string | null;
+  claimed: boolean;
+};
+
+/**
+ * The manual-entry half of email dedupe (plan §5.7 "Manual entry saved AFTER
+ * the alert"). Both write routes call this; `insertTransaction` stays a plain
+ * insert.
+ *
+ * Runs only when this scope's email sync is LIVE. Kinds must match: an expense
+ * pairs with an expense and income with income (so a hand-logged paycheck
+ * isn't doubled by its deposit alert), and transfers with transfers (D4).
+ *
+ * Exactly one email row, ±2 days, same amount (or a tip/gas tolerance), on the
+ * same account or with the manual entry on the default:
+ *   - still needs_review → ABSORB: the manual entry IS the answer. No second
+ *     row; the response offers "Keep both instead?".
+ *   - already confirmed → save the manual row too, flagged as a possible
+ *     duplicate for To categorize.
+ */
+export async function insertOrLinkTransaction(
+  sql: Sql,
+  userId: string,
+  input: TransactionInput,
+  actorId: string,
+  opts: { source: TransactionSource; keepSeparate?: boolean },
+): Promise<InsertOrLinkResult> {
+  const plain = async (duplicateOf: string | null = null): Promise<InsertOrLinkResult> => ({
+    row: await insertTransaction(sql, userId, input, actorId, { source: opts.source, duplicateOf }),
+    absorbed: null,
+    possibleDuplicateOf: duplicateOf,
+  });
+  if (opts.keepSeparate) return plain();
+
+  let live = false;
+  try {
+    live = await isEmailSyncLive(sql, userId);
+  } catch {
+    live = false; // email sync not set up (migration 004 not applied): behave exactly as before
+  }
+  if (!live) return plain();
+
+  const [rows, defaultAccountId, timeZone] = await Promise.all([
+    sql`
+      SELECT t.id, t.kind, t.occurred_at, t.amount, t.account, t.transfer_from, t.transfer_to,
+             t.review_status, t.is_pending, t.description, t.merchant_id,
+             m.display_name AS merchant_name,
+             (
+               EXISTS (SELECT 1 FROM reconciliation_claim_links c
+                        WHERE c.user_id = t.user_id AND c.sheet_name = 'Expenses' AND c.sheet_row_id = t.id)
+               OR EXISTS (SELECT 1 FROM reconciliation_transfer_claim_links tc
+                           WHERE tc.user_id = t.user_id AND tc.transfer_sheet_row_id = t.id)
+             ) AS claimed
+        FROM transactions t
+        LEFT JOIN merchants m ON m.user_id = t.user_id AND m.id = t.merchant_id
+       WHERE t.user_id = ${userId}
+         AND t.source = 'email'
+         AND t.kind = ${input.kind}
+         AND t.duplicate_of IS NULL
+         AND t.occurred_at BETWEEN ${input.occurredAt}::timestamptz - interval '3 days'
+                               AND ${input.occurredAt}::timestamptz + interval '3 days'
+    ` as unknown as Promise<EmailCandidate[]>,
+    input.kind === "transfer" ? Promise.resolve(null) : getDefaultAccountId(sql, userId),
+    loadScopeTimezone(sql, userId),
+  ]);
+
+  const manualCents = Math.round(input.amount * 100);
+  const manualAccount = input.kind === "transfer" ? null : input.account ?? defaultAccountId;
+  const day = (iso: string | Date) =>
+    Date.parse(`${localDate(new Date(iso).toISOString(), timeZone)}T00:00:00Z`);
+  const manualDay = day(input.occurredAt);
+
+  const matches = rows.filter((r) => {
+    if (r.claimed) return false;
+    if (Math.abs(day(r.occurred_at) - manualDay) / 86_400_000 > EMAIL_SYNC_CONFIG.manualMatchWindowDays) {
+      return false;
+    }
+    const cents = Math.round(Number(r.amount) * 100);
+    if (input.kind === "transfer") {
+      const fromOk = r.transfer_from === null || r.transfer_from === input.transferFrom;
+      const toOk = r.transfer_to === null || r.transfer_to === input.transferTo;
+      return cents === manualCents && fromOk && toOk;
+    }
+    const accountOk =
+      manualAccount === null || r.account === manualAccount || manualAccount === defaultAccountId;
+    return accountOk && amountsCompatible(manualCents, cents, input.category, r.is_pending);
+  });
+  if (matches.length !== 1) return plain();
+  const match = matches[0];
+
+  if (match.review_status !== "needs_review") return plain(match.id);
+
+  if (input.kind === "transfer") {
+    // A transfer waiting on "Which Venmo account?": the manual entry names it.
+    const updated = (await sql`
+      UPDATE transactions
+         SET transfer_from = COALESCE(transfer_from, ${input.transferFrom}),
+             transfer_to = COALESCE(transfer_to, ${input.transferTo}),
+             review_status = 'confirmed',
+             reviewed_by = ${actorId}::uuid,
+             reviewed_at = now(),
+             updated_at = now()
+       WHERE user_id = ${userId} AND id = ${match.id} AND review_status = 'needs_review'
+      RETURNING id
+    `) as Array<{ id: string }>;
+    if (updated.length === 0) return plain();
+    return {
+      row: await selectTransactionRow(sql, userId, match.id, "transfer"),
+      absorbed: { transactionId: match.id, previousDescription: match.description, merchantName: null },
+      possibleDuplicateOf: null,
+    };
+  }
+
+  // Conditional on still being needs_review, so a spouse answering at the same
+  // moment wins cleanly and this falls back to a plain insert.
+  const category = input.category ?? "";
+  const description = input.description.trim();
+  const [updated] = await sql.transaction([
+    sql`
+      UPDATE transactions
+         SET category = ${category},
+             kind = ${input.kind},
+             categorized_by = 'user',
+             review_status = 'confirmed',
+             reviewed_by = ${actorId}::uuid,
+             reviewed_at = now(),
+             entered_by = COALESCE(entered_by, ${actorId}::uuid),
+             description = CASE WHEN ${description} <> '' THEN ${description} ELSE description END,
+             updated_at = now()
+       WHERE user_id = ${userId} AND id = ${match.id} AND review_status = 'needs_review'
+      RETURNING id
+    `,
+    // An answer becomes the merchant's default when it has none (plan §5.5).
+    sql`
+      UPDATE merchants
+         SET default_category = COALESCE(default_category, ${category})
+       WHERE user_id = ${userId} AND id = ${match.merchant_id}::uuid AND ${input.kind === "expense"}::boolean
+    `,
+  ]);
+  if (!Array.isArray(updated) || updated.length === 0) return plain();
+
+  return {
+    row: await selectTransactionRow(sql, userId, match.id, input.kind),
+    absorbed: {
+      transactionId: match.id,
+      previousDescription: match.description,
+      merchantName: match.merchant_name,
+    },
+    possibleDuplicateOf: null,
+  };
 }

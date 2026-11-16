@@ -28,6 +28,16 @@ export type FinancialAccount = {
   isDeleted: boolean;
   /** Present once the user has confirmed a CSV mapping for this account. */
   csvProfile: StoredCsvProfile | null;
+  /**
+   * Email sync routing (migration 005): which parser's alerts belong here, and
+   * the card's last four — or, for sources with no last four (Venmo), whose
+   * inbox forwards them. All null until set in Manage Accounts.
+   */
+  alertSource: string | null;
+  alertLast4: string | null;
+  alertForwardedFrom: string | null;
+  /** What an unanswered email purchase does after the timeout (migration 007). */
+  unattendedAction: "keep_in_review" | "auto_guess";
 };
 
 export type StoredCsvProfile = {
@@ -71,6 +81,10 @@ type AccountRow = {
   is_default: boolean;
   sort_order: number;
   deleted_at: string | null;
+  alert_source: string | null;
+  alert_last4: string | null;
+  alert_forwarded_from: string | null;
+  unattended_action: string | null;
   has_header: boolean | null;
   header_row_index: number | null;
   date_index: number | null;
@@ -97,6 +111,10 @@ function mapRow(row: AccountRow): FinancialAccount {
     isDefault: row.is_default === true,
     sortOrder: Number(row.sort_order ?? 0),
     isDeleted: row.deleted_at !== null,
+    alertSource: row.alert_source ?? null,
+    alertLast4: row.alert_last4 ?? null,
+    alertForwardedFrom: row.alert_forwarded_from ?? null,
+    unattendedAction: row.unattended_action === "auto_guess" ? "auto_guess" : "keep_in_review",
     csvProfile: hasProfile
       ? {
           hasHeader: row.has_header === true,
@@ -121,6 +139,7 @@ const SELECT_ACCOUNTS = (sql: Sql, userId: string) => sql`
   SELECT
     a.id, a.name, a.kind, a.opening_balance, a.is_active, a.is_default,
     a.sort_order, a.deleted_at,
+    a.alert_source, a.alert_last4, a.alert_forwarded_from, a.unattended_action,
     p.has_header, p.header_row_index, p.date_index, p.amount_index,
     p.description_index, p.debit_index, p.credit_index,
     p.outflow_is_positive, p.derive_date_from_description,

@@ -1,0 +1,19 @@
+{
+  "synthetic": true,
+  "note": "a Venmo-looking email without Venmo's DKIM is unauthenticated",
+  "email": {
+    "gmailMessageId": "18c0000000000001",
+    "from": "Venmo <venmo@venmo.com>",
+    "to": "stash.inbox@example.com",
+    "subject": "You paid Alex Smith $500.00",
+    "date": "2026-11-15T19:05:00Z",
+    "plainBody": "You paid Alex Smith $500.00\nPayment ID: 0000000000000000000\nThis is an automated message from Venmo. Please don't reply.",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@gmail.com; spf=pass"
+    }
+  },
+  "expect": {
+    "unauthenticated": true
+  }
+}

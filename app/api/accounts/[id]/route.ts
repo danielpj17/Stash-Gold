@@ -36,6 +36,11 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
     csvProfile?: Record<string, unknown> | null;
     /** Flip just this flag, leaving the mapping and match cache alone. */
     outflowIsPositive?: unknown;
+    /** Email sync routing. Send null to clear. */
+    alertSource?: unknown;
+    alertLast4?: unknown;
+    alertForwardedFrom?: unknown;
+    unattendedAction?: unknown;
   };
   try {
     body = (await request.json()) as typeof body;
@@ -83,6 +88,41 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
            WHERE user_id = ${userId} AND id = ${accountId}::uuid AND deleted_at IS NULL
         `,
       ]);
+    }
+
+    // Email alert routing (plan §5.4). Changing it touches no reconciliation
+    // state: it only decides which future alerts land here. A clash with
+    // another live account surfaces as a 409 from the partial unique index.
+    if (
+      body.alertSource !== undefined ||
+      body.alertLast4 !== undefined ||
+      body.alertForwardedFrom !== undefined
+    ) {
+      const text = (value: unknown, fallback: string | null) =>
+        value === undefined ? fallback : typeof value === "string" && value.trim() ? value.trim() : null;
+      const alertSource = text(body.alertSource, existing.alertSource);
+      const alertLast4 = text(body.alertLast4, existing.alertLast4);
+      const forwarded = text(body.alertForwardedFrom, existing.alertForwardedFrom);
+      if (alertLast4 !== null && !/^\d{4}$/.test(alertLast4)) {
+        return NextResponse.json({ error: "Last 4 must be exactly four digits." }, { status: 400 });
+      }
+      if (alertSource !== null && !/^[a-z0-9_]{1,40}$/.test(alertSource)) {
+        return NextResponse.json({ error: "Unknown alert source." }, { status: 400 });
+      }
+      await sql`
+        UPDATE financial_accounts
+           SET alert_source = ${alertSource},
+               alert_last4 = ${alertSource ? alertLast4 : null},
+               alert_forwarded_from = ${alertSource && forwarded ? forwarded.toLowerCase() : null}
+         WHERE user_id = ${userId} AND id = ${accountId}::uuid
+      `;
+    }
+
+    if (body.unattendedAction === "keep_in_review" || body.unattendedAction === "auto_guess") {
+      await sql`
+        UPDATE financial_accounts SET unattended_action = ${body.unattendedAction}
+         WHERE user_id = ${userId} AND id = ${accountId}::uuid
+      `;
     }
 
     // Unlike a remapping, this flag changes no hash (the parsed sign is never

@@ -7,6 +7,8 @@ type TokenSummary = {
   id: string;
   name: string;
   prefix: string;
+  /** Older servers omit it; every pre-purpose token is a Shortcut token. */
+  purpose?: "shortcut" | "email";
   createdAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
@@ -91,7 +93,12 @@ export default function ShortcutSetupCard() {
       const res = await fetch("/api/tokens", { cache: "no-store" });
       if (!res.ok) throw new Error(`Failed to load tokens (${res.status})`);
       const data = (await res.json()) as { tokens?: TokenSummary[] };
-      setTokens(Array.isArray(data.tokens) ? data.tokens : []);
+      // Email-sync keys live in Settings → Email sync; this card is the Shortcut's.
+      setTokens(
+        Array.isArray(data.tokens)
+          ? data.tokens.filter((t) => (t.purpose ?? "shortcut") === "shortcut")
+          : [],
+      );
       setError("");
     } catch (err) {
       setTokens((prev) => prev ?? []);
@@ -112,7 +119,7 @@ export default function ShortcutSetupCard() {
       const res = await fetch("/api/tokens", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "iOS Shortcut" }),
+        body: JSON.stringify({ name: "iOS Shortcut", purpose: "shortcut" }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error ?? `Failed to create token (${res.status})`);

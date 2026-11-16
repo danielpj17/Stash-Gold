@@ -1,16 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listAccounts } from "@/lib/accounts";
 import { isErrorResponse, requireUser } from "@/lib/apiAuth";
-import { insertTransaction, parseTransactionInput } from "@/lib/transactions";
+import { insertOrLinkTransaction, parseTransactionInput } from "@/lib/transactions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Cheap abuse guard without Redis: count recent inserts in this data scope.
- * Household-wide rather than per-person, because it protects the database
- * rather than arbitrating between two spouses — and `user_id` is the indexed
- * column. 30/min is far above two people's real usage either way.
+ * Cheap abuse guard without Redis: count recent Shortcut inserts in this data
+ * scope. Household-wide rather than per-person, because it protects the
+ * database rather than arbitrating between two spouses — and `user_id` is the
+ * indexed column. 30/min is far above two people's real usage either way.
+ *
+ * Only `source = 'shortcut'` rows count: email sync can write a burst after an
+ * outage, and that must not 429 the Shortcut.
  */
 const MAX_PER_MINUTE = 30;
 
@@ -27,7 +30,7 @@ const MAX_PER_MINUTE = 30;
  * sends, so migrating it means changing the URL and adding one header.
  */
 export async function POST(request: NextRequest) {
-  const ctx = await requireUser(request, { allowBearer: true });
+  const ctx = await requireUser(request, { bearerPurpose: "shortcut" });
   if (isErrorResponse(ctx)) return ctx;
   const { sql, userId, actorId, via } = ctx;
 
@@ -54,7 +57,7 @@ export async function POST(request: NextRequest) {
     const recent = (await sql`
       SELECT count(*)::int AS n
       FROM transactions
-      WHERE user_id = ${userId} AND created_at > now() - interval '1 minute'
+      WHERE user_id = ${userId} AND source = 'shortcut' AND created_at > now() - interval '1 minute'
     `) as Array<{ n: number }>;
     if (Number(recent[0]?.n ?? 0) >= MAX_PER_MINUTE) {
       return NextResponse.json(
@@ -81,14 +84,22 @@ export async function POST(request: NextRequest) {
 
     // actorId is the token's owner, so in a shared household each spouse's
     // Shortcut attributes to them without the Shortcut sending anything extra.
-    const row = await insertTransaction(sql, userId, parsed, actorId);
+    //
+    // When email sync is live and a card alert already recorded this purchase,
+    // the Shortcut entry answers it instead of adding a second row (plan §5.7).
+    const result = await insertOrLinkTransaction(sql, userId, parsed, actorId, { source: "shortcut" });
+    const row = result.row;
     return NextResponse.json(
       {
         id: row.rowId ?? row.transferRowId ?? null,
         kind: parsed.kind,
         amount: parsed.amount,
         occurredAt: parsed.occurredAt,
+        matchedCardAlert: result.absorbed !== null,
+        possibleDuplicate: result.possibleDuplicateOf !== null,
       },
+      // Always 201, even when it answered a card alert: the existing Shortcut
+      // may key on the status code, and from its side the log succeeded.
       { status: 201 },
     );
   } catch (err) {

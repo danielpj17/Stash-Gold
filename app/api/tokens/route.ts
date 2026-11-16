@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateIngestToken, isErrorResponse, requireUser } from "@/lib/apiAuth";
+import {
+  generateIngestToken,
+  isErrorResponse,
+  isTokenPurpose,
+  requireUser,
+  type TokenPurpose,
+} from "@/lib/apiAuth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,6 +14,7 @@ type TokenRow = {
   id: string;
   name: string;
   prefix: string;
+  purpose: TokenPurpose;
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
@@ -18,6 +25,7 @@ function mapRow(row: TokenRow) {
     id: row.id,
     name: row.name,
     prefix: row.prefix,
+    purpose: row.purpose,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
     revokedAt: row.revoked_at,
@@ -50,7 +58,7 @@ export async function GET() {
     // token_hash is never selected — there is nothing useful to do with it and
     // no reason for it to leave the database.
     const rows = (await sql`
-      SELECT id, name, prefix, created_at, last_used_at, revoked_at
+      SELECT id, name, prefix, purpose, created_at, last_used_at, revoked_at
       FROM user_tokens
       WHERE user_id = ${actorId}
       ORDER BY created_at DESC
@@ -70,20 +78,27 @@ export async function POST(request: NextRequest) {
   if (isErrorResponse(ctx)) return ctx;
   const { sql, actorId } = ctx;
 
-  let body: { name?: unknown } = {};
+  let body: { name?: unknown; purpose?: unknown } = {};
   try {
-    body = (await request.json()) as { name?: unknown };
+    body = (await request.json()) as { name?: unknown; purpose?: unknown };
   } catch {
     // A nameless token is fine; fall through to the default.
   }
-  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "iOS Shortcut";
+  // Absent means the Shortcut, which is what every caller sent before purposes
+  // existed. Anything else unrecognised is a mistake worth surfacing.
+  if (body.purpose !== undefined && !isTokenPurpose(body.purpose)) {
+    return NextResponse.json({ error: "purpose must be 'shortcut' or 'email'" }, { status: 400 });
+  }
+  const purpose: TokenPurpose = isTokenPurpose(body.purpose) ? body.purpose : "shortcut";
+  const fallbackName = purpose === "email" ? "Gmail poller" : "iOS Shortcut";
+  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : fallbackName;
 
   try {
     const { raw, hash, prefix } = generateIngestToken();
     const rows = (await sql`
-      INSERT INTO user_tokens (user_id, name, token_hash, prefix)
-      VALUES (${actorId}::uuid, ${name}, ${hash}, ${prefix})
-      RETURNING id, name, prefix, created_at, last_used_at, revoked_at
+      INSERT INTO user_tokens (user_id, name, token_hash, prefix, purpose)
+      VALUES (${actorId}::uuid, ${name}, ${hash}, ${prefix}, ${purpose})
+      RETURNING id, name, prefix, purpose, created_at, last_used_at, revoked_at
     `) as TokenRow[];
 
     // The only time the raw token is ever returned. Only its hash is stored.

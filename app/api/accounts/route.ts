@@ -23,7 +23,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   const ctx = await requireUser();
   if (isErrorResponse(ctx)) return ctx;
-  const { sql, userId } = ctx;
+  const { sql, userId, actorId } = ctx;
 
   let body: { name?: unknown; kind?: unknown; openingBalance?: unknown };
   try {
@@ -74,6 +74,21 @@ export async function POST(request: NextRequest) {
       )
       RETURNING id
     `) as Array<{ id: string }>;
+
+    // A new account notifies only whoever created it (plan §5.9). Actor-scoped
+    // on purpose, like push_subscriptions. Best-effort: a database without
+    // migration 007 still creates accounts.
+    if (rows[0]?.id) {
+      try {
+        await sql`
+          INSERT INTO notification_prefs (user_id, account_id, enabled)
+          VALUES (${actorId}::uuid, ${rows[0].id}::uuid, true)
+          ON CONFLICT (user_id, account_id) DO NOTHING
+        `;
+      } catch {
+        /* notification_prefs not migrated yet */
+      }
+    }
 
     const accounts = await listAccounts(sql, userId);
     return NextResponse.json(

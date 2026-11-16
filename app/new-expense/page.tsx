@@ -5,8 +5,14 @@ import DashboardLayout from "@/components/DashboardLayout";
 import GlassDropdown from "@/components/GlassDropdown";
 import NumberField from "@/components/NumberField";
 import ShortcutSetupCard from "@/components/ShortcutSetupCard";
+import CategorizeBanner from "@/components/CategorizeBanner";
 import { useRefresh } from "@/contexts/RefreshContext";
-import { submitExpense } from "@/services/transactionsApi";
+import {
+  keepBothTransactions,
+  submitExpense,
+  type ExpensePayload,
+  type MatchedEmail,
+} from "@/services/transactionsApi";
 import { EXPENSE_TYPE_OPTIONS } from "@/lib/constants";
 import { Loader2, Settings } from "lucide-react";
 import Link from "next/link";
@@ -22,6 +28,28 @@ export default function NewExpensePage() {
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<"idle" | "submitting" | "success" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState("");
+  /**
+   * Set when the entry answered a card alert instead of adding a row (email
+   * sync, plan §5.7). Holds what was posted so "Keep both" can re-post it.
+   */
+  const [matched, setMatched] = useState<{ email: MatchedEmail; payload: ExpensePayload } | null>(null);
+  const [possibleDuplicate, setPossibleDuplicate] = useState(false);
+  const [keepingBoth, setKeepingBoth] = useState(false);
+
+  const handleKeepBoth = async () => {
+    if (!matched) return;
+    setKeepingBoth(true);
+    try {
+      await keepBothTransactions(matched.email.transactionId, matched.payload, matched.email.previousDescription);
+      triggerRefresh();
+      setMatched(null);
+    } catch (err) {
+      setStatus("error");
+      setErrorMessage(err instanceof Error ? err.message : "Failed to keep both.");
+    } finally {
+      setKeepingBoth(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,12 +61,17 @@ export default function NewExpensePage() {
     }
     setStatus("submitting");
     setErrorMessage("");
+    setMatched(null);
+    setPossibleDuplicate(false);
     try {
-      await submitExpense({
+      const payload: ExpensePayload = {
         expenseType,
         amount: num,
         description: description.trim(),
-      });
+      };
+      const saved = await submitExpense(payload);
+      if (saved.matchedEmail) setMatched({ email: saved.matchedEmail, payload });
+      setPossibleDuplicate(Boolean(saved.possibleDuplicateOf));
       triggerRefresh();
       setStatus("success");
       setAmount("");
@@ -76,6 +109,8 @@ export default function NewExpensePage() {
             <Settings className="w-5 h-5" />
           </Link>
         </div>
+
+        <CategorizeBanner />
 
         <div className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden">
           <div className="px-4 py-3 bg-[#353535] border-b border-charcoal-dark">
@@ -133,8 +168,30 @@ export default function NewExpensePage() {
             {status === "error" && (
               <p className="text-sm text-red-400">{errorMessage}</p>
             )}
-            {status === "success" && (
-              <p className="text-sm text-accent">Saved. Dashboard will reflect the new transaction.</p>
+            {status === "success" && !matched && (
+              <p className="text-sm text-accent">
+                Saved. Dashboard will reflect the new transaction.
+                {possibleDuplicate && (
+                  <span className="block text-xs text-yellow-200/90 mt-1">
+                    A card alert for the same amount was already filed — both are listed under Possible duplicates in
+                    To categorize.
+                  </span>
+                )}
+              </p>
+            )}
+            {status === "success" && matched && (
+              <div className="text-sm rounded-lg border border-[#50C878]/40 bg-[#50C878]/10 px-3 py-2 text-gray-100">
+                Matched your card alert
+                {matched.email.merchantName ? ` (${matched.email.merchantName})` : ""} — filed it, no second entry.{" "}
+                <button
+                  type="button"
+                  disabled={keepingBoth}
+                  onClick={() => void handleKeepBoth()}
+                  className="underline text-[#50C878] hover:brightness-110 disabled:opacity-50"
+                >
+                  {keepingBoth ? "Keeping both…" : "Keep both instead?"}
+                </button>
+              </div>
             )}
 
             <div className="flex gap-3 pt-2">

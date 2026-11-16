@@ -4,6 +4,7 @@ import {
   EXPENSE_SELECT_FIELDS,
   TRANSACTION_JOINS,
   TRANSFER_SELECT_FIELDS,
+  insertOrLinkTransaction,
   insertTransaction,
   parseTransactionInput,
   stripDateIfDisabled,
@@ -81,8 +82,35 @@ export async function POST(request: NextRequest) {
   try {
     // Returning the created row (with its id) is what lets the reconcile page
     // drop its old poll-and-diff loop for discovering the new row.
-    const row = await insertTransaction(sql, userId, parsed, actorId);
-    return NextResponse.json(row, { status: 201 });
+    //
+    // insertOrLinkTransaction is a plain insert unless email sync is live and a
+    // card alert already recorded this purchase (plan §5.7). The extra fields
+    // are additive: callers that only read the row are unaffected.
+    //
+    // Reconcile's Quick Add sends `source: "csv"`: it creates an entry FOR a
+    // statement line and claims it straight away, so it must always insert a
+    // new row — absorbing into an email row would hand back a different row
+    // (and amount) than the claim it's about to write expects.
+    const raw = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+    const fromReconcile = raw.source === "csv";
+    const result = fromReconcile
+      ? {
+          row: await insertTransaction(sql, userId, parsed, actorId, { source: "csv" }),
+          absorbed: null,
+          possibleDuplicateOf: null,
+        }
+      : await insertOrLinkTransaction(sql, userId, parsed, actorId, {
+          source: "manual",
+          keepSeparate: raw.keepSeparate === true,
+        });
+    return NextResponse.json(
+      {
+        ...result.row,
+        matchedEmail: result.absorbed,
+        possibleDuplicateOf: result.possibleDuplicateOf,
+      },
+      { status: result.absorbed ? 200 : 201 },
+    );
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to save transaction" },
