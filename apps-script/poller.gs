@@ -16,7 +16,7 @@
  * labelling the thread after the first would silently skip the rest.
  */
 
-var POLLER_VERSION = '1';
+var POLLER_VERSION = '2';
 var LABEL_PROCESSED = 'stash-processed';
 var LABEL_REJECTED = 'stash-rejected';
 var MAX_PER_RUN = 25;
@@ -149,16 +149,39 @@ function header_(headers, name) {
   return null;
 }
 
-/** Decode one MIME part's body, honouring its charset. */
+/**
+ * Decode one MIME part's body, honouring its charset. Never throws: a body
+ * that can't be decoded becomes '' (Stash records it as "Couldn't read")
+ * rather than aborting the run and blocking every message behind it.
+ *
+ * The Advanced Gmail service usually hands `body.data` back ALREADY DECODED,
+ * as a byte array — base64-decoding that again fails with "Could not decode
+ * string" (poller v1's bug). Handle both shapes.
+ */
 function decodePart_(part) {
   if (!part.body || !part.body.data) return '';
-  var bytes = Utilities.base64DecodeWebSafe(part.body.data);
+  var data = part.body.data;
+  var bytes;
+  try {
+    if (typeof data === 'string') {
+      while (data.length % 4) data += '='; // base64url is often unpadded
+      bytes = Utilities.base64DecodeWebSafe(data);
+    } else {
+      bytes = data; // already a byte array
+    }
+  } catch (e) {
+    return '';
+  }
   var type = header_(part.headers || [], 'Content-Type') || '';
   var charset = (/charset="?([^";\s]+)"?/i.exec(type) || [])[1] || 'UTF-8';
   try {
     return Utilities.newBlob(bytes).getDataAsString(charset);
   } catch (e) {
-    return Utilities.newBlob(bytes).getDataAsString('UTF-8');
+    try {
+      return Utilities.newBlob(bytes).getDataAsString('UTF-8');
+    } catch (e2) {
+      return '';
+    }
   }
 }
 
