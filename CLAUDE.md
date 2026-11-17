@@ -312,14 +312,21 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   `public/sw.js`. There is no service worker in `next dev`, so push is tested
   on a deployed build. The unattended settle (`lib/email/unattended.ts`) runs
   from the poller heartbeat and on every queue read — there is no cron.
-  A notification tap reaches its screen through
-  `components/NotificationNavigator.tsx`, **not** `WindowClient.navigate()` —
-  iOS brings a backgrounded Home Screen app forward and ignores the navigate.
+  A notification tap reaches its screen through the notification's own
+  **`navigate` URL** (set in the worker's `showNotification`): the browser
+  opens it with no worker code. That is the only thing that works on iOS when
+  Stash is already running in the background — iOS never delivers
+  `notificationclick` to a running app's worker (WebKit bug 268797), it just
+  brings the app forward on its old page. Supported on iOS/Safari 18.5+ and
+  Firefox 158+. Where it isn't (Chrome, older iOS), the tap falls through to
+  `notificationclick` and `components/NotificationNavigator.tsx`, **not**
+  `WindowClient.navigate()`, which iOS ignores.
   The worker tells the page three ways (a message to every window, a record in
   the `stash-nav` Cache Storage entry the page reads directly, and a pull),
   and the page re-checks for ~5s after each return to the foreground, because
-  iOS can wake it before the worker has handled the tap — the one-check
-  version left a backgrounded app where it was. `stash-nav` holds one path, not a
+  iOS can wake it before the worker has handled the tap. (Neither this nor
+  the earlier one-check version could fix a backgrounded iOS app — the tap
+  never reaches the worker there; only `navigate` does.) `stash-nav` holds one path, not a
   response — it is not runtime caching, and sign-out's purge clears it.
 
 ### State Management

@@ -61,20 +61,42 @@ function readPayload(event: PushEventLike): PushPayload {
   }
 }
 
+/** The notification's screen as an absolute same-origin URL — never anywhere else. */
+function screenUrl(url: string | undefined): string {
+  const fallback = new URL("/categorize", sw.location.origin);
+  try {
+    const target = new URL(url || "/categorize", sw.location.origin);
+    return target.origin === sw.location.origin ? target.href : fallback.href;
+  } catch {
+    return fallback.href;
+  }
+}
+
 /**
  * ALWAYS show a notification. iOS revokes a subscription that receives pushes
  * without a visible notification, so there are no silent or data-only pushes.
  * `tag` = the transaction id, so a repeat replaces rather than stacks.
+ *
+ * `navigate` is what makes a tap open ITS screen on iOS when Stash is already
+ * running in the background. There, iOS never delivers `notificationclick` to
+ * the running app's worker (WebKit bug 268797, open since 2024): it just brings
+ * the app forward on its old page, so nothing below can help. A notification
+ * with a `navigate` URL is opened by the browser itself and skips
+ * `notificationclick` entirely (Notifications spec, "activating a
+ * notification"). Supported on iOS/Safari 18.5+ and Firefox 158+; Chrome
+ * ignores the option and still fires `notificationclick`, handled below.
  */
 sw.addEventListener("push", (event) => {
   const payload = readPayload(event);
+  const url = screenUrl(payload.url);
   event.waitUntil(
     sw.registration.showNotification(payload.title || "Stash", {
       body: payload.body || "You have a purchase to categorize.",
       tag: payload.tag || "stash",
       icon: "/icons/icon-192.png",
       badge: "/icons/icon-192.png",
-      data: { url: payload.url || "/categorize" },
+      navigate: url,
+      data: { url },
     }),
   );
 });
@@ -82,6 +104,10 @@ sw.addEventListener("push", (event) => {
 /*
  * Tapping a notification must land on ITS screen (/categorize/<id>), whether
  * Stash was closed, backgrounded, or open on another page.
+ *
+ * Where `navigate` (above) is supported, a tap never reaches this handler.
+ * It remains for Chrome and for iOS before 18.5 — and on iOS it only works
+ * from a cold start, since a running app's worker never sees the tap.
  *
  * WindowClient.navigate() can't be relied on for that: iOS brings the
  * backgrounded Home Screen app forward and silently leaves it on whatever page

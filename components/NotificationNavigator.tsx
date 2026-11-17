@@ -4,9 +4,15 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 /*
- * The page half of "tap a notification → land on its screen". The service
- * worker (worker/index.ts) can't reliably navigate a backgrounded iOS Home
- * Screen app, so it tells the page where to go and the page goes there itself.
+ * The FALLBACK page half of "tap a notification → land on its screen".
+ * Where the browser supports a notification's `navigate` URL (iOS/Safari
+ * 18.5+, Firefox 158+) it opens the screen itself and none of this runs — and
+ * on iOS that is the only thing that works for an app already running in the
+ * background, whose worker never sees the tap (WebKit bug 268797). This covers
+ * Chrome and older iOS, where `notificationclick` still fires.
+ *
+ * The service worker (worker/index.ts) can't reliably navigate a backgrounded
+ * Home Screen app, so it tells the page where to go and the page goes there itself.
  * It is told three ways, and whichever arrives first wins:
  *
  *   - the worker posts { type: NAV, id, url } to the open window(s);
