@@ -1,0 +1,19 @@
+{
+  "synthetic": true,
+  "note": "The real credit card purchase layout with 'debit card' in it. A debit card's number isn't the checking account's, so v2 leaves it Couldn't read rather than route it by last four.",
+  "email": {
+    "gmailMessageId": "fixturewfdebit001",
+    "from": "Wells Fargo <alerts@notify.wellsfargo.com>",
+    "to": "stash.inbox@example.com",
+    "subject": "You made a purchase over $1.00",
+    "date": "2026-11-16T15:00:00Z",
+    "plainBody": "You made a purchase of $12.34\nwith debit card ...3333\nGo to accounts\nMerchant: EXAMPLE STORE in SPRINGFIELD, IL, USA\nDate: 11/16/2026\nThank you for choosing Wells Fargo.",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@notify.wellsfargo.com header.s=wfb1 header.b=\"AbC123\"; spf=pass smtp.mailfrom=alerts@notify.wellsfargo.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=wellsfargo.com"
+    }
+  },
+  "expect": {
+    "unparsed": true
+  }
+}

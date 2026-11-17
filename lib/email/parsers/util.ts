@@ -98,6 +98,16 @@ export function valueAfterLabel(text: string, label: RegExp): string | null {
   return null;
 }
 
+/**
+ * Drop *emphasis* asterisks around words. A plain-text rendering of an HTML
+ * alert (Gmail's, at least) turns bold labels into "*Payment amount:*", which
+ * would otherwise hide the label from a parser. Masked digits ("****1234")
+ * are left alone: only asterisks touching a letter or label punctuation go.
+ */
+export function stripEmphasis(text: string): string {
+  return text.replace(/\*+(?=[A-Za-z])/g, "").replace(/([A-Za-z:.)])\*+/g, "$1");
+}
+
 /** Collapse whitespace and strip surrounding punctuation from a captured name. */
 export function cleanName(raw: string): string {
   return raw.replace(/\s+/g, " ").replace(/^[\s"'“”‘’:,-]+|[\s"'“”‘’:,.-]+$/g, "").trim();

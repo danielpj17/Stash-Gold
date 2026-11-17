@@ -1,0 +1,27 @@
+{
+  "note": "REAL 'We've received your payment' as a plain-text rendering (*Posted date:*), scrubbed",
+  "email": {
+    "gmailMessageId": "fixturec1payplain",
+    "from": "Capital One | VentureOne <capitalone@notification.capitalone.com>",
+    "to": "stash.inbox@example.com",
+    "subject": "We've received your payment",
+    "date": "2026-09-18T19:11:08Z",
+    "plainBody": "View your payment details.\n[image: Sign in to your account]\nVentureOne Credit Card...4444\nThanks for your payment of $7.89\nPERSON,\nHere are the details of your payment:\n*Payment amount:*\n\n$7.89\n*Posted date:*\n\nSeptember 17, 2026\nYour available credit will typically be updated within a day of your\npayment posted date, but it can sometimes take longer.\nView more information about payment posting and available credit timelines.",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@notification.capitalone.com header.s=s1 header.b=AbC123; spf=pass smtp.mailfrom=bounce@notification.capitalone.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=capitalone.com",
+      "X-Forwarded-For": "you@example.com"
+    }
+  },
+  "expect": {
+    "alert": {
+      "kind": "transfer",
+      "transferDirection": "in",
+      "amountCents": 789,
+      "accountHint": {
+        "last4": "4444"
+      },
+      "occurredDate": "2026-09-17"
+    }
+  }
+}

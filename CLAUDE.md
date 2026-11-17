@@ -272,9 +272,11 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
 - **Parsers** live in `lib/email/parsers/`, registered in `lib/email/registry.ts`,
   each with fixtures under `__fixtures__/`. Bank parsers are added one at a
   time from real, scrubbed alerts (`npm run email:export`); the Venmo parser's
-  v1 was written before real samples existed. Wells Fargo v1 reads Bill Pay,
-  "You made a payment" and online transfers only; its purchase / withdrawal /
-  deposit alerts are `unparsed` until real samples exist. `capitalone` reads
+  v1 was written before real samples existed. Wells Fargo reads credit card
+  purchases, Bill Pay, "You made a payment" and online transfers; its debit
+  card, withdrawal and deposit alerts are `unparsed` until real samples exist
+  (a debit card has its own number, not the checking account's, so it can't
+  simply route by last 4). `capitalone` reads
   Capital One **and Discover** (Capital One owns it; same sender, same
   template) — purchases, "payment received", and ignores scheduled payments.
   A hand-forwarded alert (Forward pressed by hand) is always
@@ -310,10 +312,15 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   `public/sw.js`. There is no service worker in `next dev`, so push is tested
   on a deployed build. The unattended settle (`lib/email/unattended.ts`) runs
   from the poller heartbeat and on every queue read — there is no cron.
-  A notification tap reaches its screen through a message handshake with
-  `components/NotificationNavigator.tsx` (push to the focused window, plus a
-  pull on load/foreground), **not** `WindowClient.navigate()` — iOS brings a
-  backgrounded Home Screen app forward and ignores the navigate.
+  A notification tap reaches its screen through
+  `components/NotificationNavigator.tsx`, **not** `WindowClient.navigate()` —
+  iOS brings a backgrounded Home Screen app forward and ignores the navigate.
+  The worker tells the page three ways (a message to every window, a record in
+  the `stash-nav` Cache Storage entry the page reads directly, and a pull),
+  and the page re-checks for ~5s after each return to the foreground, because
+  iOS can wake it before the worker has handled the tap — the one-check
+  version left a backgrounded app where it was. `stash-nav` holds one path, not a
+  response — it is not runtime caching, and sign-out's purge clears it.
 
 ### State Management
 

@@ -26,7 +26,7 @@ type ServiceWorkerScope = {
   };
   clients: {
     matchAll(options: { type: "window"; includeUncontrolled: boolean }): Promise<WindowClientLike[]>;
-    openWindow(url: string): Promise<unknown>;
+    openWindow(url: string): Promise<WindowClientLike | null>;
   };
   location: { origin: string };
   addEventListener(type: "push", listener: (event: PushEventLike) => void): void;
@@ -37,6 +37,7 @@ type ServiceWorkerScope = {
 type MessageEventLike = {
   data: unknown;
   source: { postMessage(message: unknown): void } | null;
+  waitUntil?(promise: Promise<unknown>): void;
 };
 
 type PushEventLike = {
@@ -85,28 +86,69 @@ sw.addEventListener("push", (event) => {
  * WindowClient.navigate() can't be relied on for that: iOS brings the
  * backgrounded Home Screen app forward and silently leaves it on whatever page
  * it was showing (it also rejects for a client the SW doesn't control). So the
- * page navigates ITSELF — components/NotificationNavigator.tsx — told two ways:
+ * page navigates ITSELF — components/NotificationNavigator.tsx — told three
+ * ways, because on iOS no single one is reliable for a backgrounded app:
  *
- *   1. push: focus the open window and postMessage it the path;
- *   2. pull: the page asks on load and whenever it becomes visible, which
- *      covers a cold start (iOS may open start_url instead of the URL given to
- *      openWindow) and a page iOS reloaded while it was suspended.
+ *   1. push: focus the open window(s) and postMessage the path;
+ *   2. record: write it to Cache Storage (NAV_CACHE), which the page reads
+ *      DIRECTLY — no message, no worker needed. This is what survives iOS
+ *      stopping the worker (in-memory state is lost) and a message that never
+ *      reaches a page that is only just waking up;
+ *   3. pull: the page asks on load and whenever it comes back to the
+ *      foreground.
  *
- * The page acks with NAV_DONE, which clears the pending path, so a later
- * foreground can't replay an old tap.
+ * iOS can wake the page BEFORE it runs this handler, so the page re-checks for
+ * a few seconds after each return to the foreground rather than once — a
+ * single check could run before anything was pending, which is how a
+ * backgrounded app stayed where it was.
+ *
+ * NAV_CACHE holds one short-lived path, not a response: it is unrelated to
+ * `runtimeCaching: []`, and sign-out's Cache Storage purge clears it too.
+ * The page acks with NAV_DONE (and deletes the record itself), so a later
+ * foreground can't replay an old tap; entries also expire after a minute.
  */
 const NAV = "stash:navigate";
 const NAV_PULL = "stash:pending-navigation";
 const NAV_DONE = "stash:navigated";
+const NAV_CACHE = "stash-nav";
+const NAV_KEY = "/__stash/pending-navigation";
 const PENDING_TTL_MS = 60_000;
 
-let pendingNav: { url: string; at: number } | null = null;
+type PendingNav = { id: string; url: string; at: number };
+
+let pendingNav: PendingNav | null = null;
 let pendingSettled: (() => void) | null = null;
 
-function takePendingNav(): string | null {
-  const p = pendingNav;
+function isFresh(p: PendingNav | null): p is PendingNav {
+  return !!p && typeof p.url === "string" && p.url.startsWith("/") && Date.now() - p.at < PENDING_TTL_MS;
+}
+
+async function recordPendingNav(p: PendingNav): Promise<void> {
+  try {
+    const cache = await caches.open(NAV_CACHE);
+    await cache.put(NAV_KEY, new Response(JSON.stringify(p), { headers: { "Content-Type": "application/json" } }));
+  } catch {
+    // The in-memory copy and the messages still work.
+  }
+}
+
+async function readPendingNav(): Promise<PendingNav | null> {
+  if (pendingNav) return pendingNav;
+  try {
+    const res = await caches.match(NAV_KEY, { cacheName: NAV_CACHE });
+    return res ? ((await res.json()) as PendingNav) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function clearPendingNav(): Promise<void> {
   pendingNav = null;
-  return p && Date.now() - p.at < PENDING_TTL_MS ? p.url : null;
+  try {
+    await caches.delete(NAV_CACHE);
+  } catch {
+    // Expires anyway.
+  }
 }
 
 /** Keep the worker (and `pendingNav`) alive until the page acks, or give up. */
@@ -127,40 +169,55 @@ function untilHandled(ms: number): Promise<void> {
 sw.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const target = new URL(event.notification.data?.url || "/categorize", sw.location.origin);
-  const path = target.pathname + target.search + target.hash;
-  pendingNav = { url: path, at: Date.now() };
+  const nav: PendingNav = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    url: target.pathname + target.search + target.hash,
+    at: Date.now(),
+  };
+  pendingNav = nav;
+  // Not awaited first: focus() should run while the tap is still fresh.
+  const recorded = recordPendingNav(nav);
   event.waitUntil(
     (async () => {
       try {
-        const windows = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
-        const existing = windows.find((w) => w.url.startsWith(sw.location.origin));
-        if (existing) {
+        const windows = (await sw.clients.matchAll({ type: "window", includeUncontrolled: true })).filter((w) =>
+          w.url.startsWith(sw.location.origin),
+        );
+        if (windows.length > 0) {
           try {
-            await existing.focus();
+            await windows[0].focus();
           } catch {
-            // Focus can be refused; the message below still lands when it's shown.
+            // Focus can be refused; the message and the record still land.
           }
-          existing.postMessage({ type: NAV, url: path });
+          // Every window: on iOS the one that comes forward isn't always first.
+          for (const w of windows) w.postMessage({ type: NAV, ...nav });
         } else {
-          await sw.clients.openWindow(target.href);
+          const opened = await sw.clients.openWindow(target.href);
+          opened?.postMessage({ type: NAV, ...nav });
         }
       } catch {
-        // Fall through: the page pulls `pendingNav` when it loads.
+        // Fall through: the page reads the record / pulls when it shows.
       }
+      await recorded;
       await untilHandled(15_000);
     })(),
   );
 });
 
 sw.addEventListener("message", (event) => {
-  const data = event.data as { type?: unknown } | null;
+  const data = event.data as { type?: unknown; id?: unknown } | null;
   if (!data || typeof data !== "object") return; // not ours (next-pwa posts its own)
   if (data.type === NAV_PULL) {
-    const url = takePendingNav();
-    if (url) event.source?.postMessage({ type: NAV, url });
+    const reply = readPendingNav().then((p) => {
+      if (isFresh(p)) event.source?.postMessage({ type: NAV, ...p });
+    });
+    event.waitUntil?.(reply);
   } else if (data.type === NAV_DONE) {
-    pendingNav = null;
-    pendingSettled?.();
+    // Only the tap that was handled — a newer one may be on its way.
+    if (!pendingNav || data.id === undefined || data.id === pendingNav.id) {
+      event.waitUntil?.(clearPendingNav());
+      pendingSettled?.();
+    }
   }
 });
 

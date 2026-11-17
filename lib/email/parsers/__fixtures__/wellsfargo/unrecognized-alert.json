@@ -1,6 +1,6 @@
 {
   "synthetic": true,
-  "note": "A money alert v1 doesn't know (no real purchase/withdrawal sample yet) is Couldn't read, never a guess",
+  "note": "A money alert this version doesn't know (no real withdrawal sample yet) is Couldn't read, never a guess",
   "email": {
     "to": "stash.inbox@example.com",
     "plainBody": "",

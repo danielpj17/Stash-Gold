@@ -1,5 +1,5 @@
 import type { NormalizedEmail, ParseResult, Parser } from "@/lib/email/types";
-import { cleanName, findDate, findLast4, moneyToCents } from "@/lib/email/parsers/util";
+import { cleanName, findDate, findLast4, moneyToCents, stripEmphasis } from "@/lib/email/parsers/util";
 
 /**
  * Capital One — and Discover, which Capital One now owns. Discover cards'
@@ -8,7 +8,8 @@ import { cleanName, findDate, findLast4, moneyToCents } from "@/lib/email/parser
  * so one parser reads both and the last four tells the cards apart.
  *
  * Version 1 (2026-11-16) is written from real alerts — see the `real-*`
- * fixtures:
+ * fixtures. Version 2 also reads a plain-text rendering, where bold labels
+ * arrive as "*Posted date:*":
  *
  *   "A new transaction was charged to your account"   purchase (pending)
  *       "As requested, we're notifying you that on Nov. 16, 2026, at
@@ -86,7 +87,8 @@ function parsePaymentReceived(text: string): ParseResult {
 
 export function parseCapitalOne(email: NormalizedEmail): ParseResult {
   const subject = email.subject.trim();
-  const text = email.text;
+  // A plain-text rendering shows bold labels as "*Posted date:*".
+  const text = stripEmphasis(email.text);
   const all = `${subject}\n${text}`;
 
   // Alerts come from notification.capitalone.com; offers and rewards news
@@ -112,7 +114,7 @@ export function parseCapitalOne(email: NormalizedEmail): ParseResult {
 export const capitalOneParser: Parser = {
   id: "capitalone",
   label: "Capital One / Discover",
-  version: 1,
+  version: 2,
   senders: [/@(?:[a-z0-9-]+\.)*capitalone\.com$/i],
   dkimDomains: ["capitalone.com"],
   accountKey: "last4",

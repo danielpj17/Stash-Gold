@@ -1,12 +1,20 @@
 import type { NormalizedEmail, ParseResult, Parser } from "@/lib/email/types";
-import { cleanName, findDate, moneyToCents, valueAfterLabel } from "@/lib/email/parsers/util";
+import { cleanName, findDate, moneyToCents, stripEmphasis, valueAfterLabel } from "@/lib/email/parsers/util";
 
 /**
  * Wells Fargo.
  *
  * Version 1 (2026-11-16) is written from real emails — see the `real-*`
- * fixtures — and reads three kinds:
+ * fixtures — and reads three kinds. Version 2 adds credit card purchases and
+ * also reads a plain-text rendering, where bold labels arrive as
+ * "*Payment amount*":
  *
+ *   "You made a purchase over $1.00"        purchase (pending)
+ *       "You made a purchase of $12.34" / "with credit card ...1234" /
+ *       "Merchant: NAME in CITY, ST, USA" / "Date: 11/16/2026".
+ *       Only CREDIT card ones: a debit card has its own number, not the
+ *       checking account's, so routing it by last four would need its own
+ *       rule — `unparsed` until a real debit sample exists.
  *   "Bill Pay: Your payment(s) were sent"   payment_sent → an expense
  *       Payee / Amount / Sent on. It never says which account paid ("your
  *       selected account(s)"), so it routes to the account ticked "Bill Pay
@@ -19,9 +27,10 @@ import { cleanName, findDate, moneyToCents, valueAfterLabel } from "@/lib/email/
  *
  * Transfers name BOTH accounts, so decide() creates one complete transfer.
  *
- * Purchase, deposit and withdrawal alerts have no real sample yet. Anything
+ * Debit card, deposit and withdrawal alerts have no real sample yet. Anything
  * with a dollar amount that isn't one of the above is `unparsed`, so the first
- * real ones land under Couldn't read to build v2 from — never a guess.
+ * real ones land under Couldn't read to build the next version from — never a
+ * guess.
  * Statements, FICO, credit-limit and sign-in notices are `ignore`d.
  *
  * A payment TO a card is `transfer`, never `refund` (plan §5.3).
@@ -29,6 +38,46 @@ import { cleanName, findDate, moneyToCents, valueAfterLabel } from "@/lib/email/
 
 /** The last four of a masked number: "XXXX-XXXX-XXXX-1234", "XXXXXX1234", "****1234". */
 const MASKED = /[X*•]{2,}[-X*•]*(\d{4})\b/i;
+
+const AMOUNT = String.raw`\$\s?((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{2})?)`;
+
+/** One line of text, so a sentence wrapped across lines still matches. */
+function flat(text: string): string {
+  return text.replace(/\s+/g, " ");
+}
+
+/** "WAL-MART #1234 in SPRINGFIELD, IL, USA" → "WAL-MART #1234". The LAST " in ". */
+function withoutLocation(merchant: string): string {
+  const m = /^(.+)\s+in\s+[^,]+,\s*[A-Z]{2}(?:,\s*[A-Z][A-Z .]*)?$/i.exec(merchant.trim());
+  return m ? m[1] : merchant;
+}
+
+function parsePurchase(text: string): ParseResult {
+  const m = new RegExp(
+    String.raw`you made a purchase of \*?${AMOUNT}\*? with (credit|debit) card\s*(?:\.{2,}|…|[X*•]{2,})\s?(\d{4})\b`,
+    "i",
+  ).exec(flat(text));
+  if (!m) return { unparsed: "wellsfargo_purchase_unrecognized" };
+  if (m[2].toLowerCase() !== "credit") return { unparsed: "wellsfargo_debit_card_purchase" };
+
+  const amountCents = moneyToCents(m[1]);
+  const merchantLine = valueAfterLabel(text, /^merchant\b/i);
+  const merchantRaw = merchantLine ? cleanName(withoutLocation(merchantLine)) : "";
+  if (!amountCents) return { unparsed: "no_amount" };
+  if (!merchantRaw) return { unparsed: "no_merchant" };
+  const date = valueAfterLabel(text, /^date\b/i);
+
+  return {
+    kind: "purchase",
+    amountCents,
+    merchantRaw,
+    accountHint: { last4: m[3] },
+    occurredAt: null,
+    occurredDate: date ? findDate(date) : null,
+    // An alert at purchase time is the authorization; a tip can follow.
+    isPending: true,
+  };
+}
 
 /**
  * The masked account number that follows `label`, before `stop`. Wells Fargo
@@ -101,7 +150,8 @@ function parseTransfer(
 
 export function parseWellsFargo(email: NormalizedEmail): ParseResult {
   const subject = email.subject.trim();
-  const text = email.text;
+  // A plain-text rendering shows bold labels as "*Payment amount*".
+  const text = stripEmphasis(email.text);
   const all = `${subject}\n${text}`;
 
   // Offers and newsletters come from mail*.wellsfargo.com, alerts from
@@ -111,6 +161,10 @@ export function parseWellsFargo(email: NormalizedEmail): ParseResult {
 
   if (/^bill pay\b/i.test(subject) || /@billpay\./i.test(email.from) || /^billpay@/i.test(email.from)) {
     return parseBillPay(text, subject);
+  }
+
+  if (/^you made a purchase\b/i.test(subject) || /\byou made a purchase of\b/i.test(text)) {
+    return parsePurchase(text);
   }
 
   if (/\byou made a payment\b/i.test(subject) || /\byou recently submitted a payment\b/i.test(text)) {
@@ -145,7 +199,7 @@ export function parseWellsFargo(email: NormalizedEmail): ParseResult {
   if (/\bcredit limit\b/i.test(subject)) return { ignore: "wellsfargo_notice" };
   if (!/\$\s?\d/.test(all)) return { ignore: "wellsfargo_notice" };
 
-  // Money, but a layout v1 doesn't know (purchase / deposit / withdrawal
+  // Money, but a layout this version doesn't know (deposit / withdrawal
   // alerts, until real samples exist). Couldn't read, then a parser update.
   return { unparsed: "wellsfargo_unrecognized" };
 }
@@ -153,7 +207,7 @@ export function parseWellsFargo(email: NormalizedEmail): ParseResult {
 export const wellsFargoParser: Parser = {
   id: "wellsfargo",
   label: "Wells Fargo",
-  version: 1,
+  version: 2,
   senders: [/@(?:[a-z0-9-]+\.)*wellsfargo\.com$/i],
   dkimDomains: ["wellsfargo.com"],
   accountKey: "last4",

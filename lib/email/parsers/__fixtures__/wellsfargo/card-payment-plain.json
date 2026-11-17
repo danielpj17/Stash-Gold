@@ -1,0 +1,29 @@
+{
+  "note": "REAL 'You made a payment' as a plain-text rendering (bold labels become *asterisks*), scrubbed",
+  "email": {
+    "gmailMessageId": "fixturewfpayplain",
+    "from": "Wells Fargo <alerts@notify.wellsfargo.com>",
+    "to": "stash.inbox@example.com",
+    "subject": "You made a payment",
+    "date": "2026-10-08T03:12:18Z",
+    "plainBody": "<https://www.wellsfargo.com>[image: Wells Fargo Home]\nYou recently submitted a payment\nThe following payment will be effective as of 10/07/2026:\n*To account * Wells Fargo XXXX-XXXX-XXXX-2222\n*From account * Wells Fargo XXXX-XX1111\n*Payment amount* $123.45\nIf you have questions, Wells Fargo Customer Service is available 24 hours a\nday, 7 days a week. Wells Fargo Consumer Card Customer Service is available\nat 1-866-229-6633.\n\nThank you for banking with Wells Fargo.\n*wellsfargo.com* <https://www.wellsfargo.com> | Security Center\n<https://www.wellsfargo.com/privacy-security/fraud> | Contact Us\n<https://www.wellsfargo.com/help/contact-us/>\n*Please do not reply to this automated email.*\n00000000-0000-0000-0000-000000000000 1700",
+    "htmlBody": "",
+    "headers": {
+      "Authentication-Results": "mx.google.com; dkim=pass header.i=@notify.wellsfargo.com header.s=wfb1 header.b=\"AbC123\"; spf=pass smtp.mailfrom=alerts@notify.wellsfargo.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=wellsfargo.com"
+    }
+  },
+  "expect": {
+    "alert": {
+      "kind": "transfer",
+      "transferDirection": "out",
+      "amountCents": 12345,
+      "accountHint": {
+        "last4": "1111"
+      },
+      "fundingSource": {
+        "last4": "2222"
+      },
+      "occurredDate": "2026-10-07"
+    }
+  }
+}

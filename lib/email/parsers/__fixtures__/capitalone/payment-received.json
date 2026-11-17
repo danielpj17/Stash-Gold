@@ -1,5 +1,5 @@
 {
-  "note": "Rebuilt from a REAL 'We've received your payment' (2026-09-17) as Gmail rendered it, scrubbed; verify against the first stored copy. A payment to the card is a transfer, never a refund.",
+  "note": "REAL 'We've received your payment' (2026-09-17), scrubbed — checked against a real stored copy on 2026-11-16. A payment to the card is a transfer, never a refund.",
   "email": {
     "to": "stash.inbox@example.com",
     "date": "2026-11-16T21:15:00Z",
