@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { checkDkim } from "@/lib/email/dkim";
 import { normalizeEmail } from "@/lib/email/normalize";
+import { partId } from "@/lib/email/parts";
 import { validateEmailPayload } from "@/lib/email/payload";
 import { parserForSender } from "@/lib/email/registry";
 
@@ -17,6 +18,8 @@ import { parserForSender } from "@/lib/email/registry";
  *     "expect": { "alert": {…partial ParsedAlert…} }
  *            | { "ignore": "reason" } | { "unparsed": true }
  *            | { "unauthenticated": true } | { "noParser": true }
+ *            | { "parts": [{…partial ParsedAlert…}, …] }   // a summary: splits,
+ *              and part k (`<id>#k`, lib/email/parts.ts) reads as item k
  *   }
  *
  * Real exports come from scripts/export-email-fixture.mjs (scrubbed).
@@ -32,7 +35,8 @@ type Fixture = {
     | { ignore: string }
     | { unparsed: true }
     | { unauthenticated: true }
-    | { noParser: true };
+    | { noParser: true }
+    | { parts: Array<Record<string, unknown>> };
 };
 
 const ROOT = path.join(__dirname, "__fixtures__");
@@ -86,6 +90,16 @@ describe("parser fixtures", () => {
         expect(result).toMatchObject({ ignore: fixture.expect.ignore });
       } else if ("alert" in fixture.expect) {
         expect(result).toMatchObject(fixture.expect.alert);
+      } else if ("parts" in fixture.expect) {
+        const parts = fixture.expect.parts;
+        expect(result).toEqual({ split: parts.length });
+        parts.forEach((want, i) => {
+          const part = parser.parse(normalizeEmail({ ...payload, gmailMessageId: partId(payload.gmailMessageId, i + 1) }));
+          expect(part, `part ${i + 1}`).toMatchObject(want);
+        });
+        // One past the end is never a guess.
+        const past = parser.parse(normalizeEmail({ ...payload, gmailMessageId: partId(payload.gmailMessageId, parts.length + 1) }));
+        expect(past).toHaveProperty("unparsed");
       }
     });
   }

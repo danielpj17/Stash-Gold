@@ -926,3 +926,172 @@ describe("card payments and transfers between your own accounts", () => {
     expect(plan.transactions[0]).toMatchObject({ kind: "expense", account: WF_CHECKING.id, isPending: false });
   });
 });
+
+describe("posted-activity summary lines (Wells Fargo account update)", () => {
+  const CHK: AccountRef = { ...CARD, id: "acct-wf-checking", name: "WF Checking", kind: "checking", alertSource: "wellsfargo", alertLast4: "1111" };
+  const C1: AccountRef = { ...CARD, id: "acct-c1", name: "Capital One", kind: "credit_card", alertSource: "capitalone", alertLast4: "4444" };
+  const ACCTS = [CHK, C1, CARD];
+  const SUMMARY_ID = "gm-summary";
+
+  const line = (over: Partial<ParsedAlert> = {}) =>
+    alert({
+      kind: "posted",
+      amountCents: 7636,
+      merchantRaw: "Ch Example DONATION",
+      accountHint: { last4: "1111" },
+      isPending: false,
+      postedSummary: true,
+      ...over,
+    });
+  const at = (a: ParsedAlert, over: Partial<DecideContext> = {}, part = 1) =>
+    ctx({
+      parser: { id: "wellsfargo", accountKey: "last4" },
+      account: CHK,
+      accounts: ACCTS,
+      defaultAccountId: CARD.id,
+      merchant: null,
+      alert: a,
+      event: { id: `ev-${part}`, gmailMessageId: `${SUMMARY_ID}#${part}`, bodySha256: `sha-${part}`, forwardedFor: null, receivedAt: T0 },
+      ...over,
+    });
+  const cardPayment = line({ kind: "transfer", transferDirection: "out", amountCents: 1070, merchantRaw: "CAPITAL ONE ONLINE PMT" });
+  const transfer = (over: Partial<CandidateRow> = {}) =>
+    row({
+      id: "tx-pay",
+      kind: "transfer",
+      amountCents: 1070,
+      account: null,
+      transferFrom: CHK.id,
+      transferTo: C1.id,
+      reviewStatus: "confirmed",
+      isPending: false,
+      merchantId: null,
+      occurredAt: hours(-24),
+      ...over,
+    });
+
+  it("a card payment you logged by hand: links to it, no second transfer", () => {
+    const plan = decide(at(cardPayment, { candidates: [transfer({ source: "manual", emailEventId: null, eventKind: null, eventMerchantKey: null })] }));
+    expect(plan).toMatchObject({ action: "link", reason: "matched_manual_transfer", transactionId: "tx-pay" });
+  });
+
+  it("a card payment another email already recorded: duplicate", () => {
+    const plan = decide(at(cardPayment, { candidates: [transfer({ source: "email", emailEventId: "ev-c1", eventGmailMessageId: "gm-c1" })] }));
+    expect(plan).toMatchObject({ action: "duplicate", reason: "already_recorded", transactionId: "tx-pay" });
+  });
+
+  it("completes the card's own payment email, which named no paying account", () => {
+    const waiting = transfer({ transferFrom: null, reviewStatus: "needs_review", source: "email", emailEventId: "ev-c1", eventGmailMessageId: "gm-c1" });
+    const plan = decide(at(cardPayment, { candidates: [waiting] }));
+    expect(plan).toMatchObject({
+      action: "link",
+      reason: "completed_transfer_side",
+      transactionId: "tx-pay",
+      update: { id: "tx-pay", transferFrom: CHK.id, reviewStatus: "confirmed" },
+    });
+  });
+
+  it("a card payment nothing has recorded: a transfer from checking that asks which card", () => {
+    const plan = decide(at(cardPayment));
+    expect(plan).toMatchObject({ action: "create", reason: "transfer_side_unknown" });
+    if (plan.action !== "create") return;
+    expect(plan.transactions[0]).toMatchObject({ kind: "transfer", transferFrom: CHK.id, transferTo: null, description: "Card payment", reviewStatus: "needs_review" });
+  });
+
+  it("a donation nothing has recorded: an expense on checking that asks for a category", () => {
+    const plan = decide(at(line()));
+    expect(plan).toMatchObject({ action: "create", reason: "ask", notify: true });
+    if (plan.action !== "create") return;
+    expect(plan.transactions[0]).toMatchObject({ kind: "expense", account: CHK.id, amountCents: 7636, isPending: false });
+  });
+
+  it("a Bill Pay (or any expense) already on checking: duplicate, whatever its name", () => {
+    const billPay = row({ id: "tx-bill", account: CHK.id, amountCents: 7636, isPending: false, source: "email", emailEventId: "ev-bill", eventGmailMessageId: "gm-bill", occurredAt: hours(-48) });
+    expect(decide(at(line(), { candidates: [billPay] }))).toMatchObject({ action: "duplicate", reason: "already_recorded", transactionId: "tx-bill" });
+  });
+
+  it("logged by hand on the default account: links, as a hand entry would", () => {
+    const manual = row({ id: "tx-hand", account: CARD.id, amountCents: 7636, isPending: false, source: "manual", emailEventId: null, eventKind: null, eventMerchantKey: null, eventGmailMessageId: null });
+    expect(decide(at(line(), { candidates: [manual] }))).toMatchObject({ action: "link", transactionId: "tx-hand" });
+  });
+
+  it("the same amount on ANOTHER account (not a hand entry) doesn't count", () => {
+    const elsewhere = row({ id: "tx-other", account: C1.id, amountCents: 7636, isPending: false, source: "email", emailEventId: "ev-x", eventGmailMessageId: "gm-x" });
+    expect(decide(at(line(), { candidates: [elsewhere] }))).toMatchObject({ action: "create" });
+  });
+
+  it("too far apart in time doesn't count", () => {
+    const old = row({ id: "tx-old", account: CHK.id, amountCents: 7636, isPending: false, source: "email", emailEventId: "ev-old", eventGmailMessageId: "gm-old", occurredAt: hours(-24 * 8) });
+    expect(decide(at(line(), { candidates: [old] }))).toMatchObject({ action: "create" });
+  });
+
+  it("a paycheck the deposit alert recorded: duplicate", () => {
+    const pay = row({ id: "tx-pay-in", kind: "income", category: "Income", account: CHK.id, amountCents: 30000, reviewStatus: "confirmed", isPending: false, source: "email", emailEventId: "ev-dep", eventGmailMessageId: "gm-dep" });
+    const plan = decide(at(line({ kind: "payment_received", amountCents: 30000, merchantRaw: "EXAMPLE EMPLOYER PAYROLL" }), { candidates: [pay] }));
+    expect(plan).toMatchObject({ action: "duplicate", reason: "already_recorded" });
+  });
+
+  it("money in never matches money out of the same amount", () => {
+    const spent = row({ id: "tx-spent", account: CHK.id, amountCents: 30000, isPending: false, source: "email", emailEventId: "ev-s", eventGmailMessageId: "gm-s" });
+    const plan = decide(at(line({ kind: "payment_received", amountCents: 30000, merchantRaw: "EXAMPLE EMPLOYER PAYROLL" }), { candidates: [spent] }));
+    expect(plan).toMatchObject({ action: "create", reason: "money_in_as_income" });
+  });
+
+  it("rewards nothing has recorded: a confirmed transfer from Other, named by source", () => {
+    const plan = decide(at(line({ kind: "transfer", transferDirection: "in", externalFrom: "Other", amountCents: 8677, merchantRaw: "WELLS FARGO REWARDS" })));
+    expect(plan).toMatchObject({ action: "create", reason: "account_transfer", notify: false });
+    if (plan.action !== "create") return;
+    expect(plan.transactions[0]).toMatchObject({ kind: "transfer", transferFrom: "Other", transferTo: CHK.id, reviewStatus: "confirmed", description: "Wells Fargo Rewards" });
+  });
+
+  it("rewards you logged by hand (Other → checking): links", () => {
+    const hand = transfer({ id: "tx-rw", amountCents: 8677, transferFrom: "Other", transferTo: CHK.id, source: "manual", emailEventId: null, eventKind: null, eventMerchantKey: null, eventGmailMessageId: null });
+    const plan = decide(at(line({ kind: "transfer", transferDirection: "in", externalFrom: "Other", amountCents: 8677, merchantRaw: "WELLS FARGO REWARDS" }), { candidates: [hand] }));
+    expect(plan).toMatchObject({ action: "link", reason: "matched_manual_transfer", transactionId: "tx-rw" });
+  });
+
+  it("two identical lines of ONE summary are two items", () => {
+    const sibling = row({ id: "tx-sib", account: CHK.id, amountCents: 7636, isPending: false, source: "email", emailEventId: "ev-1", eventGmailMessageId: `${SUMMARY_ID}#1` });
+    expect(decide(at(line(), { candidates: [sibling] }, 2))).toMatchObject({ action: "create" });
+  });
+
+  it("an alert that isn't a summary line is untouched by this rule", () => {
+    const billPay = row({ id: "tx-bill", account: CHK.id, amountCents: 7636, isPending: false, source: "email", emailEventId: "ev-bill", eventGmailMessageId: "gm-bill" });
+    const plan = decide(at(line({ postedSummary: undefined, kind: "payment_sent" }), { candidates: [billPay] }));
+    expect(plan).toMatchObject({ action: "create" });
+  });
+});
+describe("a card payment's two halves pair in either order", () => {
+  const CHK: AccountRef = { ...CARD, id: "acct-wf-checking", name: "WF Checking", kind: "checking", alertSource: "wellsfargo", alertLast4: "1111" };
+  const C1: AccountRef = { ...CARD, id: "acct-c1", name: "Capital One", kind: "credit_card", alertSource: "capitalone", alertLast4: "4444" };
+  const D: AccountRef = { ...C1, id: "acct-discover", name: "Discover", alertLast4: "7777" };
+  const waitingFromBank = (over: Partial<CandidateRow> = {}) =>
+    row({ id: "tx-half", kind: "transfer", amountCents: 1070, account: null, transferFrom: CHK.id, transferTo: null, reviewStatus: "needs_review", isPending: false, merchantId: null, source: "email", emailEventId: "ev-sum", eventGmailMessageId: "gm-sum#2", eventKind: "transfer", eventMerchantKey: merchantKey("CAPITAL ONE ONLINE PMT"), ...over });
+  const cardEmail = alert({ kind: "transfer", transferDirection: "in", amountCents: 1070, merchantRaw: "Capital One payment", accountHint: { last4: "4444" }, isPending: false });
+  const c1 = (over: Partial<DecideContext> = {}) =>
+    ctx({ parser: { id: "capitalone", accountKey: "last4" }, account: C1, accounts: [CHK, C1, D, CARD], merchant: null, alert: cardEmail, ...over });
+
+  it("the card's email after the bank's line completes it (no second transfer)", () => {
+    expect(decide(c1({ candidates: [waitingFromBank()] }))).toMatchObject({
+      action: "link",
+      reason: "completed_transfer_side",
+      transactionId: "tx-half",
+      update: { id: "tx-half", transferTo: C1.id, reviewStatus: "confirmed" },
+    });
+  });
+
+  it("two waiting halves of that amount: never a guess between them", () => {
+    const plan = decide(c1({ candidates: [waitingFromBank(), waitingFromBank({ id: "tx-half-2" })] }));
+    expect(plan).toMatchObject({ action: "create", reason: "transfer_side_unknown" });
+  });
+
+  it("a different amount doesn't pair", () => {
+    expect(decide(c1({ candidates: [waitingFromBank({ amountCents: 1071 })] }))).toMatchObject({ action: "create" });
+  });
+
+  it("only into a credit card: a checking → ? half never pairs with a savings deposit", () => {
+    const SAV: AccountRef = { ...CHK, id: "acct-sav", name: "Savings", kind: "savings", alertLast4: "3333" };
+    const plan = decide(c1({ account: SAV, accounts: [CHK, SAV, C1], parser: { id: "wellsfargo", accountKey: "last4" }, alert: { ...cardEmail, accountHint: { last4: "3333" } }, candidates: [waitingFromBank()] }));
+    expect(plan).toMatchObject({ action: "create" });
+  });
+});

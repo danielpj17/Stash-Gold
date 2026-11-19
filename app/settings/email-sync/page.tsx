@@ -149,6 +149,24 @@ export default function EmailSyncActivityPage() {
     [assignTo, load, triggerRefresh],
   );
 
+  const dismiss = useCallback(
+    async (e: EventRow) => {
+      setBusy(true);
+      setMessage("");
+      try {
+        const res = await fetch(`/api/email-sync/events/${e.id}/dismiss`, { method: "POST" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error ?? "Failed to dismiss");
+        await load();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to dismiss");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [load],
+  );
+
   /** Shadow decisions and hand-logged entries, side by side per day. */
   const shadowDays = useMemo(() => {
     if (!shadow) return [];
@@ -175,7 +193,7 @@ export default function EmailSyncActivityPage() {
     </button>
   );
 
-  const eventLine = (e: EventRow) => (
+  const eventLine = (e: EventRow, opts: { dismissable?: boolean } = {}) => (
     <li key={e.id} className="px-3 py-2 text-sm">
       <div className="flex items-baseline gap-2 flex-wrap">
         <span
@@ -192,6 +210,17 @@ export default function EmailSyncActivityPage() {
         </span>
         <span className="text-gray-200 min-w-0 truncate">{e.subject || "(no subject)"}</span>
         <span className="text-xs text-gray-500 ml-auto">{fmtWhen(e.receivedAt)}</span>
+        {opts.dismissable && (e.status === "unparsed" || e.status === "unauthenticated") && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void dismiss(e)}
+            title="Nothing to record from this email — stop showing it here"
+            className="text-xs px-2 py-0.5 rounded bg-[#353535] text-gray-300 hover:text-white hover:bg-[#404040] disabled:opacity-50"
+          >
+            Dismiss
+          </button>
+        )}
       </div>
       <p className="text-xs text-gray-500 truncate">
         {e.from}
@@ -298,7 +327,7 @@ export default function EmailSyncActivityPage() {
                 <p className="p-4 text-sm text-gray-400">Nothing here.</p>
               ) : (
                 <ul className="divide-y divide-charcoal-dark">
-                  {attention.filter((e) => e.status !== "unknown_account").map(eventLine)}
+                  {attention.filter((e) => e.status !== "unknown_account").map((e) => eventLine(e, { dismissable: true }))}
                 </ul>
               )}
               <p className="px-4 py-3 border-t border-charcoal-dark text-xs text-gray-500">
@@ -384,7 +413,7 @@ export default function EmailSyncActivityPage() {
             ) : events.length === 0 ? (
               <p className="p-4 text-sm text-gray-400">No emails yet.</p>
             ) : (
-              <ul className="divide-y divide-charcoal-dark">{events.map(eventLine)}</ul>
+              <ul className="divide-y divide-charcoal-dark">{events.map((e) => eventLine(e))}</ul>
             )}
           </section>
         )}

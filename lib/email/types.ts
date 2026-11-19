@@ -32,6 +32,8 @@ export type EmailPayload = {
 
 /** The email as parsers see it. Built by `normalize.ts`. */
 export type NormalizedEmail = {
+  /** `<id>#k` for one part of an email split into several (lib/email/parts.ts). */
+  gmailMessageId: string;
   /** Lowercased bare address of the effective sender (forward-unwrapped). */
   from: string;
   fromDomain: string;
@@ -88,9 +90,33 @@ export type ParsedAlert = {
   transferDirection?: "out" | "in";
   /** Amount-changed alerts that state the old amount. */
   previousAmountCents?: number;
+  /**
+   * `transfer`, money in, from OUTSIDE your accounts — one of the pickers'
+   * EXTERNAL_TRANSFER_SOURCES. Card rewards redeemed into checking are a
+   * transfer from "Other" (Daniel's convention, like a Venmo payback).
+   */
+  externalFrom?: "Other";
+  /**
+   * A line from a summary of activity that already POSTED (Wells Fargo "Your
+   * account update is here"), not an alert sent as it happened. Other alerts
+   * and hand entries have usually recorded it already, so decide() records it
+   * only when nothing on that account already shows it.
+   */
+  postedSummary?: true;
 };
 
-export type ParseResult = ParsedAlert | { unparsed: string } | { ignore: string; kind?: ParsedAlertKind };
+/**
+ * One email that holds several separate items (a posted-activity summary).
+ * The pipeline stores each as its own event — `<gmail id>#1` … `#n`, see
+ * lib/email/parts.ts — and the parser reads only its part of each.
+ */
+export type SplitResult = { split: number };
+
+export type ParseResult =
+  | ParsedAlert
+  | SplitResult
+  | { unparsed: string }
+  | { ignore: string; kind?: ParsedAlertKind };
 
 export type Parser = {
   /** Stored in financial_accounts.alert_source and email_events.parser_id. */

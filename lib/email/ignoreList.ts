@@ -40,5 +40,11 @@ export function matchIgnoreList(email: NormalizedEmail): IgnoreMatch | null {
   if (/^(mailer-daemon|postmaster)@/.test(from)) {
     return { reason: "mail_delivery_failure", raisesWarning: false };
   }
+  // Google's own mail to the Stash inbox's account — Photos, Voice, Workspace
+  // and Business Profile welcomes and offers. No bank sends from google.com
+  // (and hand-forwards arrive from gmail.com, which this doesn't touch).
+  if (/@(?:[a-z0-9-]+\.)*google\.com$/.test(from)) {
+    return { reason: "google_account_notice", raisesWarning: false };
+  }
   return null;
 }

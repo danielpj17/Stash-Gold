@@ -33,6 +33,13 @@ export const EMAIL_SYNC_CONFIG = {
    * "sent" one day and "posted" by the card a business day or two later.
    */
   transferMatchWindowDays: 3,
+  /**
+   * A posted-activity summary line (Wells Fargo "Your account update") counts
+   * as already recorded by anything on that account with the same amount and
+   * direction this many days either side. Posting lags the alert by a day or
+   * two, more over a weekend.
+   */
+  postedSummaryMatchDays: 5,
   /** Settings turns amber after this long with no heartbeat. */
   heartbeatStaleMinutes: 30,
   /** New Expense shows a banner after this long with no heartbeat. */

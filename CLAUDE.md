@@ -276,9 +276,9 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   purchases, "You just got paid early!" deposits, Bill Pay, "You made a
   payment" and online transfers; its debit card and withdrawal alerts are
   `unparsed` until real samples exist (a debit card has its own number, not
-  the checking account's, so it can't simply route by last 4). "Your account
-  update is here" is a digest of posted activity that repeats the other
-  alerts, so it stays unread rather than double anything. `capitalone` reads
+  the checking account's, so it can't simply route by last 4). It also reads
+  "Your account update is here" — see "Posted-activity summaries" below.
+  `capitalone` reads
   Capital One **and Discover** (Capital One owns it; same sender, same
   template) — purchases, "payment received", and ignores scheduled payments.
   A hand-forwarded alert (Forward pressed by hand) is always
@@ -291,6 +291,24 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   transfer and pairs with the other bank's email within
   `transferMatchWindowDays`; two emails of the *same* type are two transfers
   unless it's the same email again. Rollback: `enableAccountTransfers`.
+  A card payment seen from both ends, each naming only its own side (the
+  bank's "CAPITAL ONE ONLINE PMT", the card's "payment received"), pairs in
+  either order — `waitingOtherHalf`, into a credit card, one candidate only.
+- **Posted-activity summaries** (Wells Fargo "Your account update is here"):
+  one email listing several posted deposits/withdrawals. Everything else is
+  one transaction per event, so the pipeline **splits** it into child events
+  `<gmail id>#1…#n` (`lib/email/parts.ts`; full copies, own body hash, own
+  status) and the parser reads only its part. The poller's id validation
+  rejects `#`, so a real email can't pose as a part. Each line is
+  `postedSummary`: it repeats what Bill Pay, card-payment, deposit alerts and
+  hand entries usually recorded, so `alreadyRecorded` runs FIRST — same
+  amount, same direction, on that account, ±`postedSummaryMatchDays` — and
+  only news creates anything. Card-issuer payments and online transfers are
+  transfers, rewards are a transfer from "Other" (Daniel's convention), other
+  withdrawals are expenses that ask, other deposits Income.
+- **Dismiss** (Needs a look) turns an `unparsed` or `unauthenticated` email
+  `ignored` (`dismissed_by_person`); nothing is deleted. Google's own mail to
+  the Stash inbox (`@*.google.com`) is on the ignore list.
 - **Manual entries** go through `insertOrLinkTransaction` (`lib/transactions.ts`)
   in both write routes: when email sync is live, a hand-logged purchase answers
   a waiting alert row instead of doubling it. Reconcile's Quick Add sends

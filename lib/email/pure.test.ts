@@ -6,6 +6,7 @@ import { extractAddress, htmlToText, normalizeEmail, unwrapForwardedSender } fro
 import { decideCategory, ruleAfterAnswer, starterGuess, type MerchantRule } from "@/lib/email/rules";
 import { findDate, findLast4, moneyToCents } from "@/lib/email/parsers/util";
 import { matchIgnoreList } from "@/lib/email/ignoreList";
+import { partId, partOf, wholeEmailId } from "@/lib/email/parts";
 import { resolveAccount } from "@/lib/email/accountResolution";
 import type { AccountRef } from "@/lib/email/decide";
 
@@ -196,6 +197,46 @@ describe("payload + normalize", () => {
     });
     if ("error" in q) throw new Error(q.error);
     expect(matchIgnoreList(normalizeEmail(q))).toMatchObject({ reason: "apps_script_failure", raisesWarning: true });
+  });
+  it("ignores Google's own welcome and offer mail to the Stash inbox, never a gmail.com forward", () => {
+    for (const from of ["Google Photos <noreply-photos@google.com>", "voice-noreply@google.com", "googlecommunityteam-noreply@google.com"]) {
+      const p = validateEmailPayload({ ...base, from, subject: "Welcome" });
+      if ("error" in p) throw new Error(p.error);
+      expect(matchIgnoreList(normalizeEmail(p)), from).toMatchObject({ reason: "google_account_notice", raisesWarning: false });
+    }
+    const fwd = validateEmailPayload({ ...base, from: "someone@gmail.com", subject: "Fwd: A new transaction was charged" });
+    if ("error" in fwd) throw new Error(fwd.error);
+    expect(matchIgnoreList(normalizeEmail(fwd))).toBeNull();
+  });
+});
+
+describe("parts of one email (lib/email/parts.ts)", () => {
+  it("numbers parts from 1 and finds the whole email again", () => {
+    expect(partId("18c0ffee", 2)).toBe("18c0ffee#2");
+    expect(partOf("18c0ffee#2")).toBe(2);
+    expect(partOf("18c0ffee")).toBeNull();
+    expect(partOf("18c0ffee#0")).toBeNull();
+    expect(partOf("18c0ffee#51")).toBeNull();
+    expect(wholeEmailId("18c0ffee#12")).toBe("18c0ffee");
+    expect(wholeEmailId("18c0ffee")).toBe("18c0ffee");
+  });
+  const payload = (gmailMessageId: string) => ({
+    gmailMessageId,
+    from: "Bank <alerts@examplebank.com>",
+    to: "stash.inbox@example.com",
+    subject: "Alert",
+    date: "2026-11-19T12:00:00Z",
+    plainBody: "hello",
+    htmlBody: "",
+    headers: {},
+  });
+  it("normalizeEmail carries the id the parser reads its part from", () => {
+    const p = validateEmailPayload(payload("18c0ffee"));
+    if ("error" in p) throw new Error(p.error);
+    expect(normalizeEmail({ ...p, gmailMessageId: partId(p.gmailMessageId, 3) }).gmailMessageId).toBe("18c0ffee#3");
+  });
+  it("the poller can never post a part id, so a real email can't pose as one", () => {
+    expect(validateEmailPayload(payload("18c0ffee#1"))).toHaveProperty("error");
   });
 });
 

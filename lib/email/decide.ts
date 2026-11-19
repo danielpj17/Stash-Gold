@@ -1,6 +1,7 @@
 import { EMAIL_SYNC_CONFIG } from "@/lib/email/config";
 import { displayNameFromRaw, isVenmoKey } from "@/lib/email/merchantKey";
 import { localDate } from "@/lib/email/occurredAt";
+import { wholeEmailId } from "@/lib/email/parts";
 import { decideCategory, type MerchantRule } from "@/lib/email/rules";
 import type { AccountHint, ParsedAlert, ParsedAlertKind } from "@/lib/email/types";
 
@@ -593,6 +594,36 @@ function isSeparateSameTypeEmail(c: CandidateRow, ctx: DecideContext): boolean {
   return !sameEmail;
 }
 
+/**
+ * A card payment seen from both ends, each naming only its own side: the
+ * paying bank's line ("CAPITAL ONE ONLINE PMT" — no card) and the card's
+ * "payment received" (no paying account). Neither shares a known side with
+ * the other, so matchingTransfer can't pair them; whichever arrives second
+ * completes the first. Only into a credit card, and only when exactly one
+ * transfer is waiting — never a guess between two.
+ */
+function waitingOtherHalf(
+  ctx: DecideContext,
+  leg: { from: string | null; to: string | null },
+  windowDays: number,
+): CandidateRow | null {
+  const isCard = (id: string | null) => id !== null && ctx.accounts.some((x) => x.id === id && x.kind === "credit_card");
+  const knowsFrom = leg.from !== null && leg.to === null;
+  const knowsTo = leg.from === null && leg.to !== null;
+  if (!knowsFrom && !knowsTo) return null;
+  const hits = ctx.candidates.filter(
+    (c) =>
+      c.kind === "transfer" &&
+      c.reviewStatus === "needs_review" &&
+      c.amountCents === ctx.alert.amountCents &&
+      dayDiff(c.occurredAt, ctx.occurredAt, ctx.timeZone) <= windowDays &&
+      (knowsFrom
+        ? c.transferFrom === null && isCard(c.transferTo) && c.transferTo !== leg.from
+        : c.transferTo === null && c.transferFrom !== null && isCard(leg.to) && c.transferFrom !== leg.to),
+  );
+  return hits.length === 1 ? hits[0] : null;
+}
+
 type TransferFlavor = "venmo" | "account";
 
 const TRANSFER_REASONS: Record<TransferFlavor, { completed: string; recorded: string; unknown: string; created: string }> = {
@@ -640,6 +671,15 @@ function decideTransfer(ctx: DecideContext, leg: Leg | AccountLeg, flavor: Trans
       return { action: "link", status: "linked", reason: reasons.completed, transactionId: row.id, update: fill };
     }
     return duplicate(row.id, reasons.recorded);
+  }
+
+  if (flavor === "account") {
+    const windowDays = ctx.alert.postedSummary ? cfg.postedSummaryMatchDays : cfg.transferMatchWindowDays;
+    const half = waitingOtherHalf(ctx, leg, windowDays);
+    const fill = half ? fillUnknownSides(half, leg) : null;
+    if (half && fill) {
+      return { action: "link", status: "linked", reason: reasons.completed, transactionId: half.id, update: fill };
+    }
   }
 
   const unknownSide = leg.from === null || leg.to === null;
@@ -695,14 +735,18 @@ function counterpartByLast4(ctx: DecideContext, hint: AccountHint | "balance" | 
 export function accountTransferLeg(ctx: DecideContext): AccountLeg | null {
   const a = ctx.alert;
   if (ctx.parser.id === "venmo" || a.kind !== "transfer") return null;
-  const other = counterpartByLast4(ctx, a.fundingSource)?.id ?? null;
   const out = a.transferDirection !== "in";
+  // Money in from outside your accounts (card rewards): "Other" → this
+  // account, named by its source, like a hand-logged one.
+  if (!out && a.externalFrom) return { from: a.externalFrom, to: ctx.account.id, description: merchantName(ctx) };
+  const other = counterpartByLast4(ctx, a.fundingSource)?.id ?? null;
   const from = out ? ctx.account.id : other;
   const to = out ? other : ctx.account.id;
   const toKind = ctx.accounts.find((x) => x.id === to)?.kind;
   // "payment" / "transfer" in the logged row is what Reconcile's transfer step
   // looks for, so these reconcile exactly like a hand-logged transfer.
-  const description = toKind === "credit_card" || /\bpayment\b/i.test(a.merchantRaw) ? "Card payment" : "Transfer";
+  const description =
+    toKind === "credit_card" || /\b(?:payment|pmt)\b/i.test(a.merchantRaw) ? "Card payment" : "Transfer";
   return { from, to, description };
 }
 
@@ -845,6 +889,79 @@ function decideVenmoReceived(ctx: DecideContext): Plan {
   };
 }
 
+// ---- posted-activity summaries ---------------------------------------------
+
+function isMoneyOut(a: ParsedAlert): boolean {
+  if (a.kind === "transfer") return a.transferDirection !== "in";
+  return a.kind !== "refund" && a.kind !== "payment_received";
+}
+
+/** Two lines of the SAME summary are separate items, however alike. */
+function sameSummary(c: CandidateRow, ctx: DecideContext): boolean {
+  return (
+    c.eventGmailMessageId !== null &&
+    c.eventGmailMessageId !== ctx.event.gmailMessageId &&
+    wholeEmailId(c.eventGmailMessageId) === wholeEmailId(ctx.event.gmailMessageId)
+  );
+}
+
+/**
+ * A summary line repeats activity that already posted — a Bill Pay, a card
+ * payment, a paycheck, something logged by hand — so it is only news when
+ * NOTHING on this account shows it: same amount, same direction, within
+ * `postedSummaryMatchDays`. The bias is deliberate: doubling is worse than
+ * leaving one rare same-amount repeat to Reconcile.
+ */
+export function alreadyRecorded(ctx: DecideContext): CandidateRow | null {
+  const cfg = cfgOf(ctx);
+  const a = ctx.alert;
+  const acct = ctx.account.id;
+  const out = isMoneyOut(a);
+  const onThisAccount = (c: CandidateRow) =>
+    c.account === acct ||
+    (c.emailEventId === null &&
+      (c.source === "manual" || c.source === "shortcut") &&
+      (c.account === null || c.account === ctx.defaultAccountId));
+  const sameAmount = (c: CandidateRow) =>
+    c.amountCents === a.amountCents ||
+    c.originalAmountCents === a.amountCents ||
+    // A pending purchase alert whose final (tipped / gas) amount this posted.
+    (c.kind === "expense" && c.isPending && amountsCompatible(a.amountCents, c.amountCents, c.category, true, cfg));
+  const hits = ctx.candidates.filter(
+    (c) =>
+      c.emailEventId !== ctx.event.id &&
+      !sameSummary(c, ctx) &&
+      sameAmount(c) &&
+      dayDiff(c.occurredAt, ctx.occurredAt, ctx.timeZone) <= cfg.postedSummaryMatchDays &&
+      (out
+        ? (c.kind === "expense" && onThisAccount(c)) || (c.kind === "transfer" && c.transferFrom === acct)
+        : (c.kind === "income" && onThisAccount(c)) || (c.kind === "transfer" && c.transferTo === acct)),
+  );
+  return hits[0] ?? null;
+}
+
+function decidePostedSummary(ctx: DecideContext): Plan | null {
+  const a = ctx.alert;
+  if (!a.postedSummary) return null;
+
+  const row = alreadyRecorded(ctx);
+  if (row) {
+    const manual = row.emailEventId === null && (row.source === "manual" || row.source === "shortcut");
+    if (!manual) return duplicate(row.id, "already_recorded");
+    if (row.kind === "transfer") {
+      return {
+        action: "link",
+        status: "linked",
+        reason: "matched_manual_transfer",
+        transactionId: row.id,
+        update: { id: row.id, attachEvent: true },
+      };
+    }
+    return linkManual(ctx, row, row.kind === "income" ? "income" : "expense");
+  }
+  return null; // news: the usual rules below decide what it becomes
+}
+
 // ---- entry point --------------------------------------------------------------
 
 function decideIncome(ctx: DecideContext): Plan {
@@ -941,6 +1058,10 @@ export function decide(ctx: DecideContext): Plan {
   if (a.counterparty && ctx.internalCounterparties.includes(normName(a.counterparty))) {
     return ignore("internal_counterparty");
   }
+
+  // A posted-activity summary line: first, is it already recorded?
+  const posted = decidePostedSummary(ctx);
+  if (posted) return posted;
 
   const leg = venmoLeg(ctx);
   if (leg) {

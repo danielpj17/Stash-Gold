@@ -123,6 +123,7 @@ export function normalizeEmail(payload: EmailPayload): NormalizedEmail {
     ? extractAddress(payload.headers.xForwardedFor) || null
     : null;
   return {
+    gmailMessageId: payload.gmailMessageId,
     from,
     fromDomain: domainOf(from),
     unwrappedForward: Boolean(unwrapped),

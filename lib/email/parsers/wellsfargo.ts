@@ -1,4 +1,5 @@
 import type { NormalizedEmail, ParseResult, Parser } from "@/lib/email/types";
+import { partOf } from "@/lib/email/parts";
 import { cleanName, findDate, moneyToCents, stripEmphasis, valueAfterLabel } from "@/lib/email/parsers/util";
 
 /**
@@ -32,9 +33,16 @@ import { cleanName, findDate, moneyToCents, stripEmphasis, valueAfterLabel } fro
  *
  * Transfers name BOTH accounts, so decide() creates one complete transfer.
  *
- * Debit card and withdrawal alerts have no real sample yet, and "Your account
- * update is here" (a digest of posted activity, which repeats what the other
- * alerts already said) is deliberately left unread for now. Anything
+ *   "Your account update is here"           posted activity (v4, 2026-11-19)
+ *       Deposits / Withdrawals for one account, each a description and an
+ *       amount. Several → `{ split }`: one event per line (lib/email/parts.ts).
+ *       Each line is `postedSummary`: it repeats what other alerts and hand
+ *       entries usually recorded already, and decide() checks that first.
+ *       A payment to a card issuer or an online transfer is a transfer;
+ *       rewards are a transfer from "Other"; other withdrawals are expenses
+ *       and other deposits Income.
+ *
+ * Debit card alerts have no real sample yet. Anything
  * with a dollar amount that isn't one of the above is `unparsed`, so the first
  * real ones land under Couldn't read to build the next version from — never a
  * guess.
@@ -94,6 +102,109 @@ function parseDeposit(text: string): ParseResult {
     occurredDate: null,
     isPending: false,
   };
+}
+
+// ---- "Your account update is here": a summary of POSTED activity -----------
+
+/** A payment from checking to a card: a transfer, never an expense. */
+const CARD_PAYMENT =
+  /^(?:CAPITAL ONE|DISCOVER|WELLS FARGO CARD|WF CREDIT CARD|CHASE CREDIT CRD|CITI ?CARD|CITI AUTOPAY|AMEX|AMERICAN EXPRESS|BARCLAYCARD|SYNCHRONY|APPLECARD|BANK OF AMERICA|BK OF AMER)\b.*\b(?:PMT|PAYMENT|E-?PAYMENT|EPAY|AUTO ?PAY|AUTOPAY)\b/i;
+const ONLINE_TRANSFER = /^(?:ONLINE|RECURRING|MOBILE) TRANSFER\b/i;
+const REWARDS = /\bREWARDS?\b/i;
+
+type SummaryItem = { direction: "in" | "out"; description: string; amountCents: number };
+
+/** "…261117…" — an ACH effective date (YYMMDD) in a posted description. */
+const ACH_DATE = /^\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/;
+
+/**
+ * The payee/payer part of a posted description. ACH lines run on into a date,
+ * an id and the ACCOUNT HOLDER'S name ("Ch Example DONATION 261117 XXXXX1234
+ * PAT Q PUBLIC", "CAPITAL ONE ONLINE PMT CA1234567890 Pat Q Public"), so cut at
+ * the first date or id-like token (6+ characters with a digit, or masked) —
+ * never at the first word.
+ */
+function summarySource(description: string): string {
+  const tokens = description.trim().split(/\s+/);
+  const cut = tokens.findIndex(
+    (t, i) => i > 0 && (ACH_DATE.test(t) || /^X{2,}\d+$/i.test(t) || (t.length >= 6 && /\d/.test(t) && /^[A-Z0-9]+$/i.test(t))),
+  );
+  return cleanName((cut > 0 ? tokens.slice(0, cut) : tokens).join(" "));
+}
+
+function achDate(description: string): string | null {
+  const t = description.trim().split(/\s+/).find((x, i) => i > 0 && ACH_DATE.test(x));
+  return t ? `20${t.slice(0, 2)}-${t.slice(2, 4)}-${t.slice(4, 6)}` : null;
+}
+
+function summaryAlert(item: SummaryItem, last4: string, asOf: string | null): ParseResult {
+  const merchantRaw = summarySource(item.description);
+  if (!merchantRaw) return { unparsed: "no_merchant" };
+  const base = {
+    amountCents: item.amountCents,
+    merchantRaw,
+    accountHint: { last4 },
+    occurredAt: null,
+    occurredDate: achDate(item.description) ?? asOf,
+    isPending: false,
+    postedSummary: true as const,
+  };
+  const other = MASKED.exec(item.description)?.[1];
+  if (item.direction === "out") {
+    if (CARD_PAYMENT.test(item.description) || ONLINE_TRANSFER.test(item.description)) {
+      return { ...base, kind: "transfer", transferDirection: "out", ...(other ? { fundingSource: { last4: other } } : {}) };
+    }
+    return { ...base, kind: "posted" };
+  }
+  if (ONLINE_TRANSFER.test(item.description)) {
+    return { ...base, kind: "transfer", transferDirection: "in", ...(other ? { fundingSource: { last4: other } } : {}) };
+  }
+  if (REWARDS.test(item.description)) return { ...base, kind: "transfer", transferDirection: "in", externalFrom: "Other" };
+  return { ...base, kind: "payment_received" };
+}
+
+/**
+ * "Here's the rundown / for account ...1234 / Deposits / <description> /
+ * $12.34 / Withdrawals / <description> / $5.67 / As of 11/17/2026 at …".
+ * Strict: anything but description-then-amount pairs under those two
+ * headings is `unparsed`. Several items → `{ split }`, and each part reads
+ * its own item.
+ */
+function parseAccountUpdate(email: NormalizedEmail, text: string): ParseResult {
+  const last4 = new RegExp(String.raw`for account\s*(?:\.{2,}|…|[X*•]{2,})\s?(\d{4})\b`, "i").exec(flat(text))?.[1];
+  if (!last4) return { unparsed: "no_last4" };
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const end = lines.findIndex((l) => /^as of\b/i.test(l));
+  if (end < 0) return { unparsed: "wellsfargo_update_no_date" };
+  const asOf = findDate(lines[end]);
+
+  const items: SummaryItem[] = [];
+  let direction: SummaryItem["direction"] | null = null;
+  let description: string | null = null;
+  for (const line of lines.slice(0, end)) {
+    if (/^deposits?$/i.test(line) || /^withdrawals?$/i.test(line)) {
+      if (description) return { unparsed: "wellsfargo_update_description_without_amount" };
+      direction = /^deposit/i.test(line) ? "in" : "out";
+      continue;
+    }
+    if (!direction) continue; // "Here's the rundown", "for account …", "Go to accounts"
+    if (/^\*?\$\s?[\d,]+\.\d{2}\*?$/.test(line)) {
+      const amountCents = moneyToCents(line.replace(/\*/g, ""));
+      if (!description || !amountCents) return { unparsed: "wellsfargo_update_amount_without_description" };
+      items.push({ direction, description, amountCents });
+      description = null;
+      continue;
+    }
+    if (description) return { unparsed: "wellsfargo_update_unrecognized_line" };
+    description = line;
+  }
+  if (description) return { unparsed: "wellsfargo_update_description_without_amount" };
+  if (items.length === 0) return { ignore: "wellsfargo_update_empty" };
+
+  const part = partOf(email.gmailMessageId);
+  if (part === null) return items.length === 1 ? summaryAlert(items[0], last4, asOf) : { split: items.length };
+  const item = items[part - 1];
+  return item ? summaryAlert(item, last4, asOf) : { unparsed: "wellsfargo_update_part_missing" };
 }
 
 function parsePurchase(text: string): ParseResult {
@@ -215,6 +326,10 @@ export function parseWellsFargo(email: NormalizedEmail): ParseResult {
     return parseDeposit(text);
   }
 
+  if (/\baccount update is here\b/i.test(subject) || /^here'?s the rundown\b/im.test(text)) {
+    return parseAccountUpdate(email, text);
+  }
+
   if (/\byou made a payment\b/i.test(subject) || /\byou recently submitted a payment\b/i.test(text)) {
     return parseTransfer(
       text,
@@ -255,7 +370,7 @@ export function parseWellsFargo(email: NormalizedEmail): ParseResult {
 export const wellsFargoParser: Parser = {
   id: "wellsfargo",
   label: "Wells Fargo",
-  version: 3,
+  version: 4,
   senders: [/@(?:[a-z0-9-]+\.)*wellsfargo\.com$/i],
   dkimDomains: ["wellsfargo.com"],
   accountKey: "last4",

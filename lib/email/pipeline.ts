@@ -10,6 +10,7 @@ import { matchIgnoreList } from "@/lib/email/ignoreList";
 import { displayNameFromRaw, merchantKey } from "@/lib/email/merchantKey";
 import { normalizeEmail } from "@/lib/email/normalize";
 import { resolveAlertOccurredAt } from "@/lib/email/occurredAt";
+import { MAX_PARTS, partId, partOf } from "@/lib/email/parts";
 import { parserForSender } from "@/lib/email/registry";
 import { getEmailSyncSettings, normalizeCounterparty } from "@/lib/email/settings";
 import type { EmailPayload, ParsedAlert, ParseResult } from "@/lib/email/types";
@@ -103,6 +104,56 @@ export async function loadEventEmail(sql: Sql, userId: string, eventId: string) 
   return { ev, email: normalizeEmail(payload) };
 }
 
+/**
+ * One email that holds several separate items (a posted-activity summary):
+ * store each as its own event — a full copy, `<gmail id>#k` (lib/email/parts.ts)
+ * — and run each through this same pipeline, where the parser reads only its
+ * part. Everything downstream is one-transaction-per-event, so this is what
+ * keeps dedupe, Re-read and a status per item working unchanged.
+ *
+ * Idempotent: copies are keyed (user_id, gmail_message_id), and only parts
+ * still `received` are processed, so a retry after a crash finishes the rest.
+ * The whole email is marked done LAST, for the same reason.
+ */
+async function splitIntoParts(
+  sql: Sql,
+  userId: string,
+  ev: EventRow,
+  parts: number,
+  parserMeta: { parserId: string; parserVersion: number },
+  finish: (status: string, reason: string | null, extra?: Parameters<typeof finishEvent>[3]) => Promise<ProcessResult>,
+): Promise<ProcessResult> {
+  if (!Number.isSafeInteger(parts) || parts < 2 || parts > MAX_PARTS || partOf(ev.gmail_message_id) !== null) {
+    return finish("unparsed", "invalid_split", { status: "unparsed", ...parserMeta });
+  }
+  const ids = Array.from({ length: parts }, (_, i) => partId(ev.gmail_message_id, i + 1));
+  await sql`
+    INSERT INTO email_events (
+      user_id, gmail_message_id, rfc822_message_id, from_address, to_address, forwarded_for, subject,
+      received_at, auth_results, arc_auth_results, raw_text, raw_html, body_sha256, truncated,
+      mode_at_receipt, status
+    )
+    SELECT e.user_id, p.gmail_id, e.rfc822_message_id, e.from_address, e.to_address, e.forwarded_for, e.subject,
+           e.received_at, e.auth_results, e.arc_auth_results, e.raw_text, e.raw_html,
+           -- Distinct per part: an identical body means "the same email again".
+           encode(sha256(convert_to(e.body_sha256 || p.gmail_id, 'UTF8')), 'hex'), e.truncated,
+           e.mode_at_receipt, 'received'
+      FROM email_events e
+      CROSS JOIN unnest(${ids}::text[]) AS p(gmail_id)
+     WHERE e.user_id = ${userId} AND e.id = ${ev.id}::uuid
+    ON CONFLICT (user_id, gmail_message_id) DO NOTHING
+  `;
+  const children = (await sql`
+    SELECT id, gmail_message_id, status FROM email_events
+     WHERE user_id = ${userId} AND gmail_message_id = ANY(${ids}::text[])
+  `) as Array<{ id: string; gmail_message_id: string; status: string }>;
+  children.sort((a, b) => (partOf(a.gmail_message_id) ?? 0) - (partOf(b.gmail_message_id) ?? 0));
+  for (const child of children) {
+    if (child.status === "received") await processEvent(sql, userId, child.id);
+  }
+  return finish("ignored", "split_into_parts", { status: "ignored", ...parserMeta, decision: { parts } });
+}
+
 export async function processEvent(sql: Sql, userId: string, eventId: string): Promise<ProcessResult> {
   const loaded = await loadEventEmail(sql, userId, eventId);
   if (!loaded) return { status: "missing", reason: "event_not_found", transactionId: null };
@@ -161,6 +212,7 @@ export async function processEvent(sql: Sql, userId: string, eventId: string): P
     });
   }
   const parserMeta = { parserId: parser.id, parserVersion: parser.version };
+  if ("split" in result) return splitIntoParts(sql, userId, ev, result.split, parserMeta, finish);
   if ("unparsed" in result) {
     return finish("unparsed", result.unparsed, { status: "unparsed", ...parserMeta });
   }

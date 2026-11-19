@@ -871,10 +871,31 @@ Venmo-leg model above with the same `decideTransfer`:
 | A hand-logged transfer of the same amount and accounts (±`manualMatchWindowDays`) | `linked`; no second row |
 | A second email of the *same* type (same kind, same merchant key) | A separate transfer — two $500 savings transfers in a week are two — unless it is the same email again (identical body, or the other inbox's copy) |
 | An email naming the same account on both sides | `ignored` (`transfer_same_account`) |
+| The other half of a card payment where **each email names only its own side** — the bank's "CAPITAL ONE ONLINE PMT" (no card) and the card's "payment received" (no paying account) — in either order (**since 2026-11-19**) | Completes the waiting one (`completed_transfer_side`). Only into a credit card, and only when exactly one is waiting |
 
-Bank alerts for a card payment that *don't* say "transfer" (a checking
-withdrawal alert reading "CAPITAL ONE MOBILE PMT") are not covered yet: no
-real sample exists, and recognising one needs its own rule.
+**Posted-activity summaries (since 2026-11-19).** Wells Fargo's "Your account
+update is here" lists posted Deposits and Withdrawals for one account — the
+only place a checking withdrawal like "CAPITAL ONE ONLINE PMT", an ACH
+donation or an autopay shows up. One email can list several, and everything
+downstream is one transaction per event, so the pipeline splits it into child
+events `<gmail id>#1…#n` (`lib/email/parts.ts`): full copies with their own
+body hash and status, of which the parser reads only its own line. A summary
+mostly repeats what other alerts and hand entries already recorded, so each
+line (`postedSummary`) first checks `alreadyRecorded`: anything on that
+account with the same amount and direction within ±`postedSummaryMatchDays`
+(5) is `duplicate`, or `linked` if it was hand-logged. Only news creates
+anything:
+
+| Line | Becomes |
+|---|---|
+| Withdrawal to a card issuer ("CAPITAL ONE … PMT", "DISCOVER … PAYMENT", …) or an online transfer | A transfer from the account; the other side is the one it names by last 4, or the card's own "payment received" email, or "Which account?" |
+| Deposit reading "REWARDS" | A confirmed transfer from "Other" — Daniel's convention for rewards (how they were logged by hand), like a Venmo payback |
+| Any other withdrawal (an ACH donation, an autopay, a check) | An expense on that account that asks for a category |
+| Any other deposit | Income, named by its source |
+
+The bias is deliberate: two genuinely separate same-amount items on one
+account within five days, one of them already recorded, leave the second to
+Reconcile rather than risk doubling every Bill Pay and card payment.
 
 **Alerts that name no account** (migration 008). Wells Fargo Bill Pay says
 only "your selected account(s)". Such an alert routes to the single account
