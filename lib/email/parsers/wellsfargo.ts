@@ -15,6 +15,11 @@ import { cleanName, findDate, moneyToCents, stripEmphasis, valueAfterLabel } fro
  *       Only CREDIT card ones: a debit card has its own number, not the
  *       checking account's, so routing it by last four would need its own
  *       rule — `unparsed` until a real debit sample exists.
+ *   "You just got paid early!"              payment_received → Income (D1)
+ *       "$12.34 is now in account ...1234" / "Deposit amount" /
+ *       "Deposited by: <ACH line>". The source is the ACH company + entry
+ *       description only — never the recipient name that follows the date.
+ *       (Version 3, 2026-11-19.)
  *   "Bill Pay: Your payment(s) were sent"   payment_sent → an expense
  *       Payee / Amount / Sent on. It never says which account paid ("your
  *       selected account(s)"), so it routes to the account ticked "Bill Pay
@@ -27,7 +32,9 @@ import { cleanName, findDate, moneyToCents, stripEmphasis, valueAfterLabel } fro
  *
  * Transfers name BOTH accounts, so decide() creates one complete transfer.
  *
- * Debit card, deposit and withdrawal alerts have no real sample yet. Anything
+ * Debit card and withdrawal alerts have no real sample yet, and "Your account
+ * update is here" (a digest of posted activity, which repeats what the other
+ * alerts already said) is deliberately left unread for now. Anything
  * with a dollar amount that isn't one of the above is `unparsed`, so the first
  * real ones land under Couldn't read to build the next version from — never a
  * guess.
@@ -50,6 +57,43 @@ function flat(text: string): string {
 function withoutLocation(merchant: string): string {
   const m = /^(.+)\s+in\s+[^,]+,\s*[A-Z]{2}(?:,\s*[A-Z][A-Z .]*)?$/i.exec(merchant.trim());
   return m ? m[1] : merchant;
+}
+
+/**
+ * "Deposited by: 123456 EXAMPLE CO PAYROLL 261120 0000 PAT Q PUBLIC" — an ACH
+ * line: company, entry description, effective date (YYMMDD), an id, then the
+ * RECIPIENT's name. Keep only what precedes the date, so the account holder's
+ * name and the id never become the source, and drop a leading company number
+ * so the default name reads "Example Co Payroll".
+ */
+function depositSource(raw: string): string {
+  const beforeDate = /^(.*?)\s+\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?:\s|$)/.exec(raw.trim())?.[1] ?? raw;
+  return cleanName(beforeDate.replace(/^\d+\s+(?=\S)/, ""));
+}
+
+function parseDeposit(text: string): ParseResult {
+  const line = flat(text);
+  const amountCents = moneyToCents(valueAfterLabel(text, /^deposit amount\b/i));
+  const head = new RegExp(String.raw`${AMOUNT} is now in account\s*(?:\.{2,}|…|[X*•]{2,})\s?(\d{4})\b`, "i").exec(line);
+  const by = valueAfterLabel(text, /^deposited by\b/i);
+  if (!amountCents) return { unparsed: "wellsfargo_deposit_no_amount" };
+  if (!head) return { unparsed: "no_last4" };
+  // The headline repeats the amount; if the two disagree, read neither.
+  if (moneyToCents(head[1]) !== amountCents) return { unparsed: "wellsfargo_deposit_amount_mismatch" };
+  const merchantRaw = by ? depositSource(by) : "";
+  if (!merchantRaw) return { unparsed: "wellsfargo_deposit_no_source" };
+
+  return {
+    kind: "payment_received",
+    amountCents,
+    merchantRaw,
+    accountHint: { last4: head[2] },
+    occurredAt: null,
+    // No date in the body except the ACH effective date; the email's own time
+    // is when the money became available.
+    occurredDate: null,
+    isPending: false,
+  };
 }
 
 function parsePurchase(text: string): ParseResult {
@@ -167,6 +211,10 @@ export function parseWellsFargo(email: NormalizedEmail): ParseResult {
     return parsePurchase(text);
   }
 
+  if (/\bgot paid early\b/i.test(subject) || (/^deposit amount\b/im.test(text) && /^deposited by\b/im.test(text))) {
+    return parseDeposit(text);
+  }
+
   if (/\byou made a payment\b/i.test(subject) || /\byou recently submitted a payment\b/i.test(text)) {
     return parseTransfer(
       text,
@@ -207,7 +255,7 @@ export function parseWellsFargo(email: NormalizedEmail): ParseResult {
 export const wellsFargoParser: Parser = {
   id: "wellsfargo",
   label: "Wells Fargo",
-  version: 2,
+  version: 3,
   senders: [/@(?:[a-z0-9-]+\.)*wellsfargo\.com$/i],
   dkimDomains: ["wellsfargo.com"],
   accountKey: "last4",

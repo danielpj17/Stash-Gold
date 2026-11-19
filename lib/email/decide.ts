@@ -455,7 +455,12 @@ export function describe(ctx: DecideContext, kind: "expense" | "income"): string
     return kind === "income" ? `Venmo from ${a.counterparty}` : `Venmo to ${a.counterparty}`;
   }
   if (kind === "income") {
-    return a.kind === "refund" ? `Refund · ${merchantName(ctx)}` : `Deposit · ${merchantName(ctx)}`;
+    // A deposit is called by its SOURCE, the way a purchase is called by its
+    // merchant: "Acme", not "Deposit · …" — what you'd type for a
+    // paycheck by hand. The source is a merchant row (attached in
+    // decideIncome), so it's renamed once under Rules → Money in. A refund
+    // keeps its prefix: it shares the name of the store you bought from.
+    return a.kind === "refund" ? `Refund · ${merchantName(ctx)}` : merchantName(ctx);
   }
   return merchantName(ctx);
 }
@@ -864,7 +869,9 @@ function decideIncome(ctx: DecideContext): Plan {
         reviewStatus: "confirmed",
         categorizedBy: "rule",
         isPending: false,
-        attachMerchant: false,
+        // A deposit's source becomes a merchant so it can be named (Rules →
+        // Money in). Its category settings never apply: money in is Income.
+        attachMerchant: ctx.alert.kind === "payment_received",
         attachEvent: true,
       },
     ],

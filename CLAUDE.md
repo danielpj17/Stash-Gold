@@ -273,10 +273,12 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   each with fixtures under `__fixtures__/`. Bank parsers are added one at a
   time from real, scrubbed alerts (`npm run email:export`); the Venmo parser's
   v1 was written before real samples existed. Wells Fargo reads credit card
-  purchases, Bill Pay, "You made a payment" and online transfers; its debit
-  card, withdrawal and deposit alerts are `unparsed` until real samples exist
-  (a debit card has its own number, not the checking account's, so it can't
-  simply route by last 4). `capitalone` reads
+  purchases, "You just got paid early!" deposits, Bill Pay, "You made a
+  payment" and online transfers; its debit card and withdrawal alerts are
+  `unparsed` until real samples exist (a debit card has its own number, not
+  the checking account's, so it can't simply route by last 4). "Your account
+  update is here" is a digest of posted activity that repeats the other
+  alerts, so it stays unread rather than double anything. `capitalone` reads
   Capital One **and Discover** (Capital One owns it; same sender, same
   template) — purchases, "payment received", and ignores scheduled payments.
   A hand-forwarded alert (Forward pressed by hand) is always
@@ -306,7 +308,11 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   Money a person **sends you** on Venmo is a transfer from `"Other"` (an
   `EXTERNAL_TRANSFER_SOURCES` label) into that Venmo account, not Income —
   Daniel's convention for paybacks, replacing D1 for Venmo. Bank refunds and
-  deposits still become Income.
+  deposits still become Income. A deposit is described by its **source**
+  (a merchant row, renamed under Rules → **Money in**, e.g. a paycheck as
+  "Acme"), never "Deposit · …"; a refund keeps "Refund · <store>".
+  `/api/merchants` flags a source as `moneyIn` when every row it names is
+  income.
 - **Push** (`lib/push.ts`, `worker/index.ts`): next-pwa compiles
   `worker/index.ts` to `public/worker-<hash>.js`; never hand-edit
   `public/sw.js`. There is no service worker in `next dev`, so push is tested

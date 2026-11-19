@@ -22,7 +22,11 @@ export async function GET() {
         SELECT m.id, m.display_name, m.mode, m.category, m.shortlist, m.default_category,
                m.created_at, m.last_seen_at,
                (SELECT count(*)::int FROM transactions t
-                 WHERE t.user_id = m.user_id AND t.merchant_id = m.id) AS tx_count
+                 WHERE t.user_id = m.user_id AND t.merchant_id = m.id) AS tx_count,
+               -- A deposit source (a paycheck's payer): every row it names is
+               -- income. Shown under "Money in", where only its name matters.
+               (SELECT bool_and(t.kind = 'income') FROM transactions t
+                 WHERE t.user_id = m.user_id AND t.merchant_id = m.id) AS income_only
           FROM merchants m
          WHERE m.user_id = ${userId}
          ORDER BY m.last_seen_at DESC NULLS LAST, m.display_name ASC
@@ -57,6 +61,7 @@ export async function GET() {
         createdAt: m.created_at,
         lastSeenAt: m.last_seen_at,
         transactionCount: Number(m.tx_count ?? 0),
+        moneyIn: m.income_only === true,
         aliases: byMerchant.get(String(m.id)) ?? [],
       })),
     });

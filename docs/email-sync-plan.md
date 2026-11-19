@@ -813,7 +813,7 @@ matches:
 | Bank/card alert whose merchant key is `VENMO`, or a Venmo "transfer to bank" email | A Venmo leg (below), not income |
 | A payment *to* a credit card ("payment received, thank you") | `transfer` kind. **Since 2026-11-16** a transfer row (see "Account transfers" below); before that `ignored`, left to Reconcile |
 | Venmo "X paid you" / "X completed your request" (**since 2026-11-16**) | A **transfer** from `"Other"` into that Venmo account, confirmed, described by the note. Someone paying you back isn't income — Daniel's convention. Links to a hand-logged transfer; never pairs with another person's payment of the same amount |
-| Refund or credit, deposit | `kind = 'income'`, `category = 'Income'`, `review_status = 'confirmed'`, `categorized_by = 'rule'`. No question, no push. Descriptions like "Refund · Amazon" |
+| Refund or credit, deposit | `kind = 'income'`, `category = 'Income'`, `review_status = 'confirmed'`, `categorized_by = 'rule'`. No question, no push. A refund reads "Refund · Amazon". **Since 2026-11-19** a deposit is described by its *source* alone, like a hand-logged paycheck ("Acme"): the source becomes a merchant row, listed under Rules → **Money in**, where renaming it names every later deposit. Its category settings never apply |
 
 Income rows go through `insertOrLinkTransaction`, so a paycheck already logged
 by hand gets linked, not doubled. In Reconcile they're ordinary Income

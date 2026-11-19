@@ -18,6 +18,8 @@ type Merchant = {
   defaultCategory: string | null;
   lastSeenAt: string | null;
   transactionCount: number;
+  /** A deposit source (e.g. a paycheck's payer): only its name is a rule. */
+  moneyIn: boolean;
   aliases: Alias[];
 };
 
@@ -161,7 +163,7 @@ export default function RulesPage() {
     [load],
   );
 
-  const shown = useMemo(() => {
+  const matching = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!merchants) return [];
     if (!q) return merchants;
@@ -169,6 +171,10 @@ export default function RulesPage() {
       (m) => m.displayName.toLowerCase().includes(q) || m.aliases.some((a) => a.exampleRaw.toLowerCase().includes(q)),
     );
   }, [merchants, query]);
+  const shown = useMemo(() => matching.filter((m) => !m.moneyIn), [matching]);
+  const sources = useMemo(() => matching.filter((m) => m.moneyIn), [matching]);
+  /** Merge / move targets stay on the same side: a store never absorbs an employer. */
+  const peersOf = (m: Merchant) => (merchants ?? []).filter((x) => x.id !== m.id && x.moneyIn === m.moneyIn);
 
   const select = "rounded-md bg-[#1f1f1f] border border-charcoal-dark px-2 py-1.5 text-sm text-white";
 
@@ -204,11 +210,11 @@ export default function RulesPage() {
 
         {!merchants ? (
           <p className="text-sm text-gray-400">Loading…</p>
-        ) : shown.length === 0 ? (
+        ) : shown.length === 0 && sources.length === 0 ? (
           <div className="rounded-xl bg-[#252525] border border-charcoal-dark p-6 text-center text-sm text-gray-400">
             No merchants yet — they appear as card alerts arrive.
           </div>
-        ) : (
+        ) : shown.length === 0 ? null : (
           <ul className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden divide-y divide-charcoal-dark">
             {shown.map((m) => {
               const isOpen = open === m.id;
@@ -338,7 +344,7 @@ export default function RulesPage() {
                           {m.aliases.map((a) => (
                             <li key={a.key} className="flex items-center gap-2 flex-wrap">
                               <code className="text-xs text-gray-300 flex-1 min-w-0 break-all">{a.exampleRaw}</code>
-                              {merchants.length > 1 || m.aliases.length > 1 ? (
+                              {peersOf(m).length > 0 || m.aliases.length > 1 ? (
                                 <select
                                   value=""
                                   className={`${select} text-xs`}
@@ -346,8 +352,7 @@ export default function RulesPage() {
                                 >
                                   <option value="">Move to…</option>
                                   {m.aliases.length > 1 && <option value="__split">Its own merchant</option>}
-                                  {merchants
-                                    .filter((x) => x.id !== m.id)
+                                  {peersOf(m)
                                     .map((x) => (
                                       <option key={x.id} value={x.id}>
                                         {x.displayName}
@@ -373,11 +378,10 @@ export default function RulesPage() {
                             </option>
                           ))}
                         </select>
-                        {merchants.length > 1 && (
+                        {peersOf(m).length > 0 && (
                           <select value="" className={`${select} mt-3`} onChange={(e) => e.target.value && void merge(m, e.target.value)}>
                             <option value="">Merge into…</option>
-                            {merchants
-                              .filter((x) => x.id !== m.id)
+                            {peersOf(m)
                               .map((x) => (
                                 <option key={x.id} value={x.id}>
                                   {x.displayName}
@@ -392,6 +396,38 @@ export default function RulesPage() {
               );
             })}
           </ul>
+        )}
+
+        {merchants && sources.length > 0 && (
+          <section className="space-y-2 pt-2">
+            <h2 className="text-sm font-semibold text-white">Money in</h2>
+            <p className="text-xs text-gray-400">
+              Paychecks and other deposits from bank alerts. They&apos;re always Income; the name is the description
+              each new deposit gets. Renaming doesn&apos;t change past deposits.
+            </p>
+            <ul className="rounded-xl bg-[#252525] border border-charcoal-dark overflow-hidden divide-y divide-charcoal-dark">
+              {sources.map((m) => (
+                <li key={m.id} className="px-3 py-2.5 space-y-1.5 text-sm">
+                  <label className="block">
+                    <span className="sr-only">Name for {m.displayName}</span>
+                    <input
+                      defaultValue={m.displayName}
+                      maxLength={80}
+                      onBlur={(e) => {
+                        const next = e.target.value.trim();
+                        if (next && next !== m.displayName) void save(m, { displayName: next });
+                      }}
+                      className="w-full rounded-md bg-[#1f1f1f] border border-charcoal-dark px-3 py-1.5 text-white focus:outline-none focus:border-[#50C878]"
+                    />
+                  </label>
+                  <span className="block text-xs text-gray-500 break-all">
+                    {m.aliases.map((a) => a.exampleRaw).join(" · ")} · {m.transactionCount} deposit
+                    {m.transactionCount === 1 ? "" : "s"} · seen {fmtWhen(m.lastSeenAt)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
       </div>
     </DashboardLayout>

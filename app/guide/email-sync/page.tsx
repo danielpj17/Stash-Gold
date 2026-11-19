@@ -67,7 +67,8 @@ export default function EmailSyncGuidePage() {
           </ul>
           <p>
             Turn on <B>every purchase</B> alerts and, if offered, <B>transaction posted</B> — that lets a later
-            tip or final gas amount update the first alert. Refunds and deposits become Income.
+            tip or final gas amount update the first alert. Refunds and deposits become Income. A deposit is
+            named after whoever paid it; rename a paycheck&apos;s source once under Rules → Money in.
           </p>
           <Note>Joint cards: only one of you should enroll the card&apos;s alerts.</Note>
           <Note>Venmo: each person forwards their own receipts. Stash tells the Venmo accounts apart by whose inbox forwarded them.</Note>

@@ -497,6 +497,53 @@ describe("decide: money in (D1, §5.12)", () => {
     expect(plan).toMatchObject({ action: "link", transactionId: "pay-1" });
   });
 
+  describe("deposits are named by their source", () => {
+    const deposit = (over: Partial<DecideContext> = {}) =>
+      decide(
+        ctx({
+          account: CHECKING,
+          merchant: null,
+          alert: alert({ kind: "payment_received", merchantRaw: "EXAMPLE EMPLOYER PAYROLL", accountHint: { last4: "1111" }, amountCents: 123456, isPending: false }),
+          ...over,
+        }),
+      );
+
+    it("a new source: Income, confirmed, no push, its raw name, and a merchant to rename", () => {
+      const plan = deposit();
+      if (plan.action !== "create") throw new Error(plan.action);
+      expect(plan.transactions[0]).toMatchObject({
+        kind: "income",
+        category: "Income",
+        amountCents: 123456,
+        account: CHECKING.id,
+        description: "Example Employer Payroll",
+        reviewStatus: "confirmed",
+        attachMerchant: true,
+      });
+      expect(plan.notify).toBe(false);
+    });
+
+    it("a source renamed under Rules → Money in gives just that name", () => {
+      const plan = deposit({ merchant: { ...MCD, id: "m-pay", displayName: "Acme", mode: "ask_all", shortlist: [], defaultCategory: null } });
+      if (plan.action !== "create") throw new Error(plan.action);
+      expect(plan.transactions[0].description).toBe("Acme");
+      // A merchant's category settings never touch money in.
+      expect(plan.transactions[0].category).toBe("Income");
+    });
+
+    it("a source with an expense-style rule is still Income", () => {
+      const plan = deposit({ merchant: { ...MCD, mode: "auto", category: "Groceries" } });
+      if (plan.action !== "create") throw new Error(plan.action);
+      expect(plan.transactions[0]).toMatchObject({ kind: "income", category: "Income", reviewStatus: "confirmed" });
+    });
+
+    it("a refund keeps its prefix and doesn't become a merchant of its own", () => {
+      const plan = decide(ctx({ alert: alert({ kind: "refund", isPending: false }) }));
+      if (plan.action !== "create") throw new Error(plan.action);
+      expect(plan.transactions[0]).toMatchObject({ kind: "income", description: "Refund · McDonald's", attachMerchant: false });
+    });
+  });
+
   it("payments between the two of us are ignored (D6)", () => {
     const plan = decide(
       ctx({
