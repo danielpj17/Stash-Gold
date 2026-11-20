@@ -106,8 +106,12 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
           ? body.amountReason
           : "manual";
       // The amount history row is written first, while `amount` still holds
-      // the old value, and only when it actually changes.
+      // the old value, and only when it actually changes. On an email row the
+      // alert's own amount is kept in original_amount ("updated from $X"): a
+      // second copy of that alert is recognised by it, and Reconcile counts
+      // the row as corrected.
       await sql.transaction([
+        sql`SELECT 1 FROM transactions WHERE user_id = ${userId} AND id = ${id} FOR UPDATE`,
         sql`
           INSERT INTO transaction_amount_changes
             (user_id, transaction_id, old_amount, new_amount, reason, changed_by)
@@ -117,7 +121,11 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
         `,
         sql`
           UPDATE transactions
-             SET amount = ${amount}, updated_at = now()
+             SET amount = ${amount},
+                 original_amount = CASE WHEN source = 'email' AND amount <> ${amount}::numeric
+                                        THEN COALESCE(original_amount, amount)
+                                        ELSE original_amount END,
+                 updated_at = now()
            WHERE user_id = ${userId} AND id = ${id}
         `,
       ]);

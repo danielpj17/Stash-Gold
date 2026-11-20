@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decide, isGasHold, type AccountRef, type CandidateRow, type DecideContext } from "@/lib/email/decide";
+import { amountsCompatible, decide, isGasHold, tipCeilingCents, type AccountRef, type CandidateRow, type DecideContext } from "@/lib/email/decide";
 import { merchantKey } from "@/lib/email/merchantKey";
 import type { MerchantRule } from "@/lib/email/rules";
 import type { ParsedAlert } from "@/lib/email/types";
@@ -349,6 +349,34 @@ describe("decide: manual entries (plan §5.7, C18)", () => {
   it("Phase 4 tolerance: a hand-logged tipped total links to the pre-tip alert", () => {
     const plan = decide(ctx({ alert: alert({ amountCents: 1482 }), candidates: [manual({ amountCents: 1750 })] }));
     expect(plan.action).toBe("link");
+  });
+
+  it("a small bill's tip may be up to $5 even past 35% ($3 on $6.20)", () => {
+    const link = decide(ctx({ alert: alert({ amountCents: 620 }), candidates: [manual({ amountCents: 920 })] }));
+    expect(link.action).toBe("link");
+    const tooMuch = decide(ctx({ alert: alert({ amountCents: 620 }), candidates: [manual({ amountCents: 1121 })] }));
+    expect(tooMuch.action).toBe("create");
+  });
+});
+
+describe("tip allowance where a person's number is one side", () => {
+  it("is 35% or $5, whichever is more", () => {
+    expect(tipCeilingCents(620, 35)).toBe(1120);
+    expect(tipCeilingCents(1482, 35)).toBe(2001);
+    expect(tipCeilingCents(4000, 35)).toBe(5400);
+  });
+  it("amountsCompatible: a tip category only, and never lower than the alert", () => {
+    expect(amountsCompatible(920, 620, "Eating Out", true)).toBe(true);
+    expect(amountsCompatible(920, 620, "Dates", true)).toBe(true);
+    expect(amountsCompatible(920, 620, "Groceries", true)).toBe(false);
+    expect(amountsCompatible(400, 620, "Eating Out", true)).toBe(false);
+    expect(amountsCompatible(920, 620, "Eating Out", false)).toBe(false); // the alert was already final
+  });
+  it("two alerts keep the bare 35%: a second café visit isn't a tip", () => {
+    const plan = decide(
+      ctx({ alert: alert({ amountCents: 920 }), occurredAt: hours(20), candidates: [row({ amountCents: 620, category: "Eating Out" })] }),
+    );
+    expect(plan.action).toBe("create");
   });
 });
 

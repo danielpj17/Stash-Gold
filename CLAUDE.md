@@ -318,8 +318,17 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   the Stash inbox (`@*.google.com`) is on the ignore list.
 - **Manual entries** go through `insertOrLinkTransaction` (`lib/transactions.ts`)
   in both write routes: when email sync is live, a hand-logged purchase answers
-  a waiting alert row instead of doubling it. Reconcile's Quick Add sends
+  a waiting alert row instead of doubling it — amount included, so a tipped
+  total replaces the alert's pre-tip amount (Keep both restores it). Reconcile's Quick Add sends
   `source: "csv"` and is always a plain insert.
+- **Tips and gas fill-ups**: an alert comes at the swipe and no card Stash reads
+  emails the final amount, so a person supplies it — **Final amount, with tip**
+  on `/categorize/[id]` (saved with the pick), a hand-logged total, or
+  Reconcile's Correct to $X & link. Every amount change on an email row keeps
+  the alert's own amount in `original_amount`: the duplicate-alert check
+  matches a second copy of the alert on it. Where a person's number is one
+  side, a tip may add 35% or $5 (`tipCeilingCents`); the alert-to-alert merge
+  keeps the bare 35%, or two coffees at one café would merge.
 - **Categories** (D2): a `needs_review` email row carries its provisional guess
   in `category`, so it counts in its budget bar, drawn as an "unconfirmed"
   share. `isUnconfirmed(row)` (`services/transactionsApi.ts`) is the one test.

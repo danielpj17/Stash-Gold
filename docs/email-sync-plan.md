@@ -606,6 +606,7 @@ tuned in one place:
 
 ```ts
 followupWindowDays: 5, tipMaxIncreasePct: 35, tipMinGapHours: 12 /* D3 */,
+tipMinAllowanceCents: 500,
 gasHoldExactAmounts: [1.0], gasHoldRoundRange: [50, 200],
 tipCategories: ["Eating Out", "Dates"], gasCategory: "Gas",
 duplicateAlertWindowMinutes: 15, manualMatchWindowDays: 2,
@@ -633,8 +634,29 @@ restores `original_amount`, re-creates the second purchase from its own
 `email_event` (possible only because raw events are kept), and logs
 `split_back`. So every heuristic mistake is one tap to undo.
 
-Pending rows that never get a second alert stay as they are, and the CSV pass
-(§5.8) corrects them.
+Pending rows that never get a second alert stay as they are until a person
+supplies the final amount. No card whose alerts Stash reads has been seen to
+email it, so this is the usual route for a tip or a gas fill-up:
+
+- **Final amount, with tip** on the categorize screen (`/categorize/[id]`, where
+  a notification lands). It shows on a pending email expense not yet matched in
+  Reconcile: open at once when the guess is Eating Out, Dates or Gas, behind
+  "Add a tip or final amount" otherwise. It is saved with the pick, in the
+  same transaction, with a `manual` history line.
+- **Logging the total by hand**: the absorb takes the typed amount (§5.7).
+- **Reconcile**: the CSV pass (§5.8) offers Correct to $X & link.
+
+Every amount change on an email row (these three and any
+`PATCH /api/transactions/[id]`) keeps the alert's own amount in
+`original_amount`. That is what the duplicate-alert check matches a second
+copy of the alert on, and what Reconcile counts as "corrected".
+
+**Tip allowance.** A small bill's tip can be most of the bill ($3 on $6.20).
+Where a person's number is one side of the match — a hand-logged total against
+its alert, a statement line in Reconcile — a tip may add 35% or
+`tipMinAllowanceCents` ($5), whichever is more (`tipCeilingCents`). The
+alert-to-alert **Tip** rule above keeps the bare 35%: there, two real coffees
+at one café a day apart would merge.
 
 ### 5.7 Dedupe matrix
 
@@ -644,7 +666,7 @@ Exactly one transaction per real purchase:
 |---|---|---|---|
 | Same alert delivered twice: a Gmail redelivery, **or both spouses forwarding the joint card's alert** | Same account, kind, amount, merchant key, occurred within 15 min, different message id, and (identical `body_sha256` **or** a different `forwarded_for`) | Event `duplicate`, linked to the first row | 3 |
 | Alert arrives **after** a Shortcut or web entry | Manual row (`source` manual/shortcut) with no `email_event_id`, ±2 days, amount equal (Phase 4: or within tip/gas tolerance), account equal **or** the manual row is on the default account (C18), **exactly one** candidate, not claimed | **Link:** set `email_event_id`, `merchant_id`, `is_pending`, and set the account to the alert's if the row was on the default. Keep the category and notes. No push. | 3 |
-| Manual entry saved **after** the alert | In `/api/transactions` POST and `/api/ingest`: an email row ±2 days, same amount or tolerance, exactly one candidate | If the email row is still `needs_review`, **absorb it**: the manual entry *is* the answer (category applied, `reviewed_by = actor`), no second row, and the response says "Matched your card alert — **Keep both** instead?" If the email row is already confirmed, create the row and flag both as a "Possible duplicate" in To categorize. | 3 |
+| Manual entry saved **after** the alert | In `/api/transactions` POST and `/api/ingest`: an email row ±2 days, same amount or tolerance, exactly one candidate | If the email row is still `needs_review`, **absorb it**: the manual entry *is* the answer (category applied, `reviewed_by = actor`, and its amount: a tipped total replaces the alert's, which stays in `original_amount`), no second row, and the response says "Matched your card alert — **Keep both** instead?" (which restores the alert's amount). If the email row is already confirmed, create the row and flag both as a "Possible duplicate" in To categorize. | 3 |
 | Pending → posted | §5.6 | Update | 3 / 4 |
 | Venmo funded by a bank or card (D4) | Bank/card alert whose merchant key is `VENMO` | Never an expense. It becomes, or dedupes into, the **transfer** bank/card → Venmo, while the Venmo email creates the expense. See §5.12. | 3 guard / 4 |
 | Manual transfer vs email transfer (D4) | `kind = 'transfer'`, same amount ±2 days, same from/to (or the email row's still-unknown Venmo side) | Link; no second transfer | 4 |

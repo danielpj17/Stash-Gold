@@ -26,7 +26,7 @@ export async function GET(_request: NextRequest, context: { params: { id: string
     const row = rows[0];
     if (!row) return NextResponse.json({ error: "Transaction not found" }, { status: 404 });
 
-    const [history, name, source] = await Promise.all([
+    const [history, name, source, claim] = await Promise.all([
       sql`
         SELECT old_amount, new_amount, reason, changed_at
           FROM transaction_amount_changes
@@ -40,6 +40,12 @@ export async function GET(_request: NextRequest, context: { params: { id: string
               FROM email_events WHERE user_id = ${userId} AND id = ${row.email_event_id}::uuid
           ` as unknown as Promise<Array<{ parser_id: string | null; reason: string | null }>>)
         : Promise.resolve([] as Array<{ parser_id: string | null; reason: string | null }>),
+      sql`
+        SELECT EXISTS (
+                 SELECT 1 FROM reconciliation_claim_links c
+                  WHERE c.user_id = ${userId} AND c.sheet_row_id = ${id}
+               ) AS claimed
+      ` as unknown as Promise<Array<{ claimed: boolean }>>,
     ]);
 
     return NextResponse.json({
@@ -51,6 +57,9 @@ export async function GET(_request: NextRequest, context: { params: { id: string
       // card payment / bank transfer waiting on any other account.
       venmoLeg: (source[0]?.reason ?? "").startsWith("venmo_"),
       reviewedByName: name,
+      // Matched to a statement line: the statement is the amount, so the
+      // screen offers no "final amount" (POST refuses one too).
+      claimed: claim[0]?.claimed === true,
       amountHistory: history.map((h) => ({
         oldAmount: Number(h.old_amount),
         newAmount: Number(h.new_amount),
@@ -67,9 +76,16 @@ export async function GET(_request: NextRequest, context: { params: { id: string
 }
 
 /**
- * Answer: { category, always?, addToShortlist?, description? } (plan §5.5).
+ * Answer: { category, always?, addToShortlist?, description?, amount? } (plan §5.5).
  * `description`, when sent, replaces the row's description in the same
  * update — the screen lets you edit it before you pick.
+ *
+ * `amount` is the final amount typed on the screen — a card alert comes at the
+ * swipe, before the tip. It replaces the row's amount in the same
+ * transaction, with a history line, and the alert's own amount is kept in
+ * original_amount (a second copy of that alert is matched on it). Refused for
+ * a row already matched to a statement line: there, the statement is the
+ * amount.
  *
  * A CONDITIONAL update — `… AND review_status = 'needs_review'` — so when both
  * people answer the same item, the second gets 409 with who already filed it
@@ -97,24 +113,70 @@ export async function POST(request: NextRequest, context: { params: { id: string
   }
   const isIncome = category === "Income";
   const description = typeof body.description === "string" ? body.description.trim().slice(0, 500) : null;
+  let amount: number | null = null;
+  if (body.amount !== undefined && body.amount !== null) {
+    const n = Number(body.amount);
+    if (!Number.isFinite(n) || n <= 0 || n >= 1e9) {
+      return NextResponse.json({ error: "The final amount must be a positive number" }, { status: 400 });
+    }
+    amount = Math.round(n * 100) / 100;
+  }
 
   try {
-    const updated = (await sql`
-      UPDATE transactions
-         SET category = ${category},
-             description = COALESCE(${description}::text, description),
-             kind = ${isIncome ? "income" : "expense"},
-             categorized_by = 'user',
-             review_status = 'confirmed',
-             reviewed_by = ${actorId}::uuid,
-             reviewed_at = now(),
-             updated_at = now()
-       WHERE user_id = ${userId} AND id = ${id}
-         AND review_status = 'needs_review' AND kind <> 'transfer'
-      RETURNING merchant_id,
-                COALESCE((SELECT e.parser_id = 'venmo' FROM email_events e
-                           WHERE e.user_id = transactions.user_id AND e.id = transactions.email_event_id), false) AS from_venmo
-    `) as Array<{ merchant_id: string | null; from_venmo: boolean }>;
+    if (amount !== null) {
+      const claimed = (await sql`
+        SELECT EXISTS (
+                 SELECT 1 FROM reconciliation_claim_links c
+                  WHERE c.user_id = ${userId} AND c.sheet_row_id = ${id}
+               ) AS claimed
+      `) as Array<{ claimed: boolean }>;
+      if (claimed[0]?.claimed) {
+        return NextResponse.json(
+          {
+            error:
+              "This purchase is already matched to your statement in Reconcile, so its amount comes from the statement. Pick a category without changing the amount.",
+          },
+          { status: 422 },
+        );
+      }
+    }
+
+    const results = await sql.transaction([
+      // Lock the row so the history line and the update see the same state.
+      sql`SELECT 1 FROM transactions WHERE user_id = ${userId} AND id = ${id} FOR UPDATE`,
+      // History first, while `amount` still holds the alert's value.
+      sql`
+        INSERT INTO transaction_amount_changes
+          (user_id, transaction_id, old_amount, new_amount, reason, changed_by)
+        SELECT ${userId}::uuid, t.id, t.amount, ${amount}::numeric, 'manual', ${actorId}::uuid
+          FROM transactions t
+         WHERE t.user_id = ${userId} AND t.id = ${id}
+           AND t.review_status = 'needs_review' AND t.kind <> 'transfer'
+           AND ${amount}::numeric IS NOT NULL AND t.amount <> ${amount}::numeric
+      `,
+      sql`
+        UPDATE transactions
+           SET category = ${category},
+               description = COALESCE(${description}::text, description),
+               original_amount = CASE WHEN ${amount}::numeric IS NOT NULL AND source = 'email'
+                                           AND amount <> ${amount}::numeric
+                                      THEN COALESCE(original_amount, amount)
+                                      ELSE original_amount END,
+               amount = COALESCE(${amount}::numeric, amount),
+               kind = ${isIncome ? "income" : "expense"},
+               categorized_by = 'user',
+               review_status = 'confirmed',
+               reviewed_by = ${actorId}::uuid,
+               reviewed_at = now(),
+               updated_at = now()
+         WHERE user_id = ${userId} AND id = ${id}
+           AND review_status = 'needs_review' AND kind <> 'transfer'
+        RETURNING merchant_id,
+                  COALESCE((SELECT e.parser_id = 'venmo' FROM email_events e
+                             WHERE e.user_id = transactions.user_id AND e.id = transactions.email_event_id), false) AS from_venmo
+      `,
+    ]);
+    const updated = results[2] as Array<{ merchant_id: string | null; from_venmo: boolean }>;
 
     if (updated.length === 0) {
       const current = (await sql`

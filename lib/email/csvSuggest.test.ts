@@ -34,6 +34,11 @@ describe("pendingAmountSuggestions (plan §5.8)", () => {
     expect(pendingAmountSuggestions(bank, [row({ account: "other" })], new Set())).toHaveLength(0);
     expect(pendingAmountSuggestions(bank, [row({ date: "2026-11-01" })], new Set())).toHaveLength(0);
   });
+  it("a small bill's tip may be up to $5 even past 35%", () => {
+    const small = row({ amount: 6.2, description: "Wing Place" });
+    expect(pendingAmountSuggestions({ ...bank, amount: -9.2 }, [small], new Set())).toHaveLength(1);
+    expect(pendingAmountSuggestions({ ...bank, amount: -11.21 }, [small], new Set())).toHaveLength(0);
+  });
   it("ignores increases over 35% and categories that don't tip", () => {
     expect(pendingAmountSuggestions({ ...bank, amount: -25 }, [row()], new Set())).toHaveLength(0);
     expect(pendingAmountSuggestions(bank, [row({ expenseType: "Groceries" })], new Set())).toHaveLength(0);

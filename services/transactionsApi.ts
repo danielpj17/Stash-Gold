@@ -205,6 +205,9 @@ export async function getExpenses(month?: string): Promise<SheetRow[]> {
 export type MatchedEmail = {
   transactionId: string;
   previousDescription: string;
+  /** The alert's amount before the entry's (e.g. tipped) total replaced it. */
+  previousAmount?: number;
+  previousOriginalAmount?: number | null;
   merchantName: string | null;
 };
 
@@ -249,14 +252,18 @@ export async function submitExpense(
  * manual entry as its own row.
  */
 export async function keepBothTransactions(
-  emailRowId: string,
+  matched: MatchedEmail,
   payload: ExpensePayload,
-  previousDescription: string,
 ): Promise<{ emailRow: SheetRow; row: SheetRow }> {
-  const res = await fetch(`${TRANSACTIONS_API}/${encodeURIComponent(emailRowId)}/keep-both`, {
+  const res = await fetch(`${TRANSACTIONS_API}/${encodeURIComponent(matched.transactionId)}/keep-both`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...payload, previousDescription }),
+    body: JSON.stringify({
+      ...payload,
+      previousDescription: matched.previousDescription,
+      previousAmount: matched.previousAmount,
+      previousOriginalAmount: matched.previousOriginalAmount,
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));

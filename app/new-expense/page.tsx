@@ -14,6 +14,7 @@ import {
   type MatchedEmail,
 } from "@/services/transactionsApi";
 import { EXPENSE_TYPE_OPTIONS } from "@/lib/constants";
+import { fmtDollars } from "@/lib/emailSyncLabels";
 import { Loader2, Settings } from "lucide-react";
 import Link from "next/link";
 
@@ -40,7 +41,7 @@ export default function NewExpensePage() {
     if (!matched) return;
     setKeepingBoth(true);
     try {
-      await keepBothTransactions(matched.email.transactionId, matched.payload, matched.email.previousDescription);
+      await keepBothTransactions(matched.email, matched.payload);
       triggerRefresh();
       setMatched(null);
     } catch (err) {
@@ -182,7 +183,12 @@ export default function NewExpensePage() {
             {status === "success" && matched && (
               <div className="text-sm rounded-lg border border-[#50C878]/40 bg-[#50C878]/10 px-3 py-2 text-gray-100">
                 Matched your card alert
-                {matched.email.merchantName ? ` (${matched.email.merchantName})` : ""} — filed it, no second entry.{" "}
+                {matched.email.merchantName ? ` (${matched.email.merchantName})` : ""} — filed it
+                {typeof matched.email.previousAmount === "number" &&
+                Math.round(matched.email.previousAmount * 100) !== Math.round(matched.payload.amount * 100)
+                  ? ` at ${fmtDollars(matched.payload.amount)} (the alert said ${fmtDollars(matched.email.previousAmount)})`
+                  : ""}
+                , no second entry.{" "}
                 <button
                   type="button"
                   disabled={keepingBoth}

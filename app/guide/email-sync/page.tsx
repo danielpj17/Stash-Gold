@@ -115,7 +115,11 @@ export default function EmailSyncGuidePage() {
             </li>
             <li>Logging a purchase by hand after its alert answers the alert instead of doubling it.</li>
             <li>
-              CSV reconciling works as before; a tipped or final-gas line offers <B>Correct to $X &amp; link</B>.
+              Card alerts come at the swipe, before the tip. Type the total in <B>Final amount, with tip</B> when you
+              categorize it (or tap <B>Add a tip or final amount</B>), or log the total by hand.
+            </li>
+            <li>
+              CSV reconciling works as before; a tip nobody entered offers <B>Correct to $X &amp; link</B>.
             </li>
           </ul>
           <Note>Emails that arrived during Shadow are never added later — you logged those by hand.</Note>

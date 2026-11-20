@@ -1,5 +1,5 @@
 import { EMAIL_SYNC_CONFIG } from "@/lib/email/config";
-import { isGasHold } from "@/lib/email/decide";
+import { isGasHold, tipCeilingCents } from "@/lib/email/decide";
 import { merchantKey } from "@/lib/email/merchantKey";
 
 /**
@@ -11,8 +11,9 @@ import { merchantKey } from "@/lib/email/merchantKey";
  * from bulk approve, so auto-match behaviour is byte-identical to before.
  *
  * A candidate is an unclaimed pending email row on the same account, within
- * ±csvSuggestWindowDays, where the bank amount is the logged amount ×1.00–1.35
- * (tip categories) or the logged amount is a gas hold. A matching merchant key
+ * ±csvSuggestWindowDays, where the bank amount is up to 35% more than the
+ * logged amount — or up to $5 more, on a small bill (`tipCeilingCents`) — in a
+ * tip category, or the logged amount is a gas hold. A matching merchant key
  * raises confidence but isn't required.
  */
 
@@ -71,7 +72,7 @@ export function pendingAmountSuggestions(
     const tip =
       (cfg.tipCategories as readonly string[]).includes(row.expenseType) &&
       bankCents > loggedCents &&
-      bankCents <= Math.round(loggedCents * (1 + cfg.csvSuggestMaxIncreasePct / 100));
+      bankCents <= tipCeilingCents(loggedCents, cfg.csvSuggestMaxIncreasePct, cfg);
     const hold = row.expenseType === cfg.gasCategory && isGasHold(loggedCents, cfg);
     if (!tip && !hold) continue;
 

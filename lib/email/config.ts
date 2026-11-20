@@ -12,6 +12,15 @@ export const EMAIL_SYNC_CONFIG = {
   tipMaxIncreasePct: 35,
   /** …and only when the new alert is at least this long after the first. */
   tipMinGapHours: 12,
+  /**
+   * A small bill's tip can be most of the bill ($3 on $6.20). Where a
+   * person's number is one side of the match — a hand-logged total against
+   * its alert, a statement line in Reconcile — the allowance is the
+   * percentage or this much, whichever is more (`tipCeilingCents`). The
+   * alert-to-alert tip merge keeps the bare percentage: there, two real
+   * coffees at one café would merge into one.
+   */
+  tipMinAllowanceCents: 500,
   /** Pre-authorization amounts a pump places before the real fill-up. */
   gasHoldExactAmounts: [1.0],
   /** Round holds in this range (whole multiples of $25) also count. */

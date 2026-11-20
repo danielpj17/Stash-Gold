@@ -391,6 +391,15 @@ function heuristicFollowup(ctx: DecideContext): Plan | null {
 // ---- 6c. manual entries ----------------------------------------------------
 
 /**
+ * The most a tip can raise `baseCents` to when a person's number is one side
+ * of the match: `pct` percent or `tipMinAllowanceCents`, whichever is more.
+ * Not used by the alert-to-alert merge (`heuristicFollowup`, `labelFor`).
+ */
+export function tipCeilingCents(baseCents: number, pct: number, cfg = EMAIL_SYNC_CONFIG): number {
+  return baseCents + Math.max(Math.round((baseCents * pct) / 100), cfg.tipMinAllowanceCents);
+}
+
+/**
  * Could a hand-logged amount be this alert? Equal, or (Phase 4) the manual
  * entry is the final amount of a tipped / held alert.
  */
@@ -408,7 +417,7 @@ export function amountsCompatible(
     manualCategory !== null &&
     (cfg.tipCategories as readonly string[]).includes(manualCategory) &&
     manualCents > alertCents &&
-    manualCents <= Math.round(alertCents * (1 + cfg.tipMaxIncreasePct / 100))
+    manualCents <= tipCeilingCents(alertCents, cfg.tipMaxIncreasePct, cfg)
   );
 }
 

@@ -8,7 +8,8 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { useAccounts } from "@/contexts/AccountsContext";
 import { useRefresh } from "@/contexts/RefreshContext";
 import { EXPENSE_TYPE_OPTIONS, CATEGORY_COLORS } from "@/lib/constants";
-import { fmtDollars } from "@/lib/emailSyncLabels";
+import { EMAIL_SYNC_CONFIG } from "@/lib/email/config";
+import { amountChangeLabel, fmtCents, fmtDollars } from "@/lib/emailSyncLabels";
 
 type Item = {
   id: string;
@@ -35,8 +36,21 @@ type Detail = {
   /** A Venmo leg (bank/card ↔ Venmo): the unknown side is always a Venmo account. */
   venmoLeg?: boolean;
   reviewedByName: string | null;
+  /** Matched to a statement line in Reconcile: its amount is the statement's. */
+  claimed?: boolean;
   amountHistory: Array<{ oldAmount: number; newAmount: number; reason: string; changedAt: string }>;
 };
+
+/** Where a card alert's amount usually isn't the final one: a tip, a gas fill-up. */
+const FINAL_AMOUNT_CATEGORIES: readonly string[] = [...EMAIL_SYNC_CONFIG.tipCategories, EMAIL_SYNC_CONFIG.gasCategory];
+
+/** "$12.50", "12.50", "12" -> cents; anything else (or zero) -> null. */
+function parseMoneyCents(raw: string): number | null {
+  const s = raw.replace(/[$,\s]/g, "");
+  if (!/^(\d+(\.\d{0,2})?|\.\d{1,2})$/.test(s)) return null;
+  const cents = Math.round(Number(s) * 100);
+  return cents > 0 ? cents : null;
+}
 
 /**
  * The categorize screen (plan §5.10): big buttons for the shortlist or the
@@ -64,6 +78,11 @@ export default function CategorizeItemPage() {
   // "Save description" when there's nothing left to pick).
   const [description, setDescription] = useState("");
   const [descriptionSaved, setDescriptionSaved] = useState(false);
+  // The final amount: a card alert comes at the swipe, before the tip (or the
+  // real fill-up after a gas hold). Saved with the pick, like the description.
+  const [finalAmount, setFinalAmount] = useState("");
+  const [finalOpen, setFinalOpen] = useState(false);
+  const [amountSaved, setAmountSaved] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -97,6 +116,23 @@ export default function CategorizeItemPage() {
     () => (descriptionChanged ? { description: description.trim() } : {}),
     [descriptionChanged, description],
   );
+  /** A pending card-alert purchase, not yet matched to a statement: its amount may still change. */
+  const canSetFinal =
+    item !== null && detail?.fromEmail === true && detail.claimed !== true && item.kind === "expense" && item.isPending;
+  const finalCents = parseMoneyCents(finalAmount);
+  const finalInvalid = canSetFinal && finalAmount.trim() !== "" && finalCents === null;
+  const finalChanged =
+    canSetFinal && item !== null && finalCents !== null && finalCents !== Math.round(item.amount * 100);
+  /** Sent with any save, only when it differs from the alert's amount. */
+  const amountPatch = useMemo(
+    () => (finalChanged && finalCents !== null ? { amount: finalCents / 100 } : {}),
+    [finalChanged, finalCents],
+  );
+  /** A restaurant or gas guess: open the field without a tap. */
+  const expectFinal =
+    item !== null && FINAL_AMOUNT_CATEGORIES.includes(item.category ?? merchant?.defaultCategory ?? "");
+  const showFinal = canSetFinal && (finalOpen || expectFinal || finalAmount !== "");
+
   /** Is a pick (category or account) on screen that will carry the description? */
   const pickPending = item
     ? item.kind === "transfer"
@@ -106,13 +142,17 @@ export default function CategorizeItemPage() {
 
   const answer = useCallback(
     async (category: string) => {
+      if (finalInvalid) {
+        setError("Enter the final amount like 12.50, or clear it.");
+        return;
+      }
       setBusy(true);
       setError("");
       try {
         const res = await fetch(`/api/categorize/${encodeURIComponent(id)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ category, always, addToShortlist, ...descriptionPatch }),
+          body: JSON.stringify({ category, always, addToShortlist, ...descriptionPatch, ...amountPatch }),
         });
         const data = await res.json().catch(() => ({}));
         if (res.status === 409) {
@@ -128,18 +168,26 @@ export default function CategorizeItemPage() {
         setBusy(false);
       }
     },
-    [id, always, addToShortlist, descriptionPatch, router, triggerRefresh],
+    [id, always, addToShortlist, descriptionPatch, amountPatch, finalInvalid, router, triggerRefresh],
   );
 
   /** "Change" after Already filed: the ordinary edit route. */
   const change = useCallback(
     async (category: string) => {
+      if (finalInvalid) {
+        setError("Enter the final amount like 12.50, or clear it.");
+        return;
+      }
       setBusy(true);
       try {
         const res = await fetch(`/api/transactions/${encodeURIComponent(id)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ expenseType: category, ...descriptionPatch }),
+          body: JSON.stringify({
+            expenseType: category,
+            ...descriptionPatch,
+            ...("amount" in amountPatch ? { ...amountPatch, amountReason: "manual" } : {}),
+          }),
         });
         if (!res.ok) throw new Error("Failed to change");
         triggerRefresh();
@@ -150,8 +198,43 @@ export default function CategorizeItemPage() {
         setBusy(false);
       }
     },
-    [id, descriptionPatch, router, triggerRefresh],
+    [id, descriptionPatch, amountPatch, finalInvalid, router, triggerRefresh],
   );
+
+  /** Final amount only, for a row that's already filed (nothing left to pick). */
+  const saveAmount = useCallback(async () => {
+    if (finalCents === null) return;
+    const newAmount = finalCents / 100;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/transactions/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: newAmount, amountReason: "manual" }),
+      });
+      if (!res.ok) throw new Error("Failed to save the amount");
+      setDetail((d) =>
+        d
+          ? {
+              ...d,
+              item: { ...d.item, amount: newAmount, originalAmount: d.item.originalAmount ?? d.item.amount },
+              amountHistory: [
+                ...d.amountHistory,
+                { oldAmount: d.item.amount, newAmount, reason: "manual", changedAt: new Date().toISOString() },
+              ],
+            }
+          : d,
+      );
+      setFinalAmount("");
+      setAmountSaved(true);
+      triggerRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save the amount");
+    } finally {
+      setBusy(false);
+    }
+  }, [id, finalCents, triggerRefresh]);
 
   /** Description only — for a row that's already filed (nothing left to pick). */
   const saveDescription = useCallback(async () => {
@@ -286,6 +369,17 @@ export default function CategorizeItemPage() {
               {item.originalAmount !== null && (
                 <p className="text-xs text-gray-400">updated from {fmtDollars(item.originalAmount)}</p>
               )}
+              {canSetFinal && !showFinal && (
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setFinalOpen(true)}
+                    className="text-sm text-[#50C878] hover:brightness-110"
+                  >
+                    Add a tip or final amount
+                  </button>
+                </div>
+              )}
               {item.autoMerged && (
                 <div className="pt-2">
                   <span className="text-xs text-yellow-200/90 mr-2">auto-merged from two alerts</span>
@@ -300,6 +394,60 @@ export default function CategorizeItemPage() {
                 </div>
               )}
             </div>
+
+            {showFinal && (
+              <div className="rounded-xl bg-[#252525] border border-charcoal-dark p-3 space-y-2">
+                <label htmlFor="categorize-final-amount" className="block text-xs text-gray-400">
+                  Final amount, with tip
+                </label>
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-base text-gray-500">
+                    $
+                  </span>
+                  {/* text-base (16px) so iOS doesn't zoom the page when the field is focused. */}
+                  <input
+                    id="categorize-final-amount"
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    value={finalAmount}
+                    placeholder={item.amount.toFixed(2)}
+                    onChange={(e) => {
+                      setFinalAmount(e.target.value);
+                      setAmountSaved(false);
+                    }}
+                    className="w-full pl-7 pr-3 py-2 rounded-lg bg-charcoal border border-charcoal-dark text-base text-gray-200 tabular-nums placeholder-gray-500 focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                  />
+                </div>
+                {finalInvalid ? (
+                  <p className="text-xs text-red-400">Enter an amount like 12.50.</p>
+                ) : finalChanged && finalCents !== null ? (
+                  pickPending ? (
+                    <p className="text-xs text-gray-500">
+                      {fmtDollars(item.amount)} → {fmtCents(finalCents)}. Saved with your pick below.
+                    </p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void saveAmount()}
+                      disabled={busy}
+                      className="rounded-md bg-[#353535] px-3 py-1.5 text-sm text-gray-200 hover:text-white hover:bg-[#404040] transition disabled:opacity-50"
+                    >
+                      Save {fmtCents(finalCents)}
+                    </button>
+                  )
+                ) : amountSaved ? (
+                  <p className="text-xs text-[#50C878] flex items-center gap-1">
+                    <Check className="w-3 h-3" aria-hidden /> Saved
+                  </p>
+                ) : (
+                  <p className="text-xs text-gray-500">
+                    The card alert comes at the swipe, before the tip. Leave this empty if {fmtDollars(item.amount)} is
+                    the total.
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="rounded-xl bg-[#252525] border border-charcoal-dark p-3 space-y-2">
               <label htmlFor="categorize-description" className="block text-xs text-gray-400">
@@ -453,7 +601,7 @@ export default function CategorizeItemPage() {
               <div className="text-xs text-gray-500 space-y-0.5">
                 {detail.amountHistory.map((h, i) => (
                   <p key={i}>
-                    {fmtDollars(h.oldAmount)} → {fmtDollars(h.newAmount)} ({h.reason.replace("_", " ")})
+                    {fmtDollars(h.oldAmount)} → {fmtDollars(h.newAmount)} ({amountChangeLabel(h.reason)})
                   </p>
                 ))}
               </div>

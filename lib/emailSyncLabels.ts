@@ -78,6 +78,20 @@ export function reasonLabel(reason: string | null | undefined): string {
   return (reason && REASON_LABELS[reason]) || (reason ?? "").replace(/_/g, " ");
 }
 
+/** transaction_amount_changes.reason, for the amount history line. */
+const AMOUNT_CHANGE_LABELS: Record<string, string> = {
+  posted: "posted",
+  tip: "tip",
+  gas_final: "final gas amount",
+  csv: "from the statement",
+  manual: "entered by hand",
+  split_back: "split back",
+};
+
+export function amountChangeLabel(reason: string): string {
+  return AMOUNT_CHANGE_LABELS[reason] ?? reason.replace(/_/g, " ");
+}
+
 export function fmtCents(cents: number | null | undefined): string {
   if (typeof cents !== "number") return "";
   return `$${(cents / 100).toFixed(2)}`;

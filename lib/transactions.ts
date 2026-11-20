@@ -304,6 +304,12 @@ export type AbsorbedEmail = {
   transactionId: string;
   /** The email row's description before the manual entry's replaced it. */
   previousDescription: string;
+  /**
+   * Its amount and original amount before the absorb. A hand-logged tipped
+   * total replaces the alert's pre-tip amount, so "Keep both" puts these back.
+   */
+  previousAmount: number;
+  previousOriginalAmount: number | null;
   merchantName: string | null;
 };
 
@@ -320,6 +326,7 @@ type EmailCandidate = {
   kind: string;
   occurred_at: string | Date;
   amount: string | number;
+  original_amount: string | number | null;
   account: string | null;
   transfer_from: string | null;
   transfer_to: string | null;
@@ -344,7 +351,8 @@ type EmailCandidate = {
  *
  * Exactly one email row, ±2 days, same amount (or a tip/gas tolerance), on the
  * same account or with the manual entry on the default:
- *   - still needs_review → ABSORB: the manual entry IS the answer. No second
+ *   - still needs_review → ABSORB: the manual entry IS the answer, amount
+ *     included (a tipped total replaces the pre-tip alert amount). No second
  *     row; the response offers "Keep both instead?".
  *   - already confirmed → save the manual row too, flagged as a possible
  *     duplicate for To categorize.
@@ -373,7 +381,7 @@ export async function insertOrLinkTransaction(
 
   const [rows, defaultAccountId, timeZone] = await Promise.all([
     sql`
-      SELECT t.id, t.kind, t.occurred_at, t.amount, t.account, t.transfer_from, t.transfer_to,
+      SELECT t.id, t.kind, t.occurred_at, t.amount, t.original_amount, t.account, t.transfer_from, t.transfer_to,
              t.review_status, t.is_pending, t.description, t.merchant_id,
              m.display_name AS merchant_name,
              COALESCE((SELECT e.parser_id = 'venmo' FROM email_events e
@@ -420,6 +428,11 @@ export async function insertOrLinkTransaction(
   });
   if (matches.length !== 1) return plain();
   const match = matches[0];
+  const previous = {
+    previousDescription: match.description,
+    previousAmount: Number(match.amount),
+    previousOriginalAmount: match.original_amount === null ? null : Number(match.original_amount),
+  };
 
   if (match.review_status !== "needs_review") return plain(match.id);
 
@@ -440,19 +453,40 @@ export async function insertOrLinkTransaction(
     if (updated.length === 0) return plain();
     return {
       row: await selectTransactionRow(sql, userId, match.id, "transfer"),
-      absorbed: { transactionId: match.id, previousDescription: match.description, merchantName: null },
+      absorbed: { transactionId: match.id, ...previous, merchantName: null },
       possibleDuplicateOf: null,
     };
   }
 
   // Conditional on still being needs_review, so a spouse answering at the same
   // moment wins cleanly and this falls back to a plain insert.
+  //
+  // The amount typed by hand wins. It differs from the alert's only within
+  // the tip / gas-hold tolerance, and then it is the final amount (the alert
+  // came at the swipe, before the tip). The alert's amount stays in
+  // original_amount: it is what a second copy of that alert is matched on.
   const category = input.category ?? "";
   const description = input.description.trim();
-  const [updated] = await sql.transaction([
+  const amount = manualCents / 100;
+  const [, , updated] = await sql.transaction([
+    // Lock the row so the history line and the update see the same state.
+    sql`SELECT 1 FROM transactions WHERE user_id = ${userId} AND id = ${match.id} FOR UPDATE`,
+    // History first, while `amount` still holds the alert's value.
+    sql`
+      INSERT INTO transaction_amount_changes
+        (user_id, transaction_id, old_amount, new_amount, reason, changed_by)
+      SELECT ${userId}::uuid, t.id, t.amount, ${amount}::numeric, 'manual', ${actorId}::uuid
+        FROM transactions t
+       WHERE t.user_id = ${userId} AND t.id = ${match.id} AND t.review_status = 'needs_review'
+         AND t.amount <> ${amount}::numeric
+    `,
     sql`
       UPDATE transactions
-         SET category = ${category},
+         SET amount = ${amount}::numeric,
+             original_amount = CASE WHEN amount <> ${amount}::numeric
+                                    THEN COALESCE(original_amount, amount)
+                                    ELSE original_amount END,
+             category = ${category},
              kind = ${input.kind},
              categorized_by = 'user',
              review_status = 'confirmed',
@@ -479,7 +513,7 @@ export async function insertOrLinkTransaction(
     row: await selectTransactionRow(sql, userId, match.id, input.kind),
     absorbed: {
       transactionId: match.id,
-      previousDescription: match.description,
+      ...previous,
       merchantName: match.merchant_name,
     },
     possibleDuplicateOf: null,

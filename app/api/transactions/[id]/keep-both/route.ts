@@ -16,7 +16,8 @@ export const dynamic = "force-dynamic";
  * merchant's provisional guess — and saves the manual entry as its own row.
  *
  * Body: the same fields the manual entry was posted with, plus
- * `previousDescription` from the absorb response.
+ * `previousDescription`, `previousAmount` and `previousOriginalAmount` from
+ * the absorb response (a tipped total replaced the alert's amount).
  */
 export async function POST(request: NextRequest, context: { params: { id: string } }) {
   const ctx = await requireUser();
@@ -51,19 +52,40 @@ export async function POST(request: NextRequest, context: { params: { id: string
     const isIncome = emailRow.kind === "income";
     const previousDescription =
       typeof body.previousDescription === "string" ? body.previousDescription.slice(0, 500) : null;
+    const money = (v: unknown): number | null => {
+      const n = typeof v === "number" ? v : NaN;
+      return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+    };
+    // Absent (an older client): the amount is left as it is.
+    const previousAmount = money(body.previousAmount);
+    const previousOriginalAmount = money(body.previousOriginalAmount);
 
-    await sql`
-      UPDATE transactions
-         SET review_status = ${isIncome ? "confirmed" : guess.reviewStatus},
-             category = ${isIncome ? "Income" : guess.category},
-             categorized_by = ${isIncome ? "rule" : guess.categorizedBy},
-             reviewed_by = NULL,
-             reviewed_at = NULL,
-             entered_by = NULL,
-             description = COALESCE(${previousDescription}, description),
-             updated_at = now()
-       WHERE user_id = ${userId} AND id = ${id}
-    `;
+    await sql.transaction([
+      sql`SELECT 1 FROM transactions WHERE user_id = ${userId} AND id = ${id} FOR UPDATE`,
+      sql`
+        INSERT INTO transaction_amount_changes
+          (user_id, transaction_id, old_amount, new_amount, reason, changed_by)
+        SELECT ${userId}::uuid, t.id, t.amount, ${previousAmount}::numeric, 'manual', ${actorId}::uuid
+          FROM transactions t
+         WHERE t.user_id = ${userId} AND t.id = ${id}
+           AND ${previousAmount}::numeric IS NOT NULL AND t.amount <> ${previousAmount}::numeric
+      `,
+      sql`
+        UPDATE transactions
+           SET review_status = ${isIncome ? "confirmed" : guess.reviewStatus},
+               category = ${isIncome ? "Income" : guess.category},
+               categorized_by = ${isIncome ? "rule" : guess.categorizedBy},
+               reviewed_by = NULL,
+               reviewed_at = NULL,
+               entered_by = NULL,
+               description = COALESCE(${previousDescription}, description),
+               original_amount = CASE WHEN ${previousAmount}::numeric IS NULL THEN original_amount
+                                      ELSE ${previousOriginalAmount}::numeric END,
+               amount = COALESCE(${previousAmount}::numeric, amount),
+               updated_at = now()
+         WHERE user_id = ${userId} AND id = ${id}
+      `,
+    ]);
 
     const row = await insertTransaction(sql, userId, parsed, actorId, { source: "manual" });
     return NextResponse.json({

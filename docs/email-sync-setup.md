@@ -97,8 +97,11 @@ When a week of it matches, switch **Mode → Live**. From then on:
   **unconfirmed** share, until someone picks.
 - Logging a purchase by hand after its alert answers the alert instead of
   doubling it (**Keep both** undoes that).
+- Card alerts come at the swipe, before the tip. Type the total in **Final
+  amount, with tip** when you categorize it (tap **Add a tip or final amount**
+  if the field isn't showing), or log the total by hand.
 - Monthly CSV reconciling works exactly as before; alert entries usually match
-  by themselves. A tipped or final-gas amount shows **Correct to $X & link**.
+  by themselves. A tip nobody entered shows **Correct to $X & link**.
 
 Emails that arrived during Shadow are never added later — you logged those by
 hand.
