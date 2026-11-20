@@ -146,6 +146,7 @@ const EXPECTED_COLUMNS = [
   ["financial_accounts", "unattended_action", "007-push-notifications.sql"],
   ["transactions", "unattended_due_at", "007-push-notifications.sql"],
   ["financial_accounts", "alert_unnumbered", "008-email-sync-unnumbered-alerts.sql"],
+  ["financial_accounts", "payments_from_account_id", "009-email-sync-card-payments-from.sql"],
 ];
 
 async function main() {
@@ -267,6 +268,19 @@ async function main() {
       problems.push(
         `${table}: missing index ${index} — run docs/migrations/${migration ?? ""}`,
       );
+    }
+  }
+
+  // A CHECK whose allowed values grew: "skip" merchant rules (010). Without it
+  // saving "Don't record — I log these myself" fails with a check violation.
+  if (tables.has("merchants")) {
+    const modeCheck = await sql`
+      SELECT pg_get_constraintdef(c.oid) AS def
+        FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+       WHERE t.relname = 'merchants' AND c.conname = 'merchants_mode_check'
+    `;
+    if (!modeCheck[0] || !String(modeCheck[0].def).includes("'skip'")) {
+      problems.push(`merchants: mode check doesn't allow 'skip' — run docs/migrations/010-email-sync-merchant-skip.sql`);
     }
   }
 

@@ -196,6 +196,9 @@ CREATE TABLE financial_accounts (
   -- This account also receives the parser's alerts that name no account at
   -- all, e.g. Wells Fargo Bill Pay (008). An explicit choice, one per parser.
   alert_unnumbered     BOOLEAN NOT NULL DEFAULT false,
+  -- A card's payments come from this account (009): the card's "payment
+  -- received" email never names the payer. No FK; the API checks scope.
+  payments_from_account_id UUID,
   -- What happens to an unanswered email purchase after the timeout (007).
   unattended_action    TEXT NOT NULL DEFAULT 'keep_in_review'
                          CHECK (unattended_action IN ('keep_in_review', 'auto_guess'))
@@ -637,8 +640,9 @@ CREATE TABLE merchants (
   user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   id               UUID NOT NULL DEFAULT gen_random_uuid(),
   display_name     TEXT NOT NULL,
+  -- 'skip' (010): "Don't record — I log these myself".
   mode             TEXT NOT NULL DEFAULT 'ask_all'
-                     CHECK (mode IN ('auto', 'ask_shortlist', 'ask_all')),
+                     CONSTRAINT merchants_mode_check CHECK (mode IN ('auto', 'ask_shortlist', 'ask_all', 'skip')),
   category         TEXT,
   shortlist        TEXT[] NOT NULL DEFAULT '{}',
   default_category TEXT,

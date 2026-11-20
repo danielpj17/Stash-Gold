@@ -19,6 +19,7 @@ type AccountRow = {
   alert_last4: string | null;
   alert_forwarded_from: string | null;
   alert_unnumbered: boolean | null;
+  payments_from_account_id: string | null;
   unattended_action: string | null;
 };
 
@@ -29,7 +30,7 @@ type AccountRow = {
 export async function loadAlertAccounts(sql: Sql, userId: string): Promise<AccountRef[]> {
   const rows = (await sql`
     SELECT id, name, kind, is_default, alert_source, alert_last4, alert_forwarded_from,
-           alert_unnumbered, unattended_action
+           alert_unnumbered, payments_from_account_id, unattended_action
       FROM financial_accounts
      WHERE user_id = ${userId} AND deleted_at IS NULL
      ORDER BY sort_order ASC, created_at ASC
@@ -43,6 +44,7 @@ export async function loadAlertAccounts(sql: Sql, userId: string): Promise<Accou
     alertLast4: r.alert_last4,
     alertForwardedFrom: r.alert_forwarded_from,
     alertUnnumbered: r.alert_unnumbered === true,
+    paymentsFrom: r.payments_from_account_id ? String(r.payments_from_account_id) : null,
     unattendedAction: r.unattended_action === "auto_guess" ? "auto_guess" : "keep_in_review",
   }));
 }
@@ -58,7 +60,7 @@ type MerchantRow = {
 
 export function mapMerchant(row: MerchantRow): MerchantRule {
   const mode: MerchantMode =
-    row.mode === "auto" || row.mode === "ask_shortlist" ? row.mode : "ask_all";
+    row.mode === "auto" || row.mode === "ask_shortlist" || row.mode === "skip" ? row.mode : "ask_all";
   return {
     id: String(row.id),
     displayName: String(row.display_name),

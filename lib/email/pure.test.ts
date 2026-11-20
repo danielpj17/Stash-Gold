@@ -250,6 +250,7 @@ describe("account resolution (§5.4)", () => {
     alertLast4: "4821",
     alertForwardedFrom: null,
     alertUnnumbered: false,
+    paymentsFrom: null,
     unattendedAction: "keep_in_review",
     ...over,
   });
@@ -292,6 +293,7 @@ describe("alerts that name no account (Bill Pay, migration 008)", () => {
     alertLast4: "1111",
     alertForwardedFrom: null,
     alertUnnumbered: false,
+    paymentsFrom: null,
     unattendedAction: "keep_in_review",
     ...over,
   });

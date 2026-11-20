@@ -34,6 +34,8 @@ export type AccountRef = {
   alertForwardedFrom: string | null;
   /** Receives this source's alerts that name no account (Bill Pay, migration 008). */
   alertUnnumbered: boolean;
+  /** Credit cards: the account its payments come from (migration 009), or null. */
+  paymentsFrom: string | null;
   unattendedAction: "keep_in_review" | "auto_guess";
 };
 
@@ -739,7 +741,14 @@ export function accountTransferLeg(ctx: DecideContext): AccountLeg | null {
   // Money in from outside your accounts (card rewards): "Other" → this
   // account, named by its source, like a hand-logged one.
   if (!out && a.externalFrom) return { from: a.externalFrom, to: ctx.account.id, description: merchantName(ctx) };
-  const other = counterpartByLast4(ctx, a.fundingSource)?.id ?? null;
+  // A card's "payment received" never names the payer. The card's own
+  // "Payments come from" setting (009) is the stated answer — used only when
+  // the email names nothing itself, and only while that account is live.
+  const statedPayer =
+    !out && ctx.account.kind === "credit_card" && ctx.account.paymentsFrom !== ctx.account.id
+      ? (ctx.accounts.find((x) => x.id === ctx.account.paymentsFrom)?.id ?? null)
+      : null;
+  const other = counterpartByLast4(ctx, a.fundingSource)?.id ?? statedPayer;
   const from = out ? ctx.account.id : other;
   const to = out ? other : ctx.account.id;
   const toKind = ctx.accounts.find((x) => x.id === to)?.kind;
@@ -1000,6 +1009,9 @@ function decideIncome(ctx: DecideContext): Plan {
 
 function decideExpense(ctx: DecideContext): Plan {
   const a = ctx.alert;
+  // "Don't record — I log these myself" (Rules): e.g. a donation a person
+  // splits across several entries by hand, which no single row would match.
+  if (ctx.merchant?.mode === "skip") return ignore("logged_by_hand");
   const dup = findDuplicateAlert(ctx, "expense");
   if (dup) return duplicate(dup.id, "same_alert");
 

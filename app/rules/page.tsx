@@ -12,7 +12,7 @@ type Alias = { key: string; exampleRaw: string; lastSeenAt: string | null };
 type Merchant = {
   id: string;
   displayName: string;
-  mode: "auto" | "ask_shortlist" | "ask_all";
+  mode: "auto" | "ask_shortlist" | "ask_all" | "skip";
   category: string | null;
   shortlist: string[];
   defaultCategory: string | null;
@@ -27,6 +27,7 @@ const MODE_LABELS: Record<Merchant["mode"], string> = {
   auto: "Always file as…",
   ask_shortlist: "Ask, from a shortlist",
   ask_all: "Ask, any category",
+  skip: "Don't record — I log these myself",
 };
 
 /**
@@ -219,7 +220,9 @@ export default function RulesPage() {
             {shown.map((m) => {
               const isOpen = open === m.id;
               const ruleSummary =
-                m.mode === "auto"
+                m.mode === "skip"
+                  ? "Not recorded — you log these"
+                  : m.mode === "auto"
                   ? `Always ${m.category}`
                   : m.mode === "ask_shortlist"
                     ? `Ask: ${m.shortlist.join(" / ")}`
@@ -295,6 +298,7 @@ export default function RulesPage() {
                             </select>
                           </label>
                         )}
+                        {m.mode !== "skip" && (
                         <label>
                           <span className="block text-xs text-gray-400 mb-1">Guess (pre-selected, counts unconfirmed)</span>
                           <select
@@ -310,7 +314,14 @@ export default function RulesPage() {
                             ))}
                           </select>
                         </label>
+                        )}
                       </div>
+                      {m.mode === "skip" && (
+                        <p className="text-xs text-gray-400">
+                          Card and bank alerts for {m.displayName} are kept but never become a transaction — for
+                          something you log by hand, e.g. split across several entries.
+                        </p>
+                      )}
 
                       {m.mode === "ask_shortlist" && (
                         <div>

@@ -34,7 +34,10 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
 
     const displayName =
       typeof body.displayName === "string" && body.displayName.trim() ? body.displayName.trim().slice(0, 80) : m.display_name;
-    const mode = body.mode === "auto" || body.mode === "ask_shortlist" || body.mode === "ask_all" ? body.mode : m.mode;
+    const mode =
+      body.mode === "auto" || body.mode === "ask_shortlist" || body.mode === "ask_all" || body.mode === "skip"
+        ? body.mode
+        : m.mode;
     const pick = (value: unknown, fallback: string | null) =>
       value === undefined ? fallback : value === null || value === "" ? null : isExpenseCategory(value) ? value : undefined;
     const category = pick(body.category, m.category);

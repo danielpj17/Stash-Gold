@@ -871,6 +871,7 @@ Venmo-leg model above with the same `decideTransfer`:
 | A hand-logged transfer of the same amount and accounts (±`manualMatchWindowDays`) | `linked`; no second row |
 | A second email of the *same* type (same kind, same merchant key) | A separate transfer — two $500 savings transfers in a week are two — unless it is the same email again (identical body, or the other inbox's copy) |
 | An email naming the same account on both sides | `ignored` (`transfer_same_account`) |
+| A card's "payment received" (names no payer) when the card says **Payments come from** an account (migration 009, **since 2026-11-19**) | A complete, confirmed transfer from that account by itself — the paying bank's line later is `already_recorded` |
 | The other half of a card payment where **each email names only its own side** — the bank's "CAPITAL ONE ONLINE PMT" (no card) and the card's "payment received" (no paying account) — in either order (**since 2026-11-19**) | Completes the waiting one (`completed_transfer_side`). Only into a credit card, and only when exactly one is waiting |
 
 **Posted-activity summaries (since 2026-11-19).** Wells Fargo's "Your account
@@ -896,6 +897,12 @@ anything:
 The bias is deliberate: two genuinely separate same-amount items on one
 account within five days, one of them already recorded, leave the second to
 Reconcile rather than risk doubling every Bill Pay and card payment.
+
+Something logged by hand **in pieces** — a donation split across several
+entries — matches no single row, so the check can't see it. For those the
+merchant rule says **"Don't record — I log these myself"** (mode `skip`,
+migration 010): its alerts and lines are kept but record nothing
+(`logged_by_hand`).
 
 **Alerts that name no account** (migration 008). Wells Fargo Bill Pay says
 only "your selected account(s)". Such an alert routes to the single account

@@ -10,16 +10,21 @@ import { parserOptions } from "@/lib/email/registry";
  * card's last four, or — for Venmo, which has no card number — whose inbox
  * forwards them. Some banks also send alerts that name no account at all
  * (Wells Fargo Bill Pay); one account per bank is ticked to receive those.
+ * A credit card can say where its payments come from (009), because its
+ * "payment received" email never names the paying account.
  *
  * Changing these touches no reconciliation state; they only decide where
  * future alerts go.
  */
 export default function AccountAlertFields({
   account,
+  accounts,
   disabled,
   onPatch,
 }: {
   account: FinancialAccount;
+  /** Live accounts, for a card's "Payments come from". */
+  accounts: FinancialAccount[];
   disabled: boolean;
   onPatch: (body: Record<string, unknown>) => void;
 }) {
@@ -104,6 +109,27 @@ export default function AccountAlertFields({
             className="accent-[#50C878]"
           />
           {parser.label} {parser.unnumberedLabel} comes out of this account
+        </label>
+      )}
+
+      {account.kind === "credit_card" && (
+        <label title="The card's &quot;payment received&quot; email never says which account paid. With this set, it becomes a complete transfer by itself.">
+          <span className="block text-gray-500 mb-1">Payments come from</span>
+          <select
+            value={account.paymentsFromAccountId ?? ""}
+            disabled={disabled}
+            onChange={(e) => onPatch({ paymentsFromAccountId: e.target.value || null })}
+            className={field}
+          >
+            <option value="">Ask each time</option>
+            {accounts
+              .filter((a) => a.id !== account.id && !a.isDeleted)
+              .map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+          </select>
         </label>
       )}
 

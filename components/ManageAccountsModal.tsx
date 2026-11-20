@@ -498,6 +498,7 @@ export default function ManageAccountsModal({
                 {alertsOpen === account.id && (
                   <AccountAlertFields
                     account={account}
+                    accounts={accounts}
                     disabled={busyId === account.id}
                     onPatch={(body) => void patch(account, body)}
                   />

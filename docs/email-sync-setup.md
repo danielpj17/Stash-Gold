@@ -66,7 +66,15 @@ Reconcile → ⋮ → **Accounts** → **alerts** on each account:
 - **Forwarded from** — for Venmo: the email address of the inbox that forwards it.
 - **Bill Pay comes out of this account** — Wells Fargo only, on the one account
   your Bill Pay draws from (its emails never say which).
+- **Payments come from** — credit cards only: the account you pay the card
+  from. A card's "payment received" email never says, so with this set it is a
+  complete transfer by itself; left on "Ask each time", it waits for the bank's
+  side or your answer.
 - **If nobody answers** — keep waiting, or file it as the guess.
+
+Something you log by hand in pieces (a donation split across several entries)
+can't be matched by any single entry: set its merchant in **Rules** to
+**Don't record — I log these myself**.
 
 Alerts that match no account wait under **Settings → Email sync → Email
 activity → Unknown account**. Picking the account there re-reads them — that's

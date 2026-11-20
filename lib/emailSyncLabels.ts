@@ -57,6 +57,7 @@ export const REASON_LABELS: Record<string, string> = {
   venmo_transfer_side_unknown: "Venmo transfer (which account?)",
   ambiguous_dismissed: "dismissed",
   dismissed_by_person: "dismissed",
+  logged_by_hand: "you log these yourself",
   already_recorded: "already recorded",
   completed_transfer_side: "filled in the paying account",
   transfer_already_recorded: "transfer already recorded",

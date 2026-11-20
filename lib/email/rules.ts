@@ -8,6 +8,10 @@ import { STARTER_GUESSES } from "@/lib/email/config";
  *   ask_shortlist  needs_review, category = default (provisional, 'guess'),
  *                  choices = shortlist + Other
  *   ask_all        needs_review, category = default ?? starter guess ?? NULL
+ *   skip           nothing is recorded (`ignored`, logged_by_hand): "Don't
+ *                  record — I log these myself", e.g. a donation split across
+ *                  several hand entries that no single row would match.
+ *                  decide() stops before it ever reaches decideCategory.
  *
  * D2: a provisional guess COUNTS in its category's bar, drawn as an
  * "unconfirmed" share, until a person answers. A guess never creates a rule —
@@ -20,7 +24,7 @@ import { STARTER_GUESSES } from "@/lib/email/config";
  * 2026-11-16.)
  */
 
-export type MerchantMode = "auto" | "ask_shortlist" | "ask_all";
+export type MerchantMode = "auto" | "ask_shortlist" | "ask_all" | "skip";
 
 export type MerchantRule = {
   id: string;

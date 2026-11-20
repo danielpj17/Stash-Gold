@@ -42,6 +42,8 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
     alertForwardedFrom?: unknown;
     /** This account pays the source's alerts that name no account (Bill Pay). */
     alertUnnumbered?: unknown;
+    /** Credit cards: the account this card's payments come from. null clears. */
+    paymentsFromAccountId?: unknown;
     unattendedAction?: unknown;
   };
   try {
@@ -125,6 +127,27 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
                alert_last4 = ${alertSource ? alertLast4 : null},
                alert_forwarded_from = ${alertSource && forwarded ? forwarded.toLowerCase() : null},
                alert_unnumbered = ${unnumbered}
+         WHERE user_id = ${userId} AND id = ${accountId}::uuid
+      `;
+    }
+
+    // Where a card's payments come from (009). The card's "payment received"
+    // email never names the payer; this is the stated answer. Only a credit
+    // card, and only another live account in this scope — never one read from
+    // the body unchecked (invariant 1).
+    if (body.paymentsFromAccountId !== undefined) {
+      const fromId = typeof body.paymentsFromAccountId === "string" ? body.paymentsFromAccountId.trim() : "";
+      if (fromId) {
+        if (kind !== "credit_card") {
+          return NextResponse.json({ error: "Only a credit card's payments come from another account." }, { status: 400 });
+        }
+        const from = fromId === accountId ? null : await getAccount(sql, userId, fromId);
+        if (!from || from.isDeleted) {
+          return NextResponse.json({ error: "Pick another of your accounts." }, { status: 400 });
+        }
+      }
+      await sql`
+        UPDATE financial_accounts SET payments_from_account_id = ${fromId || null}::uuid
          WHERE user_id = ${userId} AND id = ${accountId}::uuid
       `;
     }

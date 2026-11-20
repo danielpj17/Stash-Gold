@@ -15,6 +15,7 @@ const CARD: AccountRef = {
   alertLast4: "4821",
   alertForwardedFrom: null,
   alertUnnumbered: false,
+  paymentsFrom: null,
   unattendedAction: "keep_in_review",
 };
 const CHECKING: AccountRef = { ...CARD, id: "acct-checking", name: "Checking", kind: "checking", isDefault: true, alertLast4: "1111" };
@@ -1092,6 +1093,79 @@ describe("a card payment's two halves pair in either order", () => {
   it("only into a credit card: a checking → ? half never pairs with a savings deposit", () => {
     const SAV: AccountRef = { ...CHK, id: "acct-sav", name: "Savings", kind: "savings", alertLast4: "3333" };
     const plan = decide(c1({ account: SAV, accounts: [CHK, SAV, C1], parser: { id: "wellsfargo", accountKey: "last4" }, alert: { ...cardEmail, accountHint: { last4: "3333" } }, candidates: [waitingFromBank()] }));
+    expect(plan).toMatchObject({ action: "create" });
+  });
+});
+describe("a card's \"Payments come from\" (migration 009)", () => {
+  const CHK: AccountRef = { ...CARD, id: "acct-wf-checking", name: "WF Checking", kind: "checking", alertSource: "wellsfargo", alertLast4: "1111" };
+  const C1: AccountRef = { ...CARD, id: "acct-c1", name: "Capital One", kind: "credit_card", alertSource: "capitalone", alertLast4: "4444", paymentsFrom: CHK.id };
+  const cardEmail = alert({ kind: "transfer", transferDirection: "in", amountCents: 1070, merchantRaw: "Capital One payment", accountHint: { last4: "4444" }, isPending: false });
+  const c1 = (over: Partial<DecideContext> = {}) =>
+    ctx({ parser: { id: "capitalone", accountKey: "last4" }, account: C1, accounts: [CHK, C1, CARD], merchant: null, alert: cardEmail, ...over });
+
+  it("the card's email alone is a complete, confirmed transfer from the stated account", () => {
+    const plan = decide(c1());
+    expect(plan).toMatchObject({ action: "create", reason: "account_transfer", notify: false });
+    if (plan.action !== "create") return;
+    expect(plan.transactions[0]).toMatchObject({ kind: "transfer", transferFrom: CHK.id, transferTo: C1.id, reviewStatus: "confirmed", description: "Card payment" });
+  });
+
+  it("not set: still asks which account", () => {
+    const plan = decide(c1({ account: { ...C1, paymentsFrom: null }, accounts: [CHK, { ...C1, paymentsFrom: null }, CARD] }));
+    expect(plan).toMatchObject({ action: "create", reason: "transfer_side_unknown" });
+  });
+
+  it("set to an account that's since been deleted: asks, never a dead reference", () => {
+    const gone = { ...C1, paymentsFrom: "acct-deleted" };
+    expect(decide(c1({ account: gone, accounts: [CHK, gone, CARD] }))).toMatchObject({ action: "create", reason: "transfer_side_unknown" });
+  });
+
+  it("the bank's summary line already waiting (checking → ?): the card's email completes it", () => {
+    const waiting = row({ id: "tx-half", kind: "transfer", amountCents: 1070, account: null, transferFrom: CHK.id, transferTo: null, reviewStatus: "needs_review", isPending: false, merchantId: null, source: "email", emailEventId: "ev-sum", eventGmailMessageId: "gm-sum#2", eventKind: "transfer", eventMerchantKey: merchantKey("CAPITAL ONE ONLINE PMT") });
+    expect(decide(c1({ candidates: [waiting] }))).toMatchObject({ action: "link", transactionId: "tx-half", update: { transferTo: C1.id, reviewStatus: "confirmed" } });
+  });
+
+  it("only a card: a payment INTO checking never borrows a setting", () => {
+    const chk = { ...CHK, paymentsFrom: C1.id };
+    const plan = decide(c1({ account: chk, accounts: [chk, C1, CARD], parser: { id: "wellsfargo", accountKey: "last4" }, alert: { ...cardEmail, accountHint: { last4: "1111" } } }));
+    expect(plan).toMatchObject({ action: "create", reason: "transfer_side_unknown" });
+  });
+});
+
+describe("\"Don't record — I log these myself\" (merchant mode skip)", () => {
+  const SKIP: MerchantRule = { id: "m-don", displayName: "Example Donation", mode: "skip", category: null, shortlist: [], defaultCategory: null };
+
+  it("a card purchase for a skipped merchant records nothing", () => {
+    expect(decide(ctx({ merchant: SKIP }))).toMatchObject({ action: "ignore", reason: "logged_by_hand" });
+  });
+
+  it("a summary line for it records nothing either, though nothing single matches", () => {
+    const CHK: AccountRef = { ...CARD, id: "acct-wf-checking", kind: "checking", alertSource: "wellsfargo", alertLast4: "1111" };
+    const pieces = [5000, 2000, 636].map((c, i) => row({ id: `tx-piece-${i}`, account: CHK.id, amountCents: c, isPending: false, source: "manual", emailEventId: null, eventKind: null, eventMerchantKey: null, eventGmailMessageId: null }));
+    const plan = decide(
+      ctx({
+        parser: { id: "wellsfargo", accountKey: "last4" },
+        account: CHK,
+        accounts: [CHK, CARD],
+        merchant: SKIP,
+        alert: alert({ kind: "posted", amountCents: 7636, merchantRaw: "Ch Example DONATION", accountHint: { last4: "1111" }, isPending: false, postedSummary: true }),
+        candidates: pieces,
+      }),
+    );
+    expect(plan).toMatchObject({ action: "ignore", reason: "logged_by_hand" });
+  });
+
+  it("without the rule, the same split donation would be created (why the rule exists)", () => {
+    const CHK: AccountRef = { ...CARD, id: "acct-wf-checking", kind: "checking", alertSource: "wellsfargo", alertLast4: "1111" };
+    const plan = decide(
+      ctx({
+        parser: { id: "wellsfargo", accountKey: "last4" },
+        account: CHK,
+        accounts: [CHK, CARD],
+        merchant: null,
+        alert: alert({ kind: "posted", amountCents: 7636, merchantRaw: "Ch Example DONATION", accountHint: { last4: "1111" }, isPending: false, postedSummary: true }),
+      }),
+    );
     expect(plan).toMatchObject({ action: "create" });
   });
 });

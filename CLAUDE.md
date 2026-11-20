@@ -268,7 +268,10 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   this bank"; unmatched alerts wait under Unknown account. An alert that names
   **no** account at all (Wells Fargo Bill Pay) goes to the one account ticked
   for it, `alert_unnumbered` (migration 008, parser `unnumbered`) — a stated
-  rule, not a fallback.
+  rule, not a fallback. Likewise a card's "payment received" names no payer:
+  the card's **Payments come from** (`payments_from_account_id`, 009) is the
+  stated answer, used only when the email names nothing and that account is
+  live. The API checks it's another live account in the same scope.
 - **Parsers** live in `lib/email/parsers/`, registered in `lib/email/registry.ts`,
   each with fixtures under `__fixtures__/`. Bank parsers are added one at a
   time from real, scrubbed alerts (`npm run email:export`); the Venmo parser's
@@ -306,6 +309,10 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   only news creates anything. Card-issuer payments and online transfers are
   transfers, rewards are a transfer from "Other" (Daniel's convention), other
   withdrawals are expenses that ask, other deposits Income.
+- **"Don't record — I log these myself"** is merchant mode `skip` (010):
+  `decideExpense` ignores it (`logged_by_hand`). For something logged by hand
+  in pieces — a donation split across entries — which no single row matches,
+  so `alreadyRecorded` can't see it.
 - **Dismiss** (Needs a look) turns an `unparsed` or `unauthenticated` email
   `ignored` (`dismissed_by_person`); nothing is deleted. Google's own mail to
   the Stash inbox (`@*.google.com`) is on the ignore list.
