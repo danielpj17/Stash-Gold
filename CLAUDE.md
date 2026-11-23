@@ -281,6 +281,10 @@ and rationale: `docs/email-sync-plan.md`. Setup: `docs/email-sync-setup.md`.
   `unparsed` until real samples exist (a debit card has its own number, not
   the checking account's, so it can't simply route by last 4). It also reads
   "Your account update is here" — see "Posted-activity summaries" below.
+  That rundown is how debit card purchases reach Stash today: they post to
+  checking as "PURCHASE / RECURRING PAYMENT AUTHORIZED ON MM/DD <merchant> …
+  CARD 1234", named by the merchant and dated by the authorization (v5,
+  checked against every line of real WF checking/savings statements).
   `capitalone` reads
   Capital One **and Discover** (Capital One owns it; same sender, same
   template) — purchases, "payment received", and ignores scheduled payments.

@@ -93,8 +93,8 @@ export default function EmailSyncGuidePage() {
             Picking the account there re-reads them — that&apos;s also the replacement-card flow.
           </p>
           <p>
-            In Settings → Email sync, add the <B>Venmo names that mean &quot;us&quot;</B> so payments between you
-            are ignored.
+            In Settings → Email sync, add the <B>Venmo and Zelle names that mean &quot;us&quot;</B> so money
+            between you is ignored.
           </p>
         </Section>
 

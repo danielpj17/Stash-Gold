@@ -316,7 +316,7 @@ export default function EmailSyncPanel() {
       {s && (
         <div className="pt-1 border-t border-charcoal-dark">
           <label htmlFor="internal-names" className="block text-xs text-gray-400 mt-3 mb-1.5">
-            Venmo names that mean &quot;us&quot; — payments between you are ignored (comma-separated)
+            Venmo and Zelle names that mean &quot;us&quot; — money between you is ignored (comma-separated)
           </label>
           <div className="flex gap-2 flex-wrap">
             <input

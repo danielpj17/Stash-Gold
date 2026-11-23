@@ -175,6 +175,16 @@ function normName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+/**
+ * One of the names that mean "us" (D6)? Word order is ignored: Venmo writes
+ * "Pat Public", a bank statement may write "PUBLIC PAT".
+ */
+function isInternalName(name: string, internal: readonly string[]): boolean {
+  const words = (n: string) => normName(n).split(" ").sort().join(" ");
+  const mine = words(name);
+  return internal.some((n) => words(n) === mine);
+}
+
 function ignore(reason: string): Plan {
   return { action: "ignore", status: "ignored", reason };
 }
@@ -1076,7 +1086,7 @@ export function decide(ctx: DecideContext): Plan {
 
   if (a.kind === "declined") return ignore("declined");
 
-  if (a.counterparty && ctx.internalCounterparties.includes(normName(a.counterparty))) {
+  if (a.counterparty && isInternalName(a.counterparty, ctx.internalCounterparties)) {
     return ignore("internal_counterparty");
   }
 

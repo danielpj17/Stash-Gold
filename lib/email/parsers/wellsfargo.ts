@@ -41,6 +41,16 @@ import { cleanName, findDate, moneyToCents, stripEmphasis, valueAfterLabel } fro
  *       A payment to a card issuer or an online transfer is a transfer;
  *       rewards are a transfer from "Other"; other withdrawals are expenses
  *       and other deposits Income.
+ *       Version 5 (2026-11-23), checked against every line of real WF
+ *       checking and savings statements: a debit card line ("PURCHASE /
+ *       RECURRING PAYMENT AUTHORIZED ON 10/21 <merchant> S… CARD 1234") is
+ *       named by its merchant and dated by its authorization; a Bill Pay line
+ *       by its payee; a leading company number ("123456 EXAMPLE CO …") is dropped;
+ *       a brokerage ACH (Fidelity, Schwab, …) is a transfer whose other side
+ *       is asked; Zelle is a person — from them, a transfer from "Other" (the
+ *       Venmo convention), to them, an expense — and either is ignored when
+ *       the name is one of the scope's names that mean "us". An ACH date
+ *       that isn't near the as-of date is read as MMDDYY, else not used.
  *
  * Debit card alerts have no real sample yet. Anything
  * with a dollar amount that isn't one of the above is `unparsed`, so the first
@@ -108,9 +118,17 @@ function parseDeposit(text: string): ParseResult {
 
 /** A payment from checking to a card: a transfer, never an expense. */
 const CARD_PAYMENT =
-  /^(?:CAPITAL ONE|DISCOVER|WELLS FARGO CARD|WF CREDIT CARD|CHASE CREDIT CRD|CITI ?CARD|CITI AUTOPAY|AMEX|AMERICAN EXPRESS|BARCLAYCARD|SYNCHRONY|APPLECARD|BANK OF AMERICA|BK OF AMER)\b.*\b(?:PMT|PAYMENT|E-?PAYMENT|EPAY|AUTO ?PAY|AUTOPAY)\b/i;
+  /^(?:CAPITAL ONE|DISCOVER|WELLS FARGO CARD|WF CREDIT CARD|CHASE CREDIT CRD|CITI ?CARD|CITI AUTOPAY|AMEX|AMERICAN EXPRESS|BARCLAYCARD|SYNCHRONY|APPLECARD|BANK OF AMERICA|BK OF AMER)\b.*\b(?:PMT|PYMT|PAYMENT|E-?PAYMENT|EPAY|AUTO ?PAY|AUTOPAY|CRCARDPMT)\b/i;
 const ONLINE_TRANSFER = /^(?:ONLINE|RECURRING|MOBILE) TRANSFER\b/i;
 const REWARDS = /\bREWARDS?\b/i;
+/** Money moving to or from an investment account: a transfer, never Income or an expense. */
+const BROKERAGE = /^(?:FID BKG SVC|FIDELITY|SCHWAB|VANGUARD|ROBINHOOD|E\*?TRADE|BETTERMENT|WEALTHFRONT)\b/i;
+/** "RECURRING PAYMENT AUTHORIZED ON 10/21 EXAMPLE* STREAM … S1234… CARD 1234": a debit card line. */
+const CARD_AUTHORIZED = /\bAUTHORIZED ON (\d{1,2})\/(\d{1,2})\s+(.+)$/i;
+/** "BILL PAY Example Rentals Ltd. ON-LINE No Account Number ON 10-26". */
+const BILL_PAY_LINE = /^BILL PAY\s+(.+?)\s+(?:ON-LINE|RECURRING|ON\s+\d)/i;
+/** "ZELLE FROM PAT PUBLIC ON 11/21 REF # …" / "ZELLE TO …": a person. */
+const ZELLE_LINE = /^ZELLE\s+(FROM|TO)\s+(.+?)(?=\s+ON\s+\d{1,2}[/-]\d{1,2}\b|\s+REF\b|\s+[A-Z0-9]*\d[A-Z0-9]{5,}\b|$)/i;
 
 type SummaryItem = { direction: "in" | "out"; description: string; amountCents: number };
 
@@ -125,16 +143,73 @@ const ACH_DATE = /^\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/;
  * never at the first word.
  */
 function summarySource(description: string): string {
-  const tokens = description.trim().split(/\s+/);
+  // A debit card line is named by the merchant after its date, a Bill Pay
+  // line by its payee — never by "PURCHASE AUTHORIZED ON" or "BILL PAY".
+  const card = CARD_AUTHORIZED.exec(description);
+  const bill = BILL_PAY_LINE.exec(description);
+  let tokens = (card ? card[3] : bill ? bill[1] : description).trim().split(/\s+/);
+  // "123456 EXAMPLE CO PAYROLL …": a company number before the name.
+  if (tokens.length > 1 && /^\d+$/.test(tokens[0])) tokens = tokens.slice(1);
   const cut = tokens.findIndex(
     (t, i) => i > 0 && (ACH_DATE.test(t) || /^X{2,}\d+$/i.test(t) || (t.length >= 6 && /\d/.test(t) && /^[A-Z0-9]+$/i.test(t))),
   );
   return cleanName((cut > 0 ? tokens.slice(0, cut) : tokens).join(" "));
 }
 
-function achDate(description: string): string | null {
-  const t = description.trim().split(/\s+/).find((x, i) => i > 0 && ACH_DATE.test(x));
-  return t ? `20${t.slice(0, 2)}-${t.slice(2, 4)}-${t.slice(4, 6)}` : null;
+const DAY_MS = 86_400_000;
+
+function isoDay(y: number, m: number, d: number): string | null {
+  const t = Date.UTC(y, m - 1, d);
+  const date = new Date(t);
+  if (date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) return null;
+  return date.toISOString().slice(0, 10);
+}
+
+/** Within a few weeks of the summary's as-of date (or no as-of date to check against). */
+function plausible(date: string | null, asOf: string | null): date is string {
+  if (!date) return false;
+  if (!asOf) return true;
+  return Math.abs(Date.parse(date) - Date.parse(asOf)) <= 45 * DAY_MS;
+}
+
+/** A month and day with no year: the as-of year, or the year before for a date after it. */
+function nearDate(month: number, day: number, asOf: string | null): string | null {
+  if (!asOf) return null;
+  const year = Number(asOf.slice(0, 4));
+  const same = isoDay(year, month, day);
+  if (same && Date.parse(same) <= Date.parse(asOf) + 7 * DAY_MS) return same;
+  return isoDay(year - 1, month, day);
+}
+
+/**
+ * When the line's money moved: a card line's authorization date, an ACH
+ * effective date, or "ON 10/03/26" / "ON 10-26" — else the as-of date. An
+ * ACH token is YYMMDD, but some companies write MMDDYY ("080426"), so one
+ * that isn't near the as-of date is tried both ways and dropped if neither is.
+ */
+function lineDate(description: string, asOf: string | null): string | null {
+  const card = CARD_AUTHORIZED.exec(description);
+  if (card) {
+    const d = nearDate(Number(card[1]), Number(card[2]), asOf);
+    if (plausible(d, asOf)) return d;
+  }
+  // Any six-digit token after the first word, read YYMMDD then MMDDYY; the
+  // first plausible one wins (an id like "087264" reads as neither).
+  for (const token of description.trim().split(/\s+/).slice(1)) {
+    if (!/^\d{6}$/.test(token)) continue;
+    const n = (i: number) => Number(token.slice(i, i + 2));
+    const yymmdd = isoDay(2000 + n(0), n(2), n(4));
+    if (plausible(yymmdd, asOf)) return yymmdd;
+    const mmddyy = isoDay(2000 + n(4), n(0), n(2));
+    if (plausible(mmddyy, asOf)) return mmddyy;
+  }
+  const on = /\bON (\d{1,2})[/-](\d{1,2})(?:[/-](\d{2}|\d{4}))?\b/i.exec(description);
+  if (on) {
+    const y = on[3] ? (on[3].length === 2 ? 2000 + Number(on[3]) : Number(on[3])) : null;
+    const d = y ? isoDay(y, Number(on[1]), Number(on[2])) : nearDate(Number(on[1]), Number(on[2]), asOf);
+    if (plausible(d, asOf)) return d;
+  }
+  return asOf;
 }
 
 function summaryAlert(item: SummaryItem, last4: string, asOf: string | null): ParseResult {
@@ -145,10 +220,29 @@ function summaryAlert(item: SummaryItem, last4: string, asOf: string | null): Pa
     merchantRaw,
     accountHint: { last4 },
     occurredAt: null,
-    occurredDate: achDate(item.description) ?? asOf,
+    occurredDate: lineDate(item.description, asOf),
     isPending: false,
     postedSummary: true as const,
   };
+
+  // Zelle is a person. decide() ignores either way when the name is one of
+  // the names that mean "us"; otherwise money from a person is a transfer
+  // from "Other" (as a Venmo payback is) and money to one is an expense.
+  const zelle = ZELLE_LINE.exec(item.description);
+  if (zelle) {
+    const person = cleanName(zelle[2]);
+    if (!person) return { unparsed: "wellsfargo_zelle_without_name" };
+    const from = zelle[1].toUpperCase() === "FROM";
+    if (from !== (item.direction === "in")) return { unparsed: "wellsfargo_zelle_direction_mismatch" };
+    return from
+      ? { ...base, merchantRaw: `Zelle from ${person}`, counterparty: person, kind: "transfer", transferDirection: "in", externalFrom: "Other" }
+      : { ...base, merchantRaw: `Zelle to ${person}`, counterparty: person, kind: "posted" };
+  }
+  // An investment account on the other end: which one is asked.
+  if (BROKERAGE.test(item.description)) {
+    return { ...base, kind: "transfer", transferDirection: item.direction };
+  }
+
   const other = MASKED.exec(item.description)?.[1];
   if (item.direction === "out") {
     if (CARD_PAYMENT.test(item.description) || ONLINE_TRANSFER.test(item.description)) {
@@ -370,7 +464,7 @@ export function parseWellsFargo(email: NormalizedEmail): ParseResult {
 export const wellsFargoParser: Parser = {
   id: "wellsfargo",
   label: "Wells Fargo",
-  version: 4,
+  version: 5,
   senders: [/@(?:[a-z0-9-]+\.)*wellsfargo\.com$/i],
   dkimDomains: ["wellsfargo.com"],
   accountKey: "last4",

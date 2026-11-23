@@ -1197,3 +1197,56 @@ describe("\"Don't record — I log these myself\" (merchant mode skip)", () => {
     expect(plan).toMatchObject({ action: "create" });
   });
 });
+
+describe("Zelle and brokerage lines in a WF rundown (parser v5)", () => {
+  const CHK: AccountRef = { ...CARD, id: "acct-wf-checking", name: "WF Checking", kind: "checking", alertSource: "wellsfargo", alertLast4: "1111" };
+  const at = (a: ParsedAlert, over: Partial<DecideContext> = {}) =>
+    ctx({
+      parser: { id: "wellsfargo", accountKey: "last4" },
+      account: CHK,
+      accounts: [CHK, CARD],
+      merchant: null,
+      merchantKey: merchantKey(a.merchantRaw),
+      alert: a,
+      ...over,
+    });
+  const zelleIn = (name: string) =>
+    alert({
+      kind: "transfer",
+      transferDirection: "in",
+      externalFrom: "Other",
+      counterparty: name,
+      merchantRaw: `Zelle from ${name}`,
+      amountCents: 150000,
+      accountHint: { last4: "1111" },
+      isPending: false,
+      postedSummary: true,
+    });
+
+  it("Zelle from one of the names that mean us is ignored, whatever the word order", () => {
+    // ctx() lists "sam lee"; a bank writes it surname first.
+    expect(decide(at(zelleIn("LEE SAM")))).toMatchObject({ action: "ignore", reason: "internal_counterparty" });
+    expect(decide(at(zelleIn("Sam Lee")))).toMatchObject({ action: "ignore", reason: "internal_counterparty" });
+  });
+
+  it("Zelle from anyone else is a transfer from Other into the account, never Income", () => {
+    const plan = decide(at(zelleIn("DOE JANE")));
+    expect(plan.action).toBe("create");
+    if (plan.action !== "create") return;
+    expect(plan.transactions[0]).toMatchObject({ kind: "transfer", transferFrom: "Other", transferTo: CHK.id, amountCents: 150000 });
+  });
+
+  it("Zelle to one of us is ignored too", () => {
+    const out = alert({ kind: "posted", counterparty: "LEE SAM", merchantRaw: "Zelle to LEE SAM", accountHint: { last4: "1111" }, isPending: false, postedSummary: true });
+    expect(decide(at(out))).toMatchObject({ action: "ignore", reason: "internal_counterparty" });
+  });
+
+  it("a brokerage transfer waits on which account, never Income", () => {
+    const plan = decide(
+      at(alert({ kind: "transfer", transferDirection: "in", merchantRaw: "FID BKG SVC LLC ACH", amountCents: 300000, accountHint: { last4: "1111" }, isPending: false, postedSummary: true })),
+    );
+    expect(plan.action).toBe("create");
+    if (plan.action !== "create") return;
+    expect(plan.transactions[0]).toMatchObject({ kind: "transfer", transferFrom: null, transferTo: CHK.id, reviewStatus: "needs_review" });
+  });
+});

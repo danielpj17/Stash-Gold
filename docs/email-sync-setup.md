@@ -35,10 +35,19 @@ amount update the first alert). Refund and deposit alerts become Income.
 > Venmo accounts apart by whose inbox forwarded the email.
 
 > **Wells Fargo:** the alerts you set up go to whatever address you choose, but
-> Bill Pay ("Your payment(s) were sent"), "You made a payment" and "Online
-> transfer initiated" always go to your account's main email. Forward those
-> with a filter: `from:(billpay@wellsfargo.com OR alerts@notify.wellsfargo.com)`.
+> Bill Pay ("Your payment(s) were sent"), "You made a payment", "Online
+> transfer initiated" and Zelle always go to your account's main email. Forward
+> those with a filter: `from:(billpay@wellsfargo.com OR alerts@notify.wellsfargo.com)`.
 > Statements and other notices that come along are ignored.
+>
+> On each checking and savings account, tick **when a deposit has posted** and
+> **when a withdrawal has posted** (to the Stash address). Wells Fargo sends
+> them overnight as one "Here's the rundown" email listing what posted — every
+> debit card purchase, autopay, ACH, Zelle and transfer — so it catches what
+> no other alert covers. Anything already recorded is skipped. The checks and
+> balance options aren't needed. Credit cards have no posted-activity alert, so
+> a card charge with no purchase alert (some pay-at-pump gas) waits for
+> Reconcile.
 
 > **Discover** alerts now come from Capital One (`capitalone@notification.capitalone.com`,
 > "Discover by Capital One"), so pick **Capital One / Discover** for both cards —
@@ -80,8 +89,9 @@ Alerts that match no account wait under **Settings → Email sync → Email
 activity → Unknown account**. Picking the account there re-reads them — that's
 also what you do when a bank mails a replacement card.
 
-In Settings → Email sync, add the **Venmo names that mean "us"** so payments
-between the two of you are ignored.
+In Settings → Email sync, add the **Venmo and Zelle names that mean "us"** so
+money between the two of you is ignored (word order doesn't matter: a bank may
+write "PUBLIC PAT").
 
 ## 5. Shadow first, then live
 

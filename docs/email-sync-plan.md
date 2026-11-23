@@ -1281,6 +1281,15 @@ otherwise.
   alert, because the existing Shortcut may check the status code. The body
   gains `matchedCardAlert` and `possibleDuplicate`.
 
+- Wells Fargo parser v5 (2026-11-23) reads every kind of line in a real
+  checking/savings statement the same way the rundown shows it: a debit card
+  line by its merchant and authorization date, Bill Pay by its payee, a
+  leading company number dropped (so a payroll rule still applies), a
+  brokerage ACH as a transfer whose other side is asked, and Zelle as a
+  person — a transfer from "Other" in, an expense out (the Venmo convention),
+  ignored for the names that mean "us", whose match now ignores word order.
+  An ACH date is tried YYMMDD then MMDDYY and used only near the as-of date.
+
 **Not built (needs real mail first)**
 - Bank parsers. The registry ships with Venmo only. Venmo's v1 is written from
   Venmo's published subject formats, and its fixtures are marked
