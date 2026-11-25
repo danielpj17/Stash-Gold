@@ -18,7 +18,8 @@ npm run email:export -- <gmail_message_id>   # scrub a real alert into a parser 
 npm run email:reparse -- --parser <id> [--apply]  # dry-run current parsers over stored events
 ```
 
-`npm test` covers only the pure email-sync modules (`lib/email/**/*.test.ts`);
+`npm test` covers only the pure email-sync modules (`lib/email/**/*.test.ts`)
+and the dashboard's budget-load retry rule (`lib/budgetLoad.test.ts`);
 everything else is verified manually in the browser. `npm run lint` is present
 but there is **no ESLint config checked in**, so `next lint` just prompts for
 setup; `next build` is the real typecheck gate.

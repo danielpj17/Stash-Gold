@@ -16,6 +16,7 @@ import { isUnconfirmed, rowMatchesMonth, transferMatchesMonth, submitTransfer } 
 import type { SheetRow } from "@/services/transactionsApi";
 import { useAccounts } from "@/contexts/AccountsContext";
 import { CACHE_KEYS, readScopedCache, writeScopedCache } from "@/lib/clientCache";
+import { loadBudgets } from "@/lib/budgetLoad";
 import { backdropDismissProps, modalDragHandleProps } from "@/lib/modalBehavior";
 import {
   EXPENSE_CATEGORIES,
@@ -343,6 +344,8 @@ export default function BudgetPage() {
   // the entire store, so we must not overwrite Neon based on stale cache.
   const [budgetsConfirmed, setBudgetsConfirmed] = useState(false);
   const [budgetError, setBudgetError] = useState<string | null>(null);
+  // True while a budget load (including its automatic retries) is in flight.
+  const [budgetLoadPending, setBudgetLoadPending] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [editBudgetValue, setEditBudgetValue] = useState("");
   const [activePieIndex, setActivePieIndex] = useState<number | null>(null);
@@ -372,52 +375,62 @@ export default function BudgetPage() {
   );
 
   useEffect(() => {
-    let cancelled = false;
-    fetch("/api/budget", { cache: "no-store" })
-      .then(async (response) => {
-        const data = await response.json().catch(() => null);
-        if (cancelled) return;
-        // A failed GET (e.g. Neon cold-start/hiccup) returns { error } with a non-2xx
-        // status. Never treat that as real budget data: keep allBudgets null so the
-        // page stays in an "unloaded" state and saving is blocked — otherwise the next
-        // save would overwrite the stored budgets with an empty/zeroed object.
-        const loadFailed =
-          !response.ok ||
-          !data ||
-          typeof data !== "object" ||
-          Array.isArray(data) ||
-          "error" in (data as Record<string, unknown>);
-        if (loadFailed) {
-          // Keep any cache-hydrated budgets on screen (don't blank back to $0/overbudget).
-          // budgetsConfirmed stays false so editing remains blocked.
-          const errMsg = (data as { error?: unknown } | null)?.error;
-          setBudgetError(
-            typeof errMsg === "string"
-              ? `Couldn't load saved budgets: ${errMsg}`
-              : "Couldn't load saved budgets. Refresh before editing — saving now would overwrite them."
-          );
-          return;
-        }
-        // The old one-time "import budgets from localStorage" migration is gone.
-        // It read an unscoped key, so on a shared browser it would have pushed a
-        // previous user's local budget into a new user's Neon store.
-        if (!cancelled) {
-          setAllBudgets(data as MonthlyBudgets);
-          writeBudgetCache(userId, data as MonthlyBudgets);
-          setBudgetsConfirmed(true);
-          setBudgetError(null);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          // Keep cache-hydrated budgets on screen; leave budgetsConfirmed false so editing stays blocked.
-          setBudgetError(
-            "Couldn't load saved budgets. Refresh before editing — saving now would overwrite them."
-          );
-        }
-      });
-    return () => { cancelled = true; };
+    setBudgetLoadPending(true);
+    // loadBudgets retries a network error / non-JSON body twice (~1s, ~4s) before
+    // reporting it; a 401 or a JSON { error } is reported at once. Its cancel
+    // function is this effect's `cancelled` guard: it clears a pending retry and
+    // nothing below runs after it.
+    return loadBudgets((outcome) => {
+      setBudgetLoadPending(false);
+      if (outcome.kind !== "ok") {
+        // A failed GET (e.g. Neon cold-start/hiccup) is never real budget data.
+        // Keep any cache-hydrated budgets on screen (don't blank back to
+        // $0/overbudget), but budgetsConfirmed stays false so editing stays
+        // blocked — otherwise the next save would overwrite the stored budgets.
+        // A budgetError already showing stays up through a retry's attempts and
+        // clears only on success, so the banner doesn't flicker.
+        setBudgetError(
+          outcome.kind === "rejected" && outcome.error !== null
+            ? `Couldn't load saved budgets: ${outcome.error}`
+            : "Couldn't load saved budgets. Refresh before editing — saving now would overwrite them."
+        );
+        return;
+      }
+      // The old one-time "import budgets from localStorage" migration is gone.
+      // It read an unscoped key, so on a shared browser it would have pushed a
+      // previous user's local budget into a new user's Neon store.
+      setAllBudgets(outcome.budgets);
+      writeBudgetCache(userId, outcome.budgets);
+      setBudgetsConfirmed(true);
+      setBudgetError(null);
+    });
   }, [refreshKey, userId]);
+
+  // The banner shows one error at a time; a budget error takes precedence.
+  const loadError = budgetError ?? error;
+  const hasLoadError = loadError !== null;
+  // What the page is showing instead: a budget error leaves the cached budgets
+  // up, an expenses error the rows ExpensesDataContext already had.
+  const showingSavedCopy =
+    budgetError !== null ? allBudgets !== null : allRows.length > 0 || allTransfers.length > 0;
+
+  // While a load error is showing, try again the moment it could succeed: when
+  // the app returns to the foreground (an iOS PWA resumed from the background)
+  // or the browser says the network is back. triggerRefresh reloads expenses
+  // too, so one success clears both errors.
+  useEffect(() => {
+    if (!hasLoadError) return;
+    const onOnline = () => triggerRefresh();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") triggerRefresh();
+    };
+    window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [hasLoadError, triggerRefresh]);
 
   // Drop the previous user's cached budgets if the signed-in user changes.
   useEffect(() => {
@@ -694,12 +707,24 @@ export default function BudgetPage() {
 
         <CategorizeBanner />
 
-        {(budgetError || error) && (
-          <div className="rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 px-4 py-2 text-sm">
-            {budgetError ?? error}
-            {!(budgetError ?? error)?.includes("NEXT_PUBLIC") && (
-              <span className="block mt-1 text-gray-400">Showing empty data until the connection works.</span>
-            )}
+        {loadError !== null && (
+          <div className="rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 px-4 py-2 text-sm flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              {loadError}
+              <span className="block mt-1 text-gray-400">
+                {showingSavedCopy
+                  ? `Showing your last saved data.${budgetsConfirmed ? "" : " Editing is locked until it reloads."}`
+                  : "No saved copy on this device yet."}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={triggerRefresh}
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-red-500/40 px-2.5 py-1 text-xs font-medium text-red-300 hover:bg-red-500/20 transition-colors"
+            >
+              {budgetLoadPending && <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />}
+              Retry
+            </button>
           </div>
         )}
 
